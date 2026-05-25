@@ -1,0 +1,537 @@
+﻿import { createReadStream } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
+import { createServer } from "node:http";
+import { spawn } from "node:child_process";
+import { extname, join, normalize, resolve } from "node:path";
+
+const ROOT = resolve(".");
+const PORT = Number(process.env.PORT || 4174);
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || "https://api.openai.com";
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "";
+const COCKPIT_LOCAL_ACCESS_CONFIG =
+  process.env.COCKPIT_LOCAL_ACCESS_CONFIG ||
+  join(process.env.USERPROFILE || "", ".antigravity_cockpit", "codex_local_access.json");
+const COCKPIT_DEFAULT_MODEL = "gpt-5.4-mini";
+const OPENAI_DEFAULT_MODEL = "gpt-4.1-mini";
+let refreshTask = null;
+const ADVICE_POKEMON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["id", "name", "role", "item", "ability", "nature", "evs", "moves", "note"],
+  properties: {
+    id: { type: "string" },
+    name: { type: "string" },
+    role: { type: "string" },
+    item: { type: "string" },
+    ability: { type: "string" },
+    nature: { type: "string" },
+    evs: { type: "string" },
+    moves: {
+      type: "array",
+      maxItems: 4,
+      items: { type: "string" },
+    },
+    note: { type: "string" },
+  },
+};
+const ADVICE_FORMAT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["team", "plan", "watch"],
+  properties: {
+    team: {
+      type: "array",
+      maxItems: 6,
+      items: ADVICE_POKEMON_SCHEMA,
+    },
+    plan: { type: "string" },
+    watch: { type: "array", maxItems: 4, items: { type: "string" } },
+  },
+};
+const ADVICE_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["summary", "single", "double"],
+  properties: {
+    summary: { type: "string" },
+    single: ADVICE_FORMAT_SCHEMA,
+    double: ADVICE_FORMAT_SCHEMA,
+  },
+};
+
+const mimeTypes = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".svg": "image/svg+xml",
+};
+
+function sendJson(res, status, payload) {
+  res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify(payload));
+}
+
+async function readJson(req) {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  const raw = Buffer.concat(chunks).toString("utf8");
+  return raw ? JSON.parse(raw) : {};
+}
+
+function buildPrompt(payload) {
+  const task = payload.mode === "complete-team" ? "补全队伍" : "给当前队伍配招";
+  return `
+你是 Pokemon Champions 队伍配置助手。只返回一个 JSON 对象。
+第一个字符必须是 {，最后一个字符必须是 }。
+不要 Markdown，不要标题，不要项目符号，不要解释性结尾，不写“如果你愿意...”之类收尾话。
+
+任务：${task}
+当前规则：${payload.formatLabel || payload.format}
+用户目标：${payload.userGoal || "未填写"}
+
+输出要求：
+1. 简洁，最多 6 只宝可梦，每只 1 到 2 句说明。
+2. 必须同时给出 single 和 double 两个分区，两个分区都要有各自的 team、plan、watch。
+3. single.team 和 double.team 都必须是最终可应用队伍。优先保留 selectedPokemon，再从 metaCandidates 补到 6 只。
+4. 单打与双打配置要明显按规则分化：单打重视钉子、强化、换血、清场；双打重视守住、控速、站场协作、击掌奇袭、威吓、广域防守或空间/顺风。
+5. 每只配置包含 id、name、role、item、ability、nature、evs、moves。moves 最多 4 个。
+6. 不写“如果你愿意...”之类收尾话。
+7. 如果不确定，用“可替换”标注，不要编造数据来源。
+
+JSON 结构：
+{
+  "summary": "一句话总判断",
+  "single": {
+    "team": [
+      {"id":"", "name":"", "role":"", "item":"", "ability":"", "nature":"", "evs":"", "moves":[""], "note":""}
+    ],
+    "plan":"",
+    "watch":[""]
+  },
+  "double": {
+    "team": [
+      {"id":"", "name":"", "role":"", "item":"", "ability":"", "nature":"", "evs":"", "moves":[""], "note":""}
+    ],
+    "plan":"",
+    "watch":[""]
+  }
+}
+
+输入数据：
+${JSON.stringify(payload)}
+`;
+}
+
+function extractOutputText(data) {
+  if (typeof data.output_text === "string") return data.output_text;
+  const parts = [];
+  for (const item of data.output || []) {
+    for (const content of item.content || []) {
+      if (content.type === "output_text" && content.text) parts.push(content.text);
+      if (content.type === "text" && content.text) parts.push(content.text);
+    }
+  }
+  return parts.join("\n").trim();
+}
+
+function parseAdviceJson(text) {
+  const trimmed = text.trim();
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenced ? fenced[1].trim() : trimmed;
+  const start = candidate.indexOf("{");
+  const end = candidate.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  try {
+    return JSON.parse(candidate.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
+function plainText(value = "") {
+  return String(value)
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/[#>*_`~|[\]()]/g, " ")
+    .replace(/^\s*[-+\d.、]+\s*/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function firstName(entries = []) {
+  const item = Array.isArray(entries) ? entries.find(Boolean) : null;
+  if (!item) return "";
+  return plainText(typeof item === "string" ? item : item.name || "");
+}
+
+function firstUsefulLine(text) {
+  return (
+    text
+      .split(/\r?\n/)
+      .map(plainText)
+      .find((line) => line.length >= 12 && !/^总判断|建议配置|补队方案|队伍缺口|替换位/.test(line)) ||
+    "围绕当前核心补齐抗性、速度控制和收尾位。"
+  );
+}
+
+function watchItems(text) {
+  const lines = text
+    .split(/\r?\n/)
+    .map(plainText)
+    .filter((line) => line.length >= 4 && line.length <= 28);
+  return [...new Set(lines)].slice(0, 4);
+}
+
+function advicePokemon(mon = {}, index, format = "single") {
+  const role = mon.roles?.[0] || (index === 0 ? "核心输出" : "补位");
+  const moves = (mon.commonMoves || mon.moves || []).map((move) => firstName([move])).filter(Boolean).slice(0, 4);
+  if (format === "double" && moves.length < 4 && !moves.includes("守住")) moves.push("守住");
+  return {
+    id: String(mon.id || mon.slug || mon.name || ""),
+    name: String(mon.name || mon.slug || `成员 ${index + 1}`),
+    role: format === "double" && role === "补位" ? "双打协作位" : role,
+    item: firstName(mon.commonItems || mon.items) || "可替换道具",
+    ability: firstName(mon.commonAbilities || mon.abilities) || "可替换特性",
+    nature: firstName(mon.commonNatures || mon.natures) || "按速度线调整",
+    evs: role.includes("耐久") || role.includes("功能") ? "耐久为主" : "速度与主攻为主",
+    moves,
+    note:
+      format === "double"
+        ? "按双打节奏补足守住、控速或站场协作。"
+        : role.includes("功能")
+          ? "负责转场、钉子、控速或状态压制。"
+          : "承担主要输出、强化或收尾任务。",
+  };
+}
+
+function fallbackAdvice(payload, text) {
+  const selected = Array.isArray(payload.selectedPokemon) ? payload.selectedPokemon : [];
+  const candidates = Array.isArray(payload.metaCandidates) ? payload.metaCandidates : [];
+  const seen = new Set();
+  const baseTeam = [];
+
+  for (const mon of [...selected, ...candidates]) {
+    const key = String(mon?.id || mon?.slug || mon?.name || "").toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    baseTeam.push(mon);
+    if (baseTeam.length === 6) break;
+  }
+
+  const summary = firstUsefulLine(text);
+  const watch = watchItems(text);
+  const currentPlan = summary.length > 56 ? `${summary.slice(0, 56)}。` : summary;
+  const singlePlan = payload.format === "single" ? currentPlan : "单打更重视一换一效率、钉子压力、强化机会和后期清场。";
+  const doublePlan = payload.format === "double" ? currentPlan : "双打需要补守住、站场协作、威吓、顺风或空间等控速手段。";
+
+  return {
+    summary: currentPlan,
+    single: {
+      team: baseTeam.map((mon, index) => advicePokemon(mon, index, "single")),
+      plan: singlePlan,
+      watch,
+    },
+    double: {
+      team: baseTeam.map((mon, index) => advicePokemon(mon, index, "double")),
+      plan: doublePlan,
+      watch,
+    },
+  };
+}
+
+function parseSseResponse(raw) {
+  const deltas = [];
+  let doneText = "";
+  let completedResponse = null;
+
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.startsWith("data:")) continue;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === "[DONE]") continue;
+
+    let event;
+    try {
+      event = JSON.parse(payload);
+    } catch {
+      continue;
+    }
+
+    if (event.type === "response.output_text.done" && typeof event.text === "string") {
+      doneText = event.text;
+    } else if (event.type === "response.output_text.delta" && typeof event.delta === "string") {
+      deltas.push(event.delta);
+    } else if (event.type === "response.completed" && event.response) {
+      completedResponse = event.response;
+    }
+  }
+
+  return {
+    output_text: doneText || deltas.join(""),
+    response: completedResponse,
+  };
+}
+
+async function readAIResponse(response) {
+  const raw = await response.text();
+  const trimmed = raw.trimStart();
+  if (trimmed.startsWith("event:") || trimmed.startsWith("data:")) {
+    return parseSseResponse(raw);
+  }
+  return JSON.parse(raw);
+}
+
+async function readCockpitLocalAccess() {
+  try {
+    const config = JSON.parse(await readFile(COCKPIT_LOCAL_ACCESS_CONFIG, "utf8"));
+    if (!config.enabled || !config.port || !config.apiKey) return null;
+    return {
+      apiKey: config.apiKey,
+      baseUrl: `http://127.0.0.1:${config.port}`,
+      model: OPENAI_MODEL || COCKPIT_DEFAULT_MODEL,
+      source: "cockpit",
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveAIConfig() {
+  if (OPENAI_API_KEY) {
+    return {
+      apiKey: OPENAI_API_KEY,
+      baseUrl: OPENAI_BASE_URL.replace(/\/+$/, ""),
+      model: OPENAI_MODEL || OPENAI_DEFAULT_MODEL,
+      source: "openai-env",
+    };
+  }
+
+  return readCockpitLocalAccess();
+}
+
+async function requestAI(aiConfig, payload, useJsonSchema) {
+  const body = {
+    model: aiConfig.model,
+    input: buildPrompt(payload),
+    stream: false,
+  };
+
+  if (useJsonSchema) {
+    body.text = {
+      format: {
+        type: "json_schema",
+        name: "pokemon_team_advice",
+        strict: true,
+        schema: ADVICE_JSON_SCHEMA,
+      },
+    };
+  }
+
+  return fetch(`${aiConfig.baseUrl}/v1/responses`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${aiConfig.apiKey}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+async function handleAI(req, res) {
+  const aiConfig = await resolveAIConfig();
+  if (!aiConfig) {
+    sendJson(res, 501, {
+      error: "Missing OPENAI_API_KEY and no enabled Cockpit Codex Local Access config was found.",
+    });
+    return;
+  }
+
+  const payload = await readJson(req);
+  let response = await requestAI(aiConfig, payload, true);
+  let data = await readAIResponse(response);
+
+  if (!response.ok && [400, 422].includes(response.status)) {
+    response = await requestAI(aiConfig, payload, false);
+    data = await readAIResponse(response);
+  }
+
+  if (!response.ok) {
+    sendJson(res, response.status, {
+      error: data.error?.message || "OpenAI API request failed.",
+    });
+    return;
+  }
+
+  const text = extractOutputText(data);
+  const advice = parseAdviceJson(text) || fallbackAdvice(payload, text);
+  sendJson(res, 200, {
+    model: aiConfig.model,
+    provider: aiConfig.source,
+    text,
+    advice,
+  });
+}
+
+function runRefreshTask(mode = "data") {
+  if (refreshTask?.running) return refreshTask;
+  const args =
+    mode === "missing-all"
+      ? ["run", "fetch:missing-all"]
+      : mode === "all"
+      ? ["run", "fetch:all"]
+      : mode === "teams"
+        ? ["run", "fetch:teams:fast"]
+        : ["run", "fetch:data"];
+  const missingOnly = mode === "data" || mode === "missing" || mode === "missing-all";
+  refreshTask = {
+    running: true,
+    mode,
+    startedAt: new Date().toISOString(),
+    finishedAt: "",
+    exitCode: null,
+    fetched: 0,
+    checked: 0,
+    teamsFetched: 0,
+    stage: "starting",
+    output: "",
+    error: "",
+  };
+  const child = spawn("npm", args, {
+    cwd: ROOT,
+    shell: process.platform === "win32",
+    env: {
+      ...process.env,
+      MISSING_ONLY: missingOnly ? "1" : process.env.MISSING_ONLY || "",
+      ENRICH_TEAMS: missingOnly ? "0" : process.env.ENRICH_TEAMS || "",
+      LIMIT: missingOnly ? process.env.REFRESH_LIMIT || "80" : process.env.LIMIT || "",
+      REQUEST_DELAY_MS: missingOnly ? process.env.REQUEST_DELAY_MS || "80" : process.env.REQUEST_DELAY_MS || "250",
+    },
+  });
+  const append = (key, chunk) => {
+    const text = chunk.toString();
+    refreshTask[key] = `${refreshTask[key]}${text}`.slice(-8000);
+    if (key === "output") {
+      if (/Filling missing|Fetching #/.test(text)) refreshTask.stage = "data";
+      if (/Fetching team page|Wrote \d+ teams/.test(text)) refreshTask.stage = "teams";
+      refreshTask.fetched += (text.match(/Filling missing|Fetching #/g) || []).length;
+      for (const match of text.matchAll(/Wrote (\d+) teams/g)) {
+        refreshTask.teamsFetched = Number(match[1] || 0);
+      }
+      for (const match of text.matchAll(/Missing-only refresh filled (\d+) entries/g)) {
+        refreshTask.checked += Number(match[1] || 0);
+      }
+    }
+  };
+  child.stdout.on("data", (chunk) => append("output", chunk.toString("utf8")));
+  child.stderr.on("data", (chunk) => append("error", chunk.toString("utf8")));
+  child.on("close", (code) => {
+    refreshTask.running = false;
+    refreshTask.exitCode = code;
+    refreshTask.finishedAt = new Date().toISOString();
+  });
+  child.on("error", (err) => {
+    refreshTask.running = false;
+    refreshTask.exitCode = 1;
+    refreshTask.finishedAt = new Date().toISOString();
+    append("error", err.message || "Failed to start refresh task.");
+  });
+  return refreshTask;
+}
+
+async function handleRefresh(req, res) {
+  const body = req.method === "POST" ? await readJson(req).catch(() => ({})) : {};
+  const mode = ["data", "missing", "missing-all", "teams", "all"].includes(body.mode) ? body.mode : "data";
+  const task = req.method === "POST" ? runRefreshTask(mode) : refreshTask;
+  sendJson(res, 200, {
+    running: Boolean(task?.running),
+    mode: task?.mode || "",
+    stage: task?.stage || "",
+    startedAt: task?.startedAt || "",
+    finishedAt: task?.finishedAt || "",
+    exitCode: task?.exitCode ?? null,
+    fetched: task?.fetched || 0,
+    checked: task?.checked || 0,
+    teamsFetched: task?.teamsFetched || 0,
+    output: task?.output || "",
+    error: task?.error || "",
+    reason: explainRefreshFailure(task),
+  });
+}
+
+function explainRefreshFailure(task) {
+  const text = `${task?.error || ""}\n${task?.output || ""}`;
+  if (!text || task?.running || task?.exitCode === 0) return "";
+  if (/x\.com|twitter\.com|fxtwitter|ETIMEDOUT|ECONNRESET|ENETUNREACH|fetch failed/i.test(text)) {
+    return "热门队伍来源包含 X/Twitter 链接，当前网络可能没有代理或无法访问 X 相关域名。可挂代理后重试，或使用快速模式仅导入基础队伍列表。";
+  }
+  if (/pokechamdb|No ranking|Fetch failed/i.test(text)) {
+    return "环境数据源暂时无法访问或页面结构变化。请稍后重试，或降低 LIMIT 后再补缺。";
+  }
+  return "抓取任务失败，请查看终端日志或 /api/refresh-data 返回的 error/output。";
+}
+
+async function ensureInitialData() {
+  try {
+    await stat(join(ROOT, "data", "champion-data.json"));
+    await stat(join(ROOT, "data", "team-data.json"));
+  } catch {
+    console.log("Local data cache missing; starting initial missing-all fetch.");
+    runRefreshTask("missing-all");
+  }
+}
+async function serveStatic(req, res) {
+  const url = new URL(req.url || "/", `http://127.0.0.1:${PORT}`);
+  const requested = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname);
+  const filePath = normalize(join(ROOT, requested));
+
+  if (!filePath.startsWith(ROOT)) {
+    res.writeHead(403);
+    res.end("Forbidden");
+    return;
+  }
+
+  try {
+    const fileStat = await stat(filePath);
+    if (!fileStat.isFile()) throw new Error("Not a file");
+    res.writeHead(200, {
+      "content-type": mimeTypes[extname(filePath)] || "application/octet-stream",
+      "cache-control": "no-store",
+    });
+    createReadStream(filePath).pipe(res);
+  } catch {
+    const fallback = await readFile(join(ROOT, "index.html"));
+    res.writeHead(404, { "content-type": "text/html; charset=utf-8" });
+    res.end(fallback);
+  }
+}
+
+createServer(async (req, res) => {
+  try {
+    if (req.method === "POST" && req.url === "/api/team-advice") {
+      await handleAI(req, res);
+      return;
+    }
+    if ((req.method === "POST" || req.method === "GET") && req.url === "/api/refresh-data") {
+      await handleRefresh(req, res);
+      return;
+    }
+    if (req.method === "GET" || req.method === "HEAD") {
+      await serveStatic(req, res);
+      return;
+    }
+    res.writeHead(405);
+    res.end("Method not allowed");
+  } catch (err) {
+    sendJson(res, 500, { error: err.message || "Server error" });
+  }
+}).listen(PORT, "127.0.0.1", () => {
+  console.log(`Champion Lab AI server running at http://127.0.0.1:${PORT}`);
+  console.log(`OpenAI model: ${OPENAI_MODEL || `${COCKPIT_DEFAULT_MODEL} via Cockpit fallback`}`);
+  ensureInitialData();
+});
+

@@ -1,0 +1,15 @@
+{
+  "name": "pokeforge-lab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "fetch:data": "node scripts/fetch-data.mjs",
+    "fetch:teams": "node scripts/fetch-teams.mjs",
+    "fetch:teams:fast": "set ENRICH_TEAMS=0&& node scripts/fetch-teams.mjs",
+    "fetch:missing-all": "node scripts/fetch-data.mjs && node scripts/fetch-teams.mjs",
+    "fetch:all": "node scripts/fetch-data.mjs && node scripts/fetch-teams.mjs",
+    "start": "npx http-server -p 4173 -c-1 .",
+    "start:ai": "node server.mjs"
+  }
+}
