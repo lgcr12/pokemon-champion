@@ -58,22 +58,157 @@ PokéForge Lab 是一个本地运行的宝可梦竞技队伍分析与构筑工�
 - 页面内补缺数据，并显示进度条。
 - 首次启动如果缺少数据，会自动抓取并显示启动进度。
 
-## 快速开始
+## 安装教程
 
-需要 Node.js 18 或更高版本。
+### 1. 准备环境
+
+你需要先安装：
+
+- [Node.js](https://nodejs.org/) 18 或更高版本；
+- Git；
+- 一个现代浏览器，推荐 Chrome 或 Edge。
+
+检查本机是否已经装好：
+
+```bash
+node -v
+npm -v
+git --version
+```
+
+如果 `node -v` 低于 18，建议先升级 Node.js。
+
+### 2. 下载项目
+
+```bash
+git clone https://github.com/lgcr12/pokemon-champion.git
+cd pokemon-champion
+```
+
+如果你是直接下载 ZIP，解压后进入项目目录即可。
+
+### 3. 安装依赖
 
 ```bash
 npm install
+```
+
+### 4. 启动完整服务
+
+推荐使用这个命令启动，它支持页面访问、数据抓取、热门队伍刷新和 AI 代理：
+
+```bash
 npm run start:ai
 ```
 
-打开：
+启动成功后，在浏览器打开：
 
 ```text
 http://127.0.0.1:4174
 ```
 
-首次启动时，如果缺少 `data/champion-data.json` 或 `data/team-data.json`，服务端会自动启动数据抓取。页面会显示进度条，等数据准备完成后自动进入应用。
+### 5. 首次启动会发生什么
+
+项目默认不提交大型数据缓存。首次启动时，如果缺少这些文件：
+
+- `data/champion-data.json`
+- `data/team-data.json`
+
+服务端会自动抓取环境数据和热门队伍。页面会显示启动进度条，数据准备完成后会自动进入应用。
+
+如果热门队伍的 X/Twitter 详情因为没有代理抓不到，页面会给出失败原因；基础使用率数据和快速热门队伍列表仍会尽量加载。
+
+### 6. 只看静态页面
+
+不推荐新用户使用这个模式，因为它没有自动抓取、AI 和刷新 API。但如果你已经有本地 JSON 数据，也可以运行：
+
+```bash
+npm run start
+```
+
+然后打开：
+
+```text
+http://127.0.0.1:4173
+```
+
+## 使用教程
+
+### 1. 切换单打 / 双打
+
+页面右上角有 **单打** 和 **双打** 按钮。两种模式会使用不同的环境数据、热门队伍和 AI 配队上下文。
+
+### 2. 添加宝可梦
+
+点击 **添加宝可梦**，或者使用 `Ctrl + K` 打开搜索面板。你可以按中文名、英文 slug 或排名搜索，然后点击宝可梦加入当前队伍。
+
+页面两侧的宝可梦也可以互动：悬停查看名字，点击后会尝试加入当前队伍。
+
+### 3. 编辑单只配置
+
+点击队伍里的宝可梦卡片，可以编辑：
+
+- 道具、特性、性格；
+- 努力值、个体值；
+- 太晶属性、等级、性别；
+- 球种、语言、闪光；
+- 4 个招式。
+
+编辑完成后点击 **保存配置**。页面会自动刷新 Showdown 文本和规则提示。
+
+### 4. 使用热门队伍
+
+在 **热门队伍构筑** 区域选择队伍，然后点击 **使用这支队伍**。项目会把能匹配到的成员导入当前队伍，并生成分析结果。
+
+热门队伍数据来自 `pokemon-teams.pages.dev`。如果深度详情抓取失败，通常是因为当前网络无法访问 X/Twitter 或 `fxtwitter` 相关域名。
+
+### 5. 查看队伍分析
+
+队伍变化后，下方会自动更新：
+
+- 平均排名；
+- Meta 评分；
+- 速度线；
+- 对局计划路线；
+- 核心速度威胁；
+- 高危对手阵容；
+- 队伍功能定位；
+- 属性分布；
+- 高频配招与核心道具。
+
+这些内容是辅助判断，不等于对局必胜方案。最终还要结合你自己的规则环境和操作习惯。
+
+### 6. 使用 AI 配队
+
+在 **AI 配置与补强** 区域可以输入目标，例如：
+
+```text
+想围绕烈咬陆鲨做单打进攻队，不要太依赖先读。
+```
+
+然后点击：
+
+- **想配置**：让 AI 给当前成员推荐配置；
+- **补全队伍**：让 AI 基于当前队伍补齐缺口。
+
+AI 默认会优先尝试读取本机 Cockpit / Codex Local Access 配置。如果没有，也可以用 OpenAI 兼容接口，见下方 **AI 功能**。
+
+### 7. 导出给 PKHeX 或机器人流程
+
+队伍配置完成后，查看 **Showdown 队伍文本** 区域：
+
+- 点击 **复制文本**，可以复制到剪贴板；
+- 点击 **下载 TXT**，可以保存为文本文件；
+- 点击 **导出 JSON**，可以保存当前草稿；
+- 点击 **导入 JSON**，可以恢复之前保存的草稿。
+
+导出的 Showdown 文本适合作为 PKHeX 或部分交换机器人流程的输入。项目会提示重复道具、多个 Mega 石、EV 超限、招式不足等常见问题，但最终合法性仍需要你在 PKHeX 或目标平台确认。
+
+### 8. 刷新和补缺数据
+
+页面顶部有 **补缺/队伍** 按钮。点击后会只抓取本地缺失的数据，并刷新热门队伍。已有完整缓存不会重复抓取。
+
+如果你想手动执行数据脚本，可以看下一节。
 
 ## 数据更新
 
@@ -107,6 +242,41 @@ $env:MISSING_ONLY="1"
 $env:TEAM_LIMIT="300"
 $env:ENRICH_TEAMS="0"
 npm run fetch:missing-all
+```
+
+## 截图更新
+
+README 里的展示图来自真实浏览器截图，不是设计稿。更新 UI 后可以重新生成截图：
+
+```bash
+npm run start:ai
+```
+
+保持服务运行，再打开另一个终端执行：
+
+```bash
+npm run capture:screenshots
+```
+
+默认截图地址是：
+
+```text
+http://127.0.0.1:4174
+```
+
+如果你把服务部署在其他地址，可以指定 `APP_URL`。
+
+macOS / Linux：
+
+```bash
+APP_URL=https://你的部署地址 npm run capture:screenshots
+```
+
+Windows PowerShell：
+
+```powershell
+$env:APP_URL="https://你的部署地址"
+npm run capture:screenshots
 ```
 
 ## AI 功能
@@ -169,21 +339,53 @@ POST /api/team-advice
 ├─ server.mjs                # 静态服务、AI 代理、数据刷新 API
 ├─ scripts/
 │  ├─ fetch-data.mjs         # 环境数据抓取
-│  └─ fetch-teams.mjs        # 热门队伍抓取
+│  ├─ fetch-teams.mjs        # 热门队伍抓取
+│  └─ capture-screenshots.mjs # README 真实截图生成
 ├─ data/
 │  ├─ champion-data.json     # 本地环境数据缓存，运行后生成
 │  └─ team-data.json         # 本地热门队伍缓存，运行后生成
 └─ docs/
-   └─ preview.svg            # README 预览图
+   ├─ screenshot-dashboard.png
+   ├─ screenshot-workbench.png
+   ├─ screenshot-ai.png
+   ├─ screenshot-export.png
+   └─ screenshot-analysis.png
 ```
 
 ## 部署说明
 
-如果需要自动抓取数据、页面内刷新和 AI 配队，请运行 Node 服务：
+### 本地部署
+
+本地部署推荐直接运行：
 
 ```bash
 npm run start:ai
 ```
+
+访问：
+
+```text
+http://127.0.0.1:4174
+```
+
+### 服务器部署
+
+在服务器上执行：
+
+```bash
+git clone https://github.com/lgcr12/pokemon-champion.git
+cd pokemon-champion
+npm install
+npm run start:ai
+```
+
+服务默认监听 `4174` 端口。可以用 Nginx、Caddy 或平台自带反向代理，把公网域名转发到：
+
+```text
+http://127.0.0.1:4174
+```
+
+### 静态部署限制
 
 只做静态托管也可以打开页面和读取已有 JSON，但无法使用：
 
@@ -191,6 +393,16 @@ npm run start:ai
 - 页面内补缺数据；
 - AI 代理接口；
 - 服务端失败原因提示。
+
+所以如果希望别人部署后自动抓数据、显示进度条、使用 AI，必须运行 `npm run start:ai`，不能只把 HTML/CSS/JS 丢到静态托管。
+
+### 生产环境建议
+
+- 使用 Node.js 18 或更高版本；
+- 确认服务器能访问 `pokechamdb.com` 和 `pokemon-teams.pages.dev`；
+- 如果要抓 X/Twitter 相关详情，需要服务器网络能访问 X/Twitter 或相关镜像服务；
+- 如果要使用 AI，配置 `OPENAI_API_KEY`、`OPENAI_MODEL` 和 `OPENAI_BASE_URL`，或使用 Cockpit 本地访问；
+- 首次抓取生成的 `data/*.json` 会保存在服务器本地。
 
 ## 关于 PKHeX 和合法性
 
