@@ -425,6 +425,45 @@ async function handleAI(req, res) {
   });
 }
 
+async function handleAITest(req, res) {
+  const payload = await readJson(req);
+  const aiConfig = resolveRequestAIConfig(payload);
+  if (!aiConfig) {
+    sendJson(res, 400, { error: "请填写 API Key、Base URL 和模型。" });
+    return;
+  }
+  try {
+    const response = await requestAI(
+      aiConfig,
+      {
+        mode: "config",
+        format: "single",
+        formatLabel: "单打",
+        userGoal: "连接测试。请只返回 JSON。",
+        selectedPokemon: [{ id: 25, name: "皮卡丘" }],
+        metaCandidates: [],
+      },
+      false,
+    );
+    const data = await readAIResponse(response);
+    if (!response.ok) {
+      sendJson(res, response.status, {
+        error: data.error?.message || "AI 测试失败。请检查 API Key、模型名称、余额或接口类型。",
+      });
+      return;
+    }
+    sendJson(res, 200, {
+      ok: true,
+      provider: aiConfig.source,
+      model: aiConfig.model,
+    });
+  } catch (err) {
+    sendJson(res, 502, {
+      error: `连接失败：${err.message || "请检查 Base URL、接口类型、网络或代理配置。"}`,
+    });
+  }
+}
+
 function runRefreshTask(mode = "data") {
   if (refreshTask?.running) return refreshTask;
   const args =
@@ -562,6 +601,10 @@ createServer(async (req, res) => {
   try {
     if (req.method === "POST" && req.url === "/api/team-advice") {
       await handleAI(req, res);
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/ai-test") {
+      await handleAITest(req, res);
       return;
     }
     if ((req.method === "POST" || req.method === "GET") && req.url === "/api/refresh-data") {

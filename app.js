@@ -27,11 +27,16 @@ const state = {
   aiLastMode: "complete-team",
   query: "",
   searchOpen: false,
+  rulePrefs: {
+    allowDuplicateItems: false,
+    ignoreTera: false,
+  },
 };
 
 const $ = (selector) => document.querySelector(selector);
 const DRAFT_KEY = "champion-lab-current-draft-v2";
 const AI_CONFIG_KEY = "champion-lab-ai-config-v1";
+const RULE_PREFS_KEY = "champion-lab-rule-prefs-v1";
 const AI_PROVIDER_PRESETS = {
   openai: {
     baseUrl: "https://api.openai.com/v1",
@@ -237,6 +242,16 @@ function parseStatTotal(line = "") {
     .reduce((sum, value) => sum + value, 0);
 }
 
+function parseStatParts(line = "") {
+  return String(line)
+    .split("/")
+    .map((part) => {
+      const match = part.trim().match(/^(\d+)\s+(.+)$/);
+      return match ? { value: Number(match[1]), stat: match[2].trim() } : null;
+    })
+    .filter(Boolean);
+}
+
 function normalizedItemName(value = "") {
   return String(value).trim().replace(/\s+/g, " ").toLowerCase();
 }
@@ -290,12 +305,18 @@ function validationHints() {
   if (!state.team.length) return ["先选择宝可梦后再导出。"];
   if (state.team.length < 6) hints.push(`队伍未满 6 只：当前 ${state.team.length}/6。`);
   const itemCounts = new Map();
+  const speciesCounts = new Map();
   const megaUsers = [];
   for (const mon of state.team) {
     const item = editableConfigFor(mon).item;
     const key = normalizedItemName(item);
-    if (key) itemCounts.set(key, [...(itemCounts.get(key) || []), mon.name || mon.slug]);
+    const speciesKey = String(mon.id || mon.slug || mon.name).toLowerCase();
+    if (speciesKey) speciesCounts.set(speciesKey, [...(speciesCounts.get(speciesKey) || []), mon.name || mon.slug]);
+    if (key && !state.rulePrefs.allowDuplicateItems) itemCounts.set(key, [...(itemCounts.get(key) || []), mon.name || mon.slug]);
     if (isMegaStone(item)) megaUsers.push(mon.name || mon.slug);
+  }
+  for (const mons of speciesCounts.values()) {
+    if (mons.length > 1) hints.push(`重复宝可梦：同一队伍中出现了 ${mons.join("、")}。`);
   }
   for (const [item, mons] of itemCounts.entries()) {
     if (mons.length > 1) hints.push(`重复道具：${mons.join("、")} 都携带 ${item}。`);
@@ -307,13 +328,20 @@ function validationHints() {
     if (!config.item) hints.push(`${name} 缺少道具。`);
     if (!config.ability) hints.push(`${name} 缺少特性。`);
     if (!config.nature) hints.push(`${name} 缺少性格。`);
-    if (!config.teraType) hints.push(`提示：${name} 未填写太晶属性；如目标规则不使用太晶可忽略。`);
+    if (!config.teraType && !state.rulePrefs.ignoreTera) hints.push(`提示：${name} 未填写太晶属性；如目标规则不使用太晶可忽略。`);
     if (!config.level) hints.push(`${name} 缺少等级。`);
+    else if (Number(config.level) < 1 || Number(config.level) > 100) hints.push(`${name} 等级 ${config.level} 超出 1-100 范围。`);
     if ((config.moves || []).length < 4) hints.push(`${name} 招式少于 4 个。`);
     const evTotal = parseStatTotal(config.evs);
     if (evTotal > 510) hints.push(`${name} EV 总和 ${evTotal} 超过 510。`);
+    for (const ev of parseStatParts(config.evs)) {
+      if (ev.value > 252) hints.push(`${name} ${ev.stat} EV ${ev.value} 超过单项 252。`);
+    }
     const ivTotal = parseStatTotal(config.ivs);
     if (config.ivs && ivTotal > 186) hints.push(`${name} IV 总和看起来异常，请检查。`);
+    for (const iv of parseStatParts(config.ivs)) {
+      if (iv.value > 31) hints.push(`${name} ${iv.stat} IV ${iv.value} 超过单项 31。`);
+    }
   }
   if (!hints.length) hints.push("基础字段完整；仍建议用 PKHeX 做最终合法性检查。");
   return hints;
@@ -434,6 +462,7 @@ async function refreshData() {
           ? `完成 ${status.fetched}`
           : "失败";
     }
+    renderDataHealth(status);
     if (!status.running) break;
   }
   if (status?.exitCode === 0) {
@@ -446,6 +475,7 @@ async function refreshData() {
     renderDecorPokemon();
     renderTeamLibrary();
     render();
+    renderDataHealth(status);
     button.textContent = "已更新";
     window.setTimeout(() => {
       button.textContent = "补缺数据";
@@ -456,6 +486,7 @@ async function refreshData() {
     button.textContent = status?.reason || "补缺失败";
     button.disabled = false;
     if (progressBar) progressBar.style.setProperty("--refresh-progress", "100%");
+    renderDataHealth(status);
   }
 }
 
@@ -708,6 +739,82 @@ function clearAIConfig() {
   if (apiKey) apiKey.value = "";
   applyAIProviderPreset(true);
   updateAIConfigStatus();
+}
+
+function loadRulePrefs() {
+  try {
+    state.rulePrefs = { ...state.rulePrefs, ...JSON.parse(localStorage.getItem(RULE_PREFS_KEY) || "{}") };
+  } catch {
+    state.rulePrefs = { allowDuplicateItems: false, ignoreTera: false };
+  }
+}
+
+function hydrateRulePrefs() {
+  const duplicate = $("#rule-allow-duplicate-items");
+  const tera = $("#rule-ignore-tera");
+  if (duplicate) duplicate.checked = Boolean(state.rulePrefs.allowDuplicateItems);
+  if (tera) tera.checked = Boolean(state.rulePrefs.ignoreTera);
+}
+
+function saveRulePrefs() {
+  state.rulePrefs = {
+    allowDuplicateItems: Boolean($("#rule-allow-duplicate-items")?.checked),
+    ignoreTera: Boolean($("#rule-ignore-tera")?.checked),
+  };
+  localStorage.setItem(RULE_PREFS_KEY, JSON.stringify(state.rulePrefs));
+  renderValidationHints();
+}
+
+async function testAIConfig() {
+  const status = $("#ai-config-status");
+  const button = $("#ai-test-config");
+  saveAIConfig();
+  const aiConfig = loadAIConfig();
+  if (!hasUsableAIConfig(aiConfig)) {
+    if (status) status.textContent = "请先填写 API Key、Base URL 和模型。";
+    return;
+  }
+  if (button) button.disabled = true;
+  if (status) status.textContent = "正在测试连接...";
+  try {
+    const res = await fetch("/api/ai-test", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ aiConfig }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `测试失败：${res.status}`);
+    if (status) status.textContent = `连接成功：${data.provider} / ${data.model}`;
+  } catch (err) {
+    if (status) status.textContent = err.message || "连接失败，请检查配置。";
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+function renderDataHealth(status = null) {
+  const target = $("#data-health-grid");
+  if (!target) return;
+  const pokemonCount = state.data?.pokemon?.length || 0;
+  const teamCount = currentLibraryTeams().length || 0;
+  const dataMeta = state.rawData?.updatedAt || state.rawData?.generatedAt || "未知";
+  const statusLabel = status?.running ? "抓取中" : status?.exitCode === 0 ? "最近成功" : status?.exitCode ? "最近失败" : "待命";
+  target.innerHTML = `
+    <div class="data-health-card"><strong>${pokemonCount}</strong><span>当前环境宝可梦</span><small>${escapeHtml(formatLabel(state.format))}</small></div>
+    <div class="data-health-card"><strong>${teamCount}</strong><span>可导入热门队伍</span><small>${teamCount ? "已缓存" : "暂无缓存"}</small></div>
+    <div class="data-health-card"><strong>${escapeHtml(statusLabel)}</strong><span>抓取任务</span><small>${escapeHtml(status?.reason || status?.stage || "无错误")}</small></div>
+    <div class="data-health-card"><strong>${escapeHtml(String(dataMeta).slice(0, 16))}</strong><span>数据更新时间</span><small>本地 JSON 缓存</small></div>`;
+  const log = $("#refresh-log");
+  if (log && status) {
+    const text = [status.reason, status.error, status.output].filter(Boolean).join("\n\n").trim();
+    log.hidden = !text;
+    log.textContent = text.slice(-1800);
+  }
+}
+
+async function refreshDataHealth() {
+  const status = await fetch("/api/refresh-data", { cache: "no-store" }).then((res) => res.json()).catch(() => null);
+  renderDataHealth(status);
 }
 
 function normalizeAdvice(data) {
@@ -1283,6 +1390,7 @@ function render() {
   renderSlots();
   renderList();
   renderTeamLibrary();
+  renderDataHealth();
   renderMetrics();
   renderRoles();
   renderSpeedThreats();
@@ -1408,9 +1516,13 @@ function bindEvents() {
     $(selector)?.addEventListener("change", updateAIConfigStatus);
   });
   $("#ai-save-config")?.addEventListener("click", saveAIConfig);
+  $("#ai-test-config")?.addEventListener("click", testAIConfig);
   $("#ai-clear-config")?.addEventListener("click", clearAIConfig);
   $("#ai-build-config")?.addEventListener("click", () => generateAIAdvice("config"));
   $("#ai-complete-team")?.addEventListener("click", () => generateAIAdvice("complete-team"));
+  $("#rule-allow-duplicate-items")?.addEventListener("change", saveRulePrefs);
+  $("#rule-ignore-tera")?.addEventListener("change", saveRulePrefs);
+  $("#refresh-status")?.addEventListener("click", refreshDataHealth);
   document.querySelectorAll("[data-format]").forEach((button) => button.addEventListener("click", () => setFormat(button.dataset.format)));
   $("#open-palette-btn")?.addEventListener("click", () => openPalette());
   $("#close-palette-btn")?.addEventListener("click", () => closePalette());
@@ -1475,7 +1587,9 @@ function bindEvents() {
 
 async function init() {
   applyPreferences();
+  loadRulePrefs();
   hydrateAIConfigForm();
+  hydrateRulePrefs();
   await loadLocalData();
   const defaultFormat = state.rawData.defaultFormat || (state.rawData.formats.single ? "single" : Object.keys(state.rawData.formats)[0]);
   state.format = defaultFormat;

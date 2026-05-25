@@ -50,6 +50,11 @@
           </label>
         </div>
       </section>
+      <section class="quickstart-strip" aria-label="快速上手">
+        <div><strong>1</strong><span>选单打 / 双打</span></div>
+        <div><strong>2</strong><span>添加宝可梦或导入热门队伍</span></div>
+        <div><strong>3</strong><span>查看分析并导出文本</span></div>
+      </section>
 
       <main class="main-content">
         <section class="team-builder floating-card">
@@ -80,6 +85,10 @@
               </div>
             </div>
             <textarea id="showdown-export" class="showdown-export" rows="8" readonly placeholder="选择队伍并编辑配置后，这里会生成可导入 PKHeX 或部分交换机器人的 Showdown 文本。"></textarea>
+            <div class="rule-options" aria-label="规则检查选项">
+              <label><input id="rule-allow-duplicate-items" type="checkbox" /> 允许重复道具</label>
+              <label><input id="rule-ignore-tera" type="checkbox" /> 不检查太晶属性</label>
+            </div>
             <div id="export-hints" class="export-hints"></div>
           </div>
         </section>
@@ -146,14 +155,31 @@
                 <input id="ai-api-key" type="password" placeholder="只保存在当前浏览器本地" autocomplete="off" />
               </label>
             </div>
+            <details id="ai-advanced-settings" class="ai-advanced-settings">
+              <summary>高级说明</summary>
+              <p>大多数国产模型选择 Chat Completions。Base URL 可以带 /v1，也可以不带；项目会自动处理。</p>
+            </details>
             <div class="ai-settings-actions">
               <small id="ai-config-status">未填写时会自动尝试环境变量或 Cockpit 本地访问。</small>
               <button id="ai-save-config" class="btn-primary compact" type="button">保存配置</button>
+              <button id="ai-test-config" class="btn-outline neutral compact" type="button">测试连接</button>
               <button id="ai-clear-config" class="btn-outline neutral compact" type="button">清除</button>
             </div>
           </div>
           <textarea id="ai-user-goal" class="ai-goal-input" rows="3" placeholder="可选：写下你的目标，例如想围绕烈咬陆鲨做单打进攻队、想要更稳的空间对策、不要太依赖先读。"></textarea>
           <div id="ai-output" class="ai-output" aria-live="polite">选择宝可梦后点击上方按钮。需要用 AI 时，请用本地 AI 服务启动页面。</div>
+        </section>
+        <section class="data-health floating-card">
+          <div class="library-header">
+            <div>
+              <p class="eyebrow">Data Health</p>
+              <h2>数据抓取状态</h2>
+              <p class="section-note">这里显示本地缓存、热门队伍和最近一次抓取结果。抓取失败时会尽量给出可操作原因。</p>
+            </div>
+            <button id="refresh-status" class="btn-outline neutral" type="button">刷新状态</button>
+          </div>
+          <div id="data-health-grid" class="data-health-grid"></div>
+          <pre id="refresh-log" class="refresh-log" hidden></pre>
         </section>
 
         <section id="analysis-dashboard" class="analysis-dashboard is-empty">
