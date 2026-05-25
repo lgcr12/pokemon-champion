@@ -18,22 +18,22 @@
         <div class="nav-actions">
           <span id="data-meta" class="meta-text"></span>
           <div class="refresh-control"><button id="refresh-data" class="btn-outline neutral" type="button">补缺/队伍</button><div id="refresh-progress" class="refresh-progress" hidden><span id="refresh-progress-bar"></span><small id="refresh-progress-text">准备中</small></div></div>
-          <div class="format-switch" role="radiogroup" aria-label="瀵规垬瑙勫垯">
-            <button id="single-format" class="active" type="button" data-format="single">鍗曟墦</button>
-            <button id="double-format" type="button" data-format="double">鍙屾墦</button>
+          <div class="format-switch" role="radiogroup" aria-label="对战规则">
+            <button id="single-format" class="active" type="button" data-format="single">单打</button>
+            <button id="double-format" type="button" data-format="double">双打</button>
           </div>
-          <button id="clear-team" class="btn-outline" type="button">閲嶇疆鏋勭瓚</button>
+          <button id="clear-team" class="btn-outline" type="button">重置构筑</button>
         </div>
       </header>
 
       <section class="hero-panel">
         <div>
           <p class="eyebrow">Competitive Team Intelligence</p>
-          <h2>鍐犲啗闃熶紞鍒嗘瀽涓灑</h2>
+          <h2>冠军队伍分析中枢</h2>
         </div>
-        <div class="control-panel" aria-label="鐣岄潰鍋忓ソ">
+        <div class="control-panel" aria-label="界面偏好">
           <label>
-            鑳屾櫙
+            背景
             <select id="theme-select">
               <option value="aurora">Aurora</option>
               <option value="graphite">Graphite</option>
@@ -41,11 +41,11 @@
             </select>
           </label>
           <label>
-            瀛楀彿
+            字号
             <select id="font-scale">
-              <option value="compact">绱у噾</option>
-              <option value="normal">鏍囧噯</option>
-              <option value="large">鏀惧ぇ</option>
+              <option value="compact">紧凑</option>
+              <option value="normal">标准</option>
+              <option value="large">放大</option>
             </select>
           </label>
         </div>
@@ -56,11 +56,12 @@
           <div class="builder-header">
             <div>
               <p class="eyebrow">Current Team</p>
-              <h2>褰撳墠闃熶紞</h2>
+              <h2>当前队伍</h2>
             </div>
             <button id="open-palette-btn" class="btn-primary" type="button">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-              娣诲姞瀹濆彲姊?              <kbd>Ctrl K</kbd>
+              添加宝可梦
+              <kbd>Ctrl K</kbd>
             </button>
           </div>
           <div id="team-slots" class="team-slots" aria-live="polite"></div>
@@ -68,17 +69,17 @@
             <div class="export-header">
               <div>
                 <p class="eyebrow">PKHeX / Bot Text</p>
-                <h3>Showdown 闃熶紞鏂囨湰</h3>
+                <h3>Showdown 队伍文本</h3>
               </div>
               <div class="export-actions">
-                <button id="copy-showdown" class="btn-primary compact" type="button">澶嶅埗鏂囨湰</button>
-                <button id="download-showdown" class="btn-outline neutral compact" type="button">涓嬭浇 TXT</button>
-                <button id="download-json" class="btn-outline neutral compact" type="button">瀵煎嚭 JSON</button>
-                <button id="import-json-btn" class="btn-outline neutral compact" type="button">瀵煎叆 JSON</button>
+                <button id="copy-showdown" class="btn-primary compact" type="button">复制文本</button>
+                <button id="download-showdown" class="btn-outline neutral compact" type="button">下载 TXT</button>
+                <button id="download-json" class="btn-outline neutral compact" type="button">导出 JSON</button>
+                <button id="import-json-btn" class="btn-outline neutral compact" type="button">导入 JSON</button>
                 <input id="import-json" type="file" accept="application/json,.json" hidden />
               </div>
             </div>
-            <textarea id="showdown-export" class="showdown-export" rows="8" readonly placeholder="閫夋嫨闃熶紞骞剁紪杈戦厤缃悗锛岃繖閲屼細鐢熸垚鍙鍏?PKHeX 鎴栭儴鍒嗕氦鎹㈡満鍣ㄤ汉鐨?Showdown 鏂囨湰銆?></textarea>
+            <textarea id="showdown-export" class="showdown-export" rows="8" readonly placeholder="选择队伍并编辑配置后，这里会生成可导入 PKHeX 或部分交换机器人的 Showdown 文本。"></textarea>
             <div id="export-hints" class="export-hints"></div>
           </div>
         </section>
@@ -87,12 +88,12 @@
           <div class="library-header">
             <div>
               <p class="eyebrow">Team Library</p>
-              <h2>鐑棬闃熶紞鏋勭瓚</h2>
-              <p class="section-note">鏉ヨ嚜 pokemon-teams.pages.dev銆傞€夋嫨涓€鏀槦浼嶅悗锛屼細鎸夊彲鍖归厤鎴愬憳瀵煎叆骞剁户缁敓鎴愰€熷害濞佽儊銆佺┖闂村拰闃靛椋庨櫓鎻愮ず銆?/p>
+              <h2>热门队伍构筑</h2>
+              <p class="section-note">来自 pokemon-teams.pages.dev。选择一支队伍后，会按可匹配成员导入，并继续生成速度威胁、空间和阵容风险提示。</p>
             </div>
             <div class="library-actions">
-              <select id="team-library-select" aria-label="閫夋嫨鐑棬闃熶紞"></select>
-              <button id="import-team-btn" class="btn-primary" type="button">浣跨敤杩欐敮闃熶紞</button>
+              <select id="team-library-select" aria-label="选择热门队伍"></select>
+              <button id="import-team-btn" class="btn-primary" type="button">使用这支队伍</button>
             </div>
           </div>
           <div id="team-library-preview" class="team-library-preview"></div>
@@ -102,16 +103,16 @@
           <div class="library-header">
             <div>
               <p class="eyebrow">AI Team Architect</p>
-              <h2>AI 閰嶇疆涓庤ˉ闃?/h2>
-              <p class="section-note">鍏堥€夋嫨涓€鍙垨澶氬彧瀹濆彲姊︼紝鍐嶈 AI 鍩轰簬褰撳墠鐜銆侀€熷害绾裤€佺┖闂撮闄╁拰鍏紑闃熶紞閰嶇疆缁欏嚭閰嶇疆涓庤ˉ闃熷缓璁€?/p>
+              <h2>AI 配置与补强</h2>
+              <p class="section-note">先选择一只或多只宝可梦，再让 AI 基于当前环境、速度线、空间风险和公开队伍配置给出配置与补强建议。</p>
             </div>
             <div class="ai-actions">
-              <button id="ai-build-config" class="btn-primary" type="button">鎯抽厤缃?/button>
-              <button id="ai-complete-team" class="btn-outline neutral" type="button">琛ュ叏闃熶紞</button>
+              <button id="ai-build-config" class="btn-primary" type="button">想配置</button>
+              <button id="ai-complete-team" class="btn-outline neutral" type="button">补全队伍</button>
             </div>
           </div>
-          <textarea id="ai-user-goal" class="ai-goal-input" rows="3" placeholder="鍙€夛細鍐欎笅浣犵殑鐩爣锛屼緥濡傛兂鍥寸粫鐑堝挰闄嗛波鍋氬崟鎵撹繘鏀婚槦銆佹兂瑕佹洿绋崇殑绌洪棿瀵圭瓥銆佷笉瑕佸お渚濊禆鍏堣銆?></textarea>
-          <div id="ai-output" class="ai-output" aria-live="polite">閫夋嫨瀹濆彲姊﹀悗鐐瑰嚮涓婃柟鎸夐挳銆傞渶瑕佺敤 AI 鏃讹紝璇风敤鏈湴 AI 鏈嶅姟鍚姩椤甸潰銆?/div>
+          <textarea id="ai-user-goal" class="ai-goal-input" rows="3" placeholder="可选：写下你的目标，例如想围绕烈咬陆鲨做单打进攻队、想要更稳的空间对策、不要太依赖先读。"></textarea>
+          <div id="ai-output" class="ai-output" aria-live="polite">选择宝可梦后点击上方按钮。需要用 AI 时，请用本地 AI 服务启动页面。</div>
         </section>
 
         <section id="analysis-dashboard" class="analysis-dashboard is-empty">
@@ -133,42 +134,42 @@
           <div class="bento-grid">
             <article class="bento-card span-2 bento-primary">
               <div class="card-header">
-                <h3>瀵瑰眬璁″垝璺嚎 <span>GAME PLAN</span></h3>
+                <h3>对局计划路线 <span>GAME PLAN</span></h3>
               </div>
               <ol id="game-plan" class="game-plan-list"></ol>
             </article>
 
             <article class="bento-card">
               <div class="card-header">
-                <h3>鏍稿績閫熷害濞佽儊 <span>SPEED THREATS</span></h3>
+                <h3>核心速度威胁 <span>SPEED THREATS</span></h3>
               </div>
               <div id="speed-threats" class="threat-grid"></div>
             </article>
 
             <article class="bento-card">
               <div class="card-header">
-                <h3>楂樺嵄瀵规墜闃靛 <span>OPPONENTS</span></h3>
+                <h3>高危对手阵容 <span>OPPONENTS</span></h3>
               </div>
               <div id="opponent-configs" class="threat-grid"></div>
             </article>
 
             <article class="bento-card">
               <div class="card-header">
-                <h3>闃熶紞鍔熻兘瀹氫綅 <span>TEAM ROLES</span></h3>
+                <h3>队伍功能定位 <span>TEAM ROLES</span></h3>
               </div>
               <div id="role-tags" class="tag-matrix"></div>
             </article>
 
             <article class="bento-card">
               <div class="card-header">
-                <h3>褰撳墠灞炴€у垎甯?<span>TYPE MAP</span></h3>
+                <h3>当前属性分布 <span>TYPE MAP</span></h3>
               </div>
               <div id="type-map" class="type-matrix"></div>
             </article>
 
             <article class="bento-card span-2">
               <div class="card-header">
-                <h3>楂橀閰嶆嫑涓庢牳蹇冮亾鍏?<span>CORE SETS</span></h3>
+                <h3>高频配招与核心道具 <span>CORE SETS</span></h3>
               </div>
               <div id="sets" class="set-matrix"></div>
             </article>
@@ -181,7 +182,7 @@
       <div class="command-palette">
         <div class="palette-header">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="search-icon" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-          <input id="search" type="search" placeholder="鎼滅储瀹濆彲姊︺€丼lug 鎴栨帓鍚?.." autocomplete="off" />
+          <input id="search" type="search" placeholder="搜索宝可梦、Slug 或排名..." autocomplete="off" />
           <button id="close-palette-btn" class="btn-close-palette" type="button">ESC</button>
         </div>
         <div id="pokemon-list" class="palette-list"></div>
@@ -193,79 +194,79 @@
         <div class="editor-header">
           <div>
             <p class="eyebrow">Set Editor</p>
-            <h2 id="team-editor-title">缂栬緫閰嶇疆</h2>
+            <h2 id="team-editor-title">编辑配置</h2>
           </div>
-          <button id="close-team-editor" class="btn-close-palette" type="button" aria-label="鍏抽棴缂栬緫鍣?>ESC</button>
+          <button id="close-team-editor" class="btn-close-palette" type="button" aria-label="关闭编辑器">ESC</button>
         </div>
         <div class="editor-grid">
           <label>
-            <span>閬撳叿</span>
+            <span>道具</span>
             <input id="edit-item" type="text" list="item-options" autocomplete="off" />
           </label>
           <label>
-            <span>鐗规€?/span>
+            <span>特性</span>
             <input id="edit-ability" type="text" list="ability-options" autocomplete="off" />
           </label>
           <label>
-            <span>鎬ф牸</span>
+            <span>性格</span>
             <input id="edit-nature" type="text" list="nature-options" autocomplete="off" />
           </label>
           <label>
-            <span>澶櫠灞炴€?/span>
+            <span>太晶属性</span>
             <input id="edit-tera" type="text" list="type-options" autocomplete="off" />
           </label>
           <label>
-            <span>绛夌骇</span>
+            <span>等级</span>
             <input id="edit-level" type="number" min="1" max="100" inputmode="numeric" autocomplete="off" />
           </label>
           <label>
-            <span>鎬у埆</span>
+            <span>性别</span>
             <select id="edit-gender">
-              <option value="">鏈寚瀹?/option>
+              <option value="">未指定</option>
               <option value="M">M</option>
               <option value="F">F</option>
             </select>
           </label>
           <label>
-            <span>鐞冪</span>
+            <span>球种</span>
             <input id="edit-ball" type="text" list="ball-options" autocomplete="off" />
           </label>
           <label>
-            <span>璇█</span>
+            <span>语言</span>
             <input id="edit-language" type="text" list="language-options" autocomplete="off" />
           </label>
           <label class="editor-field-wide">
-            <span>鍔姏鍊?/span>
-            <input id="edit-evs" type="text" autocomplete="off" placeholder="渚嬶細252 Atk / 4 SpD / 252 Spe" />
+            <span>努力值</span>
+            <input id="edit-evs" type="text" autocomplete="off" placeholder="例：252 Atk / 4 SpD / 252 Spe" />
           </label>
           <label class="editor-field-wide">
-            <span>涓綋鍊?/span>
-            <input id="edit-ivs" type="text" autocomplete="off" placeholder="渚嬶細31 HP / 0 Atk / 31 Spe" />
+            <span>个体值</span>
+            <input id="edit-ivs" type="text" autocomplete="off" placeholder="例：31 HP / 0 Atk / 31 Spe" />
           </label>
           <label class="editor-check">
             <input id="edit-shiny" type="checkbox" />
-            <span>闂厜</span>
+            <span>闪光</span>
           </label>
           <label>
-            <span>鎷涘紡 1</span>
+            <span>招式 1</span>
             <input id="edit-move-1" type="text" list="move-options" autocomplete="off" />
           </label>
           <label>
-            <span>鎷涘紡 2</span>
+            <span>招式 2</span>
             <input id="edit-move-2" type="text" list="move-options" autocomplete="off" />
           </label>
           <label>
-            <span>鎷涘紡 3</span>
+            <span>招式 3</span>
             <input id="edit-move-3" type="text" list="move-options" autocomplete="off" />
           </label>
           <label>
-            <span>鎷涘紡 4</span>
+            <span>招式 4</span>
             <input id="edit-move-4" type="text" list="move-options" autocomplete="off" />
           </label>
         </div>
         <div class="editor-actions">
-          <button id="cancel-team-editor" class="btn-outline neutral" type="button">鍙栨秷</button>
-          <button id="save-team-editor" class="btn-primary" type="button">淇濆瓨閰嶇疆</button>
+          <button id="cancel-team-editor" class="btn-outline neutral" type="button">取消</button>
+          <button id="save-team-editor" class="btn-primary" type="button">保存配置</button>
         </div>
       </section>
     </div>

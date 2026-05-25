@@ -2,7 +2,7 @@
 
 **一个面向宝可梦竞技玩家的队伍构筑工作台：用环境数据、热门队伍、AI 配队和 PKHeX 友好导出，把组队流程集中到一个页面里。**
 
-![PokéForge Lab 预览图](docs/preview.svg)
+![PokéForge Lab 真实页面截图](docs/screenshot-dashboard.png)
 
 PokéForge Lab 是一个本地运行的宝可梦竞技队伍分析与构筑工具。它会缓存环境使用率数据和公开热门队伍，支持单打/双打切换、队伍编辑、AI 配置建议、Showdown 文本导出、基础合法性提示，以及页面内补缺抓取数据。
 
@@ -10,19 +10,19 @@ PokéForge Lab 是一个本地运行的宝可梦竞技队伍分析与构筑工�
 
 ### 主界面：环境数据驱动的队伍工作台
 
-![主界面展示](docs/showcase-dashboard.svg)
+![主界面真实截图](docs/screenshot-workbench.png)
 
 ### AI 配队：单打和双打分开生成
 
-![AI 配队展示](docs/showcase-ai.svg)
+![AI 配队真实截图](docs/screenshot-ai.png)
 
 ### PKHeX 友好导出与规则检查
 
-![导出和校验展示](docs/showcase-export.svg)
+![导出和校验真实截图](docs/screenshot-export.png)
 
-### 自动抓取和补缺进度
+### 队伍分析：对局计划、速度威胁和属性分布
 
-![自动抓取展示](docs/showcase-refresh.svg)
+![队伍分析真实截图](docs/screenshot-analysis.png)
 
 ## 功能亮点
 
