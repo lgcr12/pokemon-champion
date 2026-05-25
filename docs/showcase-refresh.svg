@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-label="自动抓取和进度条展示">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ecfeff"/><stop offset=".5" stop-color="#f8fafc"/><stop offset="1" stop-color="#f0fdf4"/>
+    </linearGradient>
+    <linearGradient id="progress" x1="0" x2="1">
+      <stop offset="0" stop-color="#0ea5e9"/><stop offset="1" stop-color="#22c55e"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="20" stdDeviation="22" flood-color="#101828" flood-opacity=".14"/>
+    </filter>
+  </defs>
+  <rect width="1280" height="720" fill="url(#bg)"/>
+  <text x="70" y="78" font-family="Inter,Segoe UI,Arial" font-size="34" font-weight="900" fill="#101828">自动抓取：首次启动也能自己准备数据</text>
+  <text x="72" y="114" font-family="Inter,Segoe UI,Arial" font-size="17" fill="#64748b">缺数据时自动抓取；页面内补缺会同时更新环境数据和热门队伍，并显示失败原因。</text>
+  <g filter="url(#shadow)">
+    <rect x="110" y="172" width="1060" height="420" rx="24" fill="#fff" stroke="#dbe3ee"/>
+    <text x="152" y="230" font-family="Inter,Segoe UI,Arial" font-size="28" font-weight="900" fill="#101828">PokéForge Lab 正在准备数据</text>
+    <text x="154" y="264" font-family="Inter,Segoe UI,Arial" font-size="16" fill="#64748b">首次启动会自动补齐环境数据和热门队伍。</text>
+    <rect x="154" y="306" width="760" height="18" rx="9" fill="#e2e8f0"/>
+    <rect x="154" y="306" width="520" height="18" rx="9" fill="url(#progress)"/>
+    <text x="154" y="360" font-family="Consolas,monospace" font-size="16" fill="#2563eb">正在补齐环境数据：17</text>
+    <text x="154" y="392" font-family="Consolas,monospace" font-size="16" fill="#0f766e">正在更新热门队伍：300</text>
+    <rect x="154" y="436" width="430" height="56" rx="18" fill="#eff6ff" stroke="#bfdbfe"/>
+    <text x="182" y="471" font-family="Inter,Segoe UI,Arial" font-size="16" font-weight="900" fill="#1d4ed8">只补缺失详情，不重复抓完整缓存</text>
+    <rect x="610" y="436" width="430" height="56" rx="18" fill="#fff7ed" stroke="#fed7aa"/>
+    <text x="638" y="471" font-family="Inter,Segoe UI,Arial" font-size="16" font-weight="900" fill="#9a3412">X/Twitter 无法访问时显示明确原因</text>
+  </g>
+  <g font-family="Inter,Segoe UI,Arial" font-size="15" fill="#64748b">
+    <text x="180" y="638">数据源：PokéCham DB</text>
+    <text x="480" y="638">热门队伍：pokemon-teams.pages.dev</text>
+    <text x="860" y="638">可选详情：api.fxtwitter.com</text>
+  </g>
+</svg>
