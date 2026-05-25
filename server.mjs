@@ -331,9 +331,15 @@ function resolveRequestAIConfig(payload = {}) {
   };
 }
 
+function aiEndpoint(baseUrl, path) {
+  const normalized = baseUrl.replace(/\/+$/, "");
+  if (normalized.endsWith("/v1")) return `${normalized}${path}`;
+  return `${normalized}/v1${path}`;
+}
+
 async function requestAI(aiConfig, payload, useJsonSchema) {
   if (aiConfig.endpoint === "chat") {
-    return fetch(`${aiConfig.baseUrl}/v1/chat/completions`, {
+    return fetch(aiEndpoint(aiConfig.baseUrl, "/chat/completions"), {
       method: "POST",
       headers: {
         authorization: `Bearer ${aiConfig.apiKey}`,
@@ -365,7 +371,7 @@ async function requestAI(aiConfig, payload, useJsonSchema) {
     };
   }
 
-  return fetch(`${aiConfig.baseUrl}/v1/responses`, {
+  return fetch(aiEndpoint(aiConfig.baseUrl, "/responses"), {
     method: "POST",
     headers: {
       authorization: `Bearer ${aiConfig.apiKey}`,

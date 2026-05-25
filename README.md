@@ -289,19 +289,34 @@ PokéForge Lab 不只支持 GPT。只要服务商提供 OpenAI 兼容接口，�
 
 可以填写：
 
-- 服务商：OpenAI、DeepSeek、硅基流动或自定义兼容接口；
-- 接口类型：`Responses /v1/responses` 或 `Chat Completions /v1/chat/completions`；
+- 服务商：OpenAI、DeepSeek、Kimi、通义千问、MiniMax、硅基流动或其他兼容接口；
+- 接口类型：`Responses` 或 `Chat Completions`；
 - Base URL；
 - 模型名称；
 - API Key。
 
 配置只保存在当前浏览器的 `localStorage`，不会写入仓库，也不会提交到 GitHub。
 
-常见示例：
+### 2. 两个接口类型怎么选
+
+页面里的两个接口不是两个不同模型，而是两种 API 格式：
+
+| 接口类型 | 实际路径 | 什么时候选 |
+| --- | --- | --- |
+| Responses | `/v1/responses` | OpenAI 新接口，主要给 GPT / OpenAI 模型用 |
+| Chat Completions | `/v1/chat/completions` | 大多数兼容模型用这个，比如 Kimi、通义千问、DeepSeek、MiniMax、硅基流动 |
+
+简单判断：
+
+- 用 OpenAI 官方 GPT：优先选 **Responses**；
+- 用 Kimi / 通义千问 / DeepSeek / MiniMax / 硅基流动：一般选 **Chat Completions**；
+- 用中转站或本地模型：看它文档，如果写的是 `/v1/chat/completions`，就选 **Chat Completions**。
+
+### 3. 常见服务商填写示例
 
 ```text
 OpenAI
-Base URL: https://api.openai.com
+Base URL: https://api.openai.com/v1
 模型: gpt-4.1-mini
 接口类型: Responses
 ```
@@ -314,15 +329,38 @@ Base URL: https://api.deepseek.com
 ```
 
 ```text
+Kimi / Moonshot
+Base URL: https://api.moonshot.cn/v1
+模型: kimi-k2-0711-preview
+接口类型: Chat Completions
+```
+
+```text
+通义千问 / 阿里云百炼
+Base URL: https://dashscope.aliyuncs.com/compatible-mode/v1
+模型: qwen-plus
+接口类型: Chat Completions
+```
+
+```text
+MiniMax
+Base URL: https://api.minimax.io/v1
+模型: MiniMax-M1
+接口类型: Chat Completions
+```
+
+```text
 硅基流动
-Base URL: https://api.siliconflow.cn
+Base URL: https://api.siliconflow.cn/v1
 模型: deepseek-ai/DeepSeek-V3
 接口类型: Chat Completions
 ```
 
-如果你使用其他中转站或本地模型服务，只要它兼容 OpenAI 的 `/v1/chat/completions`，就选择 **自定义兼容接口** 并填写对应地址。
+如果你使用其他中转站或本地模型服务，只要它兼容 OpenAI 的 `/v1/chat/completions`，就选择 **其他兼容接口** 并填写对应地址。
 
-### 2. Cockpit 本地访问
+Base URL 可以带 `/v1`，也可以不带；项目会自动兼容，避免重复拼接 `/v1`。
+
+### 4. Cockpit 本地访问
 
 如果本机有 Cockpit / Codex Local Access 配置，服务端会自动读取：
 
@@ -332,14 +370,14 @@ Base URL: https://api.siliconflow.cn
 
 这种方式不需要手动填写 `OPENAI_API_KEY`。
 
-### 3. 环境变量配置
+### 5. 环境变量配置
 
 也可以使用环境变量：
 
 ```powershell
 $env:OPENAI_API_KEY="你的 API Key"
 $env:OPENAI_MODEL="gpt-4.1-mini"
-$env:OPENAI_BASE_URL="https://api.openai.com"
+$env:OPENAI_BASE_URL="https://api.openai.com/v1"
 npm run start:ai
 ```
 
@@ -365,7 +403,7 @@ POST /api/team-advice
 - 后端：Node.js HTTP Server
 - 数据缓存：本地 JSON 文件
 - 抓取脚本：Node.js `fetch`
-- AI 协议：OpenAI 兼容 `/v1/responses`
+- AI 协议：OpenAI 兼容 `Responses` 和 `Chat Completions`
 - 构建方式：无构建步骤，直接运行
 
 ## 项目结构

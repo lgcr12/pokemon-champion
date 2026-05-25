@@ -119,24 +119,27 @@
                 <select id="ai-provider">
                   <option value="openai">OpenAI</option>
                   <option value="deepseek">DeepSeek</option>
+                  <option value="kimi">Kimi / Moonshot</option>
+                  <option value="qwen">通义千问 / 阿里云百炼</option>
+                  <option value="minimax">MiniMax</option>
                   <option value="siliconflow">硅基流动</option>
-                  <option value="custom">自定义兼容接口</option>
+                  <option value="custom">其他兼容接口</option>
                 </select>
               </label>
               <label>
                 <span>接口类型</span>
                 <select id="ai-endpoint">
-                  <option value="responses">Responses /v1/responses</option>
-                  <option value="chat">Chat Completions /v1/chat/completions</option>
+                  <option value="responses">Responses（OpenAI 新接口）</option>
+                  <option value="chat">Chat Completions（多数国产模型选这个）</option>
                 </select>
               </label>
               <label>
                 <span>Base URL</span>
-                <input id="ai-base-url" type="url" placeholder="https://api.openai.com" autocomplete="off" />
+                <input id="ai-base-url" type="url" placeholder="https://api.openai.com/v1" autocomplete="off" />
               </label>
               <label>
                 <span>模型</span>
-                <input id="ai-model" type="text" placeholder="gpt-4.1-mini / deepseek-chat" autocomplete="off" />
+                <input id="ai-model" type="text" placeholder="gpt-4.1-mini / deepseek-chat / qwen-plus" autocomplete="off" />
               </label>
               <label class="ai-secret-field">
                 <span>API Key</span>

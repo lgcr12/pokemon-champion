@@ -34,7 +34,7 @@ const DRAFT_KEY = "champion-lab-current-draft-v2";
 const AI_CONFIG_KEY = "champion-lab-ai-config-v1";
 const AI_PROVIDER_PRESETS = {
   openai: {
-    baseUrl: "https://api.openai.com",
+    baseUrl: "https://api.openai.com/v1",
     model: "gpt-4.1-mini",
     endpoint: "responses",
   },
@@ -43,8 +43,23 @@ const AI_PROVIDER_PRESETS = {
     model: "deepseek-chat",
     endpoint: "chat",
   },
+  kimi: {
+    baseUrl: "https://api.moonshot.cn/v1",
+    model: "kimi-k2-0711-preview",
+    endpoint: "chat",
+  },
+  qwen: {
+    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    model: "qwen-plus",
+    endpoint: "chat",
+  },
+  minimax: {
+    baseUrl: "https://api.minimax.io/v1",
+    model: "MiniMax-M1",
+    endpoint: "chat",
+  },
   siliconflow: {
-    baseUrl: "https://api.siliconflow.cn",
+    baseUrl: "https://api.siliconflow.cn/v1",
     model: "deepseek-ai/DeepSeek-V3",
     endpoint: "chat",
   },
