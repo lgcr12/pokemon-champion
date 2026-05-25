@@ -31,6 +31,29 @@ const state = {
 
 const $ = (selector) => document.querySelector(selector);
 const DRAFT_KEY = "champion-lab-current-draft-v2";
+const AI_CONFIG_KEY = "champion-lab-ai-config-v1";
+const AI_PROVIDER_PRESETS = {
+  openai: {
+    baseUrl: "https://api.openai.com",
+    model: "gpt-4.1-mini",
+    endpoint: "responses",
+  },
+  deepseek: {
+    baseUrl: "https://api.deepseek.com",
+    model: "deepseek-chat",
+    endpoint: "chat",
+  },
+  siliconflow: {
+    baseUrl: "https://api.siliconflow.cn",
+    model: "deepseek-ai/DeepSeek-V3",
+    endpoint: "chat",
+  },
+  custom: {
+    baseUrl: "",
+    model: "",
+    endpoint: "chat",
+  },
+};
 
 function escapeHtml(value = "") {
   return String(value)
@@ -595,6 +618,83 @@ function aiContext(mode) {
   };
 }
 
+function loadAIConfig() {
+  try {
+    return JSON.parse(localStorage.getItem(AI_CONFIG_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function getAIConfigFromForm() {
+  return {
+    provider: $("#ai-provider")?.value || "openai",
+    endpoint: $("#ai-endpoint")?.value || "responses",
+    baseUrl: $("#ai-base-url")?.value?.trim() || "",
+    model: $("#ai-model")?.value?.trim() || "",
+    apiKey: $("#ai-api-key")?.value?.trim() || "",
+  };
+}
+
+function hasUsableAIConfig(config = loadAIConfig()) {
+  return Boolean(config.apiKey && config.baseUrl && config.model);
+}
+
+function updateAIConfigStatus() {
+  const status = $("#ai-config-status");
+  if (!status) return;
+  const config = getAIConfigFromForm();
+  status.textContent = hasUsableAIConfig(config)
+    ? `将使用 ${config.provider} / ${config.model}，配置只保存在当前浏览器。`
+    : "未填写时会自动尝试环境变量或 Cockpit 本地访问。";
+}
+
+function applyAIProviderPreset(force = false) {
+  const provider = $("#ai-provider")?.value || "openai";
+  const preset = AI_PROVIDER_PRESETS[provider] || AI_PROVIDER_PRESETS.custom;
+  const baseUrl = $("#ai-base-url");
+  const model = $("#ai-model");
+  const endpoint = $("#ai-endpoint");
+  if (baseUrl && (force || !baseUrl.value)) baseUrl.value = preset.baseUrl;
+  if (model && (force || !model.value)) model.value = preset.model;
+  if (endpoint && (force || !endpoint.value)) endpoint.value = preset.endpoint;
+  updateAIConfigStatus();
+}
+
+function hydrateAIConfigForm() {
+  const saved = loadAIConfig();
+  const provider = $("#ai-provider");
+  const endpoint = $("#ai-endpoint");
+  const baseUrl = $("#ai-base-url");
+  const model = $("#ai-model");
+  const apiKey = $("#ai-api-key");
+  if (provider) provider.value = saved.provider || "openai";
+  if (endpoint) endpoint.value = saved.endpoint || AI_PROVIDER_PRESETS[provider?.value || "openai"]?.endpoint || "responses";
+  if (baseUrl) baseUrl.value = saved.baseUrl || AI_PROVIDER_PRESETS[provider?.value || "openai"]?.baseUrl || "";
+  if (model) model.value = saved.model || AI_PROVIDER_PRESETS[provider?.value || "openai"]?.model || "";
+  if (apiKey) apiKey.value = saved.apiKey || "";
+  updateAIConfigStatus();
+}
+
+function saveAIConfig() {
+  const config = getAIConfigFromForm();
+  if (hasUsableAIConfig(config)) {
+    localStorage.setItem(AI_CONFIG_KEY, JSON.stringify(config));
+    updateAIConfigStatus();
+    return;
+  }
+  localStorage.removeItem(AI_CONFIG_KEY);
+  updateAIConfigStatus();
+}
+
+function clearAIConfig() {
+  localStorage.removeItem(AI_CONFIG_KEY);
+  const apiKey = $("#ai-api-key");
+  if (apiKey) apiKey.value = "";
+  applyAIProviderPreset(true);
+  updateAIConfigStatus();
+}
+
 function normalizeAdvice(data) {
   if (data?.advice) {
     const advice = data.advice;
@@ -789,10 +889,15 @@ async function generateAIAdvice(mode) {
   output.textContent = "AI 正在生成简洁配置...";
 
   try {
+    saveAIConfig();
+    const aiConfig = loadAIConfig();
     const res = await fetch("/api/team-advice", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(aiContext(mode)),
+      body: JSON.stringify({
+        ...aiContext(mode),
+        aiConfig: hasUsableAIConfig(aiConfig) ? aiConfig : null,
+      }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `AI 服务错误：${res.status}`);
@@ -800,7 +905,7 @@ async function generateAIAdvice(mode) {
     output.innerHTML = renderAIAdvice(data);
   } catch (err) {
     output.className = "ai-output is-error";
-    output.textContent = `${err.message}\n\n请确认 Cockpit Tools 的 Codex 本地 API 已启动，或设置 OPENAI_API_KEY。`;
+    output.textContent = `${err.message}\n\n可以在上方“API 设置”里填写 OpenAI 兼容接口，也可以设置 OPENAI_API_KEY，或启用 Cockpit 本地访问。`;
   } finally {
     state.aiBusy = false;
   }
@@ -1278,6 +1383,17 @@ function bindEvents() {
   $("#download-json")?.addEventListener("click", downloadJsonDraft);
   $("#import-json-btn")?.addEventListener("click", () => $("#import-json")?.click());
   $("#import-json")?.addEventListener("change", (event) => importJsonDraft(event.target.files?.[0]));
+  $("#ai-settings-toggle")?.addEventListener("click", () => {
+    const panel = $("#ai-settings-panel");
+    if (panel) panel.hidden = !panel.hidden;
+  });
+  $("#ai-provider")?.addEventListener("change", () => applyAIProviderPreset(true));
+  ["#ai-endpoint", "#ai-base-url", "#ai-model", "#ai-api-key"].forEach((selector) => {
+    $(selector)?.addEventListener("input", updateAIConfigStatus);
+    $(selector)?.addEventListener("change", updateAIConfigStatus);
+  });
+  $("#ai-save-config")?.addEventListener("click", saveAIConfig);
+  $("#ai-clear-config")?.addEventListener("click", clearAIConfig);
   $("#ai-build-config")?.addEventListener("click", () => generateAIAdvice("config"));
   $("#ai-complete-team")?.addEventListener("click", () => generateAIAdvice("complete-team"));
   document.querySelectorAll("[data-format]").forEach((button) => button.addEventListener("click", () => setFormat(button.dataset.format)));
@@ -1344,6 +1460,7 @@ function bindEvents() {
 
 async function init() {
   applyPreferences();
+  hydrateAIConfigForm();
   await loadLocalData();
   const defaultFormat = state.rawData.defaultFormat || (state.rawData.formats.single ? "single" : Object.keys(state.rawData.formats)[0]);
   state.format = defaultFormat;

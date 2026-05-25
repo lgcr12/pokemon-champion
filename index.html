@@ -107,8 +107,46 @@
               <p class="section-note">先选择一只或多只宝可梦，再让 AI 基于当前环境、速度线、空间风险和公开队伍配置给出配置与补强建议。</p>
             </div>
             <div class="ai-actions">
+              <button id="ai-settings-toggle" class="btn-outline neutral" type="button">API 设置</button>
               <button id="ai-build-config" class="btn-primary" type="button">想配置</button>
               <button id="ai-complete-team" class="btn-outline neutral" type="button">补全队伍</button>
+            </div>
+          </div>
+          <div id="ai-settings-panel" class="ai-settings-panel" hidden>
+            <div class="ai-settings-grid">
+              <label>
+                <span>服务商</span>
+                <select id="ai-provider">
+                  <option value="openai">OpenAI</option>
+                  <option value="deepseek">DeepSeek</option>
+                  <option value="siliconflow">硅基流动</option>
+                  <option value="custom">自定义兼容接口</option>
+                </select>
+              </label>
+              <label>
+                <span>接口类型</span>
+                <select id="ai-endpoint">
+                  <option value="responses">Responses /v1/responses</option>
+                  <option value="chat">Chat Completions /v1/chat/completions</option>
+                </select>
+              </label>
+              <label>
+                <span>Base URL</span>
+                <input id="ai-base-url" type="url" placeholder="https://api.openai.com" autocomplete="off" />
+              </label>
+              <label>
+                <span>模型</span>
+                <input id="ai-model" type="text" placeholder="gpt-4.1-mini / deepseek-chat" autocomplete="off" />
+              </label>
+              <label class="ai-secret-field">
+                <span>API Key</span>
+                <input id="ai-api-key" type="password" placeholder="只保存在当前浏览器本地" autocomplete="off" />
+              </label>
+            </div>
+            <div class="ai-settings-actions">
+              <small id="ai-config-status">未填写时会自动尝试环境变量或 Cockpit 本地访问。</small>
+              <button id="ai-save-config" class="btn-primary compact" type="button">保存配置</button>
+              <button id="ai-clear-config" class="btn-outline neutral compact" type="button">清除</button>
             </div>
           </div>
           <textarea id="ai-user-goal" class="ai-goal-input" rows="3" placeholder="可选：写下你的目标，例如想围绕烈咬陆鲨做单打进攻队、想要更稳的空间对策、不要太依赖先读。"></textarea>

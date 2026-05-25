@@ -130,6 +130,8 @@ ${JSON.stringify(payload)}
 }
 
 function extractOutputText(data) {
+  const chatText = data.choices?.[0]?.message?.content;
+  if (typeof chatText === "string") return chatText;
   if (typeof data.output_text === "string") return data.output_text;
   const parts = [];
   for (const item of data.output || []) {
@@ -314,7 +316,38 @@ async function resolveAIConfig() {
   return readCockpitLocalAccess();
 }
 
+function resolveRequestAIConfig(payload = {}) {
+  const config = payload.aiConfig || {};
+  const apiKey = String(config.apiKey || "").trim();
+  const baseUrl = String(config.baseUrl || "").trim().replace(/\/+$/, "");
+  const model = String(config.model || "").trim();
+  if (!apiKey || !baseUrl || !model) return null;
+  return {
+    apiKey,
+    baseUrl,
+    model,
+    endpoint: config.endpoint === "chat" ? "chat" : "responses",
+    source: config.provider || "custom-ui",
+  };
+}
+
 async function requestAI(aiConfig, payload, useJsonSchema) {
+  if (aiConfig.endpoint === "chat") {
+    return fetch(`${aiConfig.baseUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${aiConfig.apiKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: aiConfig.model,
+        messages: [{ role: "user", content: buildPrompt(payload) }],
+        temperature: 0.3,
+        response_format: useJsonSchema ? { type: "json_object" } : undefined,
+      }),
+    });
+  }
+
   const body = {
     model: aiConfig.model,
     input: buildPrompt(payload),
@@ -343,21 +376,30 @@ async function requestAI(aiConfig, payload, useJsonSchema) {
 }
 
 async function handleAI(req, res) {
-  const aiConfig = await resolveAIConfig();
+  const payload = await readJson(req);
+  const aiConfig = resolveRequestAIConfig(payload) || (await resolveAIConfig());
   if (!aiConfig) {
     sendJson(res, 501, {
-      error: "Missing OPENAI_API_KEY and no enabled Cockpit Codex Local Access config was found.",
+      error: "缺少 AI 配置。请在页面里填写 API Key / Base URL / 模型，或设置 OPENAI_API_KEY，或启用 Cockpit Codex Local Access。",
     });
     return;
   }
 
-  const payload = await readJson(req);
-  let response = await requestAI(aiConfig, payload, true);
-  let data = await readAIResponse(response);
-
-  if (!response.ok && [400, 422].includes(response.status)) {
-    response = await requestAI(aiConfig, payload, false);
+  let response;
+  let data;
+  try {
+    response = await requestAI(aiConfig, payload, true);
     data = await readAIResponse(response);
+
+    if (!response.ok && [400, 422].includes(response.status)) {
+      response = await requestAI(aiConfig, payload, false);
+      data = await readAIResponse(response);
+    }
+  } catch (err) {
+    sendJson(res, 502, {
+      error: `AI 接口连接失败：${err.message || "请检查 Base URL、接口类型、网络或代理配置。"}`,
+    });
+    return;
   }
 
   if (!response.ok) {

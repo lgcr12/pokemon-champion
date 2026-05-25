@@ -281,9 +281,48 @@ npm run capture:screenshots
 
 ## AI 功能
 
-PokéForge Lab 支持两种 AI 调用方式。
+PokéForge Lab 不只支持 GPT。只要服务商提供 OpenAI 兼容接口，就可以在页面里配置使用。
 
-### 1. Cockpit 本地访问
+### 1. 页面可视化配置
+
+打开页面后，在 **AI 配置与补强** 区域点击 **API 设置**。
+
+可以填写：
+
+- 服务商：OpenAI、DeepSeek、硅基流动或自定义兼容接口；
+- 接口类型：`Responses /v1/responses` 或 `Chat Completions /v1/chat/completions`；
+- Base URL；
+- 模型名称；
+- API Key。
+
+配置只保存在当前浏览器的 `localStorage`，不会写入仓库，也不会提交到 GitHub。
+
+常见示例：
+
+```text
+OpenAI
+Base URL: https://api.openai.com
+模型: gpt-4.1-mini
+接口类型: Responses
+```
+
+```text
+DeepSeek
+Base URL: https://api.deepseek.com
+模型: deepseek-chat
+接口类型: Chat Completions
+```
+
+```text
+硅基流动
+Base URL: https://api.siliconflow.cn
+模型: deepseek-ai/DeepSeek-V3
+接口类型: Chat Completions
+```
+
+如果你使用其他中转站或本地模型服务，只要它兼容 OpenAI 的 `/v1/chat/completions`，就选择 **自定义兼容接口** 并填写对应地址。
+
+### 2. Cockpit 本地访问
 
 如果本机有 Cockpit / Codex Local Access 配置，服务端会自动读取：
 
@@ -293,7 +332,7 @@ PokéForge Lab 支持两种 AI 调用方式。
 
 这种方式不需要手动填写 `OPENAI_API_KEY`。
 
-### 2. OpenAI 兼容接口
+### 3. 环境变量配置
 
 也可以使用环境变量：
 
