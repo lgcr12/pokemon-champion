@@ -1590,7 +1590,7 @@ body.has-ai-advice .team-library-preview {
 
 .metrics-row {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 12px;
   margin-bottom: 16px;
 }
@@ -1640,6 +1640,10 @@ body.has-ai-advice .team-library-preview {
 
 .metric-card:nth-child(3) .value {
   color: var(--type-fire);
+}
+
+.metric-card:nth-child(4) .value {
+  color: var(--type-electric);
 }
 
 .bento-grid {

@@ -2,9 +2,12 @@
 import { readFile, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { extname, join, normalize, resolve } from "node:path";
 
 const ROOT = resolve(".");
+const require = createRequire(import.meta.url);
+const { TeamValidator, Teams } = require("pokemon-showdown");
 const PORT = Number(process.env.PORT || 4174);
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || "https://api.openai.com";
@@ -142,6 +145,34 @@ JSON 结构：
 输入数据：
 ${JSON.stringify(payload)}
 `;
+}
+
+function showdownFormatFor(format = "single") {
+  const value = String(format || "").toLowerCase();
+  if (value.includes("vgc")) return "gen9vgc2025regg";
+  if (value.includes("double")) return "gen9nationaldexdoubles";
+  return "gen9nationaldex";
+}
+
+function validateShowdownTeam(text = "", format = "single") {
+  const formatId = showdownFormatFor(format);
+  const team = Teams.import(text);
+  if (!team?.length) {
+    return {
+      ok: false,
+      format: formatId,
+      problems: ["没有解析到有效的 Showdown 队伍文本。"],
+      teamSize: 0,
+    };
+  }
+  const validator = TeamValidator.get(formatId);
+  const problems = (validator.validateTeam(team) || []).filter((problem) => !/is level 50, but this format allows level 100/i.test(problem));
+  return {
+    ok: problems.length === 0,
+    format: formatId,
+    problems,
+    teamSize: team.length,
+  };
 }
 
 function extractOutputText(data) {
@@ -701,6 +732,11 @@ createServer(async (req, res) => {
     }
     if (req.method === "POST" && req.url === "/api/ai-models") {
       await handleAIModels(req, res);
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/validate-team") {
+      const body = await readJson(req).catch(() => ({}));
+      sendJson(res, 200, validateShowdownTeam(body.text || "", body.format || "single"));
       return;
     }
     if ((req.method === "POST" || req.method === "GET") && req.url === "/api/refresh-data") {

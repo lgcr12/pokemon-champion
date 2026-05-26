@@ -28,6 +28,7 @@ const state = {
   aiBusy: false,
   aiLastAdvice: null,
   aiLastMode: "complete-team",
+  showdownValidation: null,
   query: "",
   searchOpen: false,
   rulePrefs: {
@@ -41,6 +42,46 @@ const DRAFT_KEY = "champion-lab-current-draft-v2";
 const AI_CONFIG_KEY = "champion-lab-ai-config-v1";
 const AI_MODELS_CACHE_KEY = "champion-lab-ai-models-v1";
 const RULE_PREFS_KEY = "champion-lab-rule-prefs-v1";
+const TYPE_CN_TO_EN = {
+  一般: "Normal",
+  火: "Fire",
+  水: "Water",
+  电: "Electric",
+  草: "Grass",
+  冰: "Ice",
+  格斗: "Fighting",
+  毒: "Poison",
+  地面: "Ground",
+  飞行: "Flying",
+  超能力: "Psychic",
+  虫: "Bug",
+  岩石: "Rock",
+  幽灵: "Ghost",
+  龙: "Dragon",
+  恶: "Dark",
+  钢: "Steel",
+  妖精: "Fairy",
+};
+const TYPE_EFFECTIVENESS = {
+  Normal: { Rock: 0.5, Ghost: 0, Steel: 0.5 },
+  Fire: { Fire: 0.5, Water: 0.5, Grass: 2, Ice: 2, Bug: 2, Rock: 0.5, Dragon: 0.5, Steel: 2 },
+  Water: { Fire: 2, Water: 0.5, Grass: 0.5, Ground: 2, Rock: 2, Dragon: 0.5 },
+  Electric: { Water: 2, Electric: 0.5, Grass: 0.5, Ground: 0, Flying: 2, Dragon: 0.5 },
+  Grass: { Fire: 0.5, Water: 2, Grass: 0.5, Poison: 0.5, Ground: 2, Flying: 0.5, Bug: 0.5, Rock: 2, Dragon: 0.5, Steel: 0.5 },
+  Ice: { Fire: 0.5, Water: 0.5, Grass: 2, Ice: 0.5, Ground: 2, Flying: 2, Dragon: 2, Steel: 0.5 },
+  Fighting: { Normal: 2, Ice: 2, Poison: 0.5, Flying: 0.5, Psychic: 0.5, Bug: 0.5, Rock: 2, Ghost: 0, Dark: 2, Steel: 2, Fairy: 0.5 },
+  Poison: { Grass: 2, Poison: 0.5, Ground: 0.5, Rock: 0.5, Ghost: 0.5, Steel: 0, Fairy: 2 },
+  Ground: { Fire: 2, Electric: 2, Grass: 0.5, Poison: 2, Flying: 0, Bug: 0.5, Rock: 2, Steel: 2 },
+  Flying: { Electric: 0.5, Grass: 2, Fighting: 2, Bug: 2, Rock: 0.5, Steel: 0.5 },
+  Psychic: { Fighting: 2, Poison: 2, Psychic: 0.5, Dark: 0, Steel: 0.5 },
+  Bug: { Fire: 0.5, Grass: 2, Fighting: 0.5, Poison: 0.5, Flying: 0.5, Psychic: 2, Ghost: 0.5, Dark: 2, Steel: 0.5, Fairy: 0.5 },
+  Rock: { Fire: 2, Ice: 2, Fighting: 0.5, Ground: 0.5, Flying: 2, Bug: 2, Steel: 0.5 },
+  Ghost: { Normal: 0, Psychic: 2, Ghost: 2, Dark: 0.5 },
+  Dragon: { Dragon: 2, Steel: 0.5, Fairy: 0 },
+  Dark: { Fighting: 0.5, Psychic: 2, Ghost: 2, Dark: 0.5, Fairy: 0.5 },
+  Steel: { Fire: 0.5, Water: 0.5, Electric: 0.5, Ice: 2, Rock: 2, Steel: 0.5, Fairy: 2 },
+  Fairy: { Fire: 0.5, Fighting: 2, Poison: 0.5, Dragon: 2, Dark: 2, Steel: 0.5 },
+};
 const AI_PROVIDER_PRESETS = {
   openai: {
     baseUrl: "https://api.openai.com/v1",
@@ -195,10 +236,7 @@ function pokemonSummary(mon) {
 }
 
 function externalKnowledgeFor(mon, format = state.format) {
-  const cache = state.battleKnowledgeData;
-  if (!cache?.pokemon) return null;
-  const keys = [mon.slug, mon.name, mon.id].map(idKey).filter(Boolean);
-  const entry = keys.map((key) => cache.pokemon[key]).find(Boolean);
+  const entry = knowledgeEntryFor(mon);
   if (!entry) return null;
   const preferredFormats =
     format === "double"
@@ -229,6 +267,104 @@ function externalKnowledgeFor(mon, format = state.format) {
           counters: smogon.counters?.slice(0, 5),
         }
       : null,
+  };
+}
+
+function knowledgeEntryFor(mon) {
+  const cache = state.battleKnowledgeData;
+  if (!cache?.pokemon || !mon) return null;
+  const keys = [mon.slug, mon.name, mon.id].map(idKey).filter(Boolean);
+  const direct = keys.map((key) => cache.pokemon[key]).find(Boolean);
+  if (direct) return direct;
+  const numericId = Number(mon.id);
+  if (Number.isFinite(numericId)) {
+    return Object.values(cache.pokemon).find((entry) => Number(entry?.showdown?.num) === numericId) || null;
+  }
+  return null;
+}
+
+function englishTypesFor(mon) {
+  const fromKnowledge = knowledgeEntryFor(mon)?.showdown?.types;
+  if (fromKnowledge?.length) return fromKnowledge;
+  return (mon.types || []).map((type) => TYPE_CN_TO_EN[type] || type).filter(Boolean);
+}
+
+function typeEffectiveness(attackType, defenderTypes = []) {
+  return defenderTypes.reduce((value, defenderType) => value * (TYPE_EFFECTIVENESS[attackType]?.[defenderType] ?? 1), 1);
+}
+
+function hasOffensiveAnswer(threatTypes = []) {
+  return state.team.some((mon) => englishTypesFor(mon).some((type) => typeEffectiveness(type, threatTypes) > 1));
+}
+
+function hasDefensiveSwitch(threatTypes = []) {
+  return state.team.some((mon) => {
+    const ownTypes = englishTypesFor(mon);
+    if (!ownTypes.length) return false;
+    return threatTypes.some((type) => typeEffectiveness(type, ownTypes) < 1);
+  });
+}
+
+function showdownNamesForTeam() {
+  return new Set(
+    state.team
+      .map((mon) => knowledgeEntryFor(mon)?.showdown?.name || showdownSpeciesName(mon) || mon.name)
+      .map((name) => idKey(name)),
+  );
+}
+
+function smogonFormatForCurrentMode() {
+  if (state.format === "double") return state.battleKnowledgeData?.formats?.find((item) => item === "gen9doublesou") || state.battleKnowledgeData?.formats?.find((item) => item.includes("vgc")) || "gen9doublesou";
+  return state.battleKnowledgeData?.formats?.find((item) => item === "gen9ou") || state.battleKnowledgeData?.formats?.[0] || "gen9ou";
+}
+
+function getMatchupReport(limit = 10) {
+  const cache = state.battleKnowledgeData;
+  if (!cache?.pokemon || !state.team.length) return { score: 0, threats: [], summary: "缺少队伍或环境知识数据。" };
+  const format = smogonFormatForCurrentMode();
+  const ownIds = new Set(state.team.flatMap((mon) => [idKey(mon.slug), idKey(mon.name), idKey(knowledgeEntryFor(mon)?.showdown?.name || "")].filter(Boolean)));
+  const ownNames = showdownNamesForTeam();
+  const threats = Object.entries(cache.pokemon)
+    .map(([id, entry]) => ({ id, entry, usage: entry.smogon?.[format]?.usage || 0 }))
+    .filter((item) => item.usage > 0 && !ownIds.has(item.id))
+    .sort((a, b) => b.usage - a.usage)
+    .slice(0, 40)
+    .map(({ entry, usage }) => {
+      const smogon = entry.smogon[format];
+      const types = entry.showdown?.types || [];
+      const defensiveSwitch = hasDefensiveSwitch(types);
+      const offensiveAnswer = hasOffensiveAnswer(types);
+      const counterHit = (smogon.counters || []).some((counter) => ownNames.has(idKey(counter.name)));
+      let risk = 44 + Math.min(20, usage * 80);
+      if (!defensiveSwitch) risk += 18;
+      if (!offensiveAnswer) risk += 14;
+      if (counterHit) risk -= 24;
+      risk = Math.max(8, Math.min(96, Math.round(risk)));
+      const reasons = [];
+      if (!defensiveSwitch) reasons.push("缺少稳定换入");
+      if (!offensiveAnswer) reasons.push("缺少属性压制");
+      if (counterHit) reasons.push("队内有统计克制点");
+      if (!reasons.length) reasons.push("属性应对基本完整");
+      return {
+        name: entry.showdown?.name || smogon.name,
+        usage,
+        types,
+        risk,
+        level: risk >= 72 ? "高" : risk >= 48 ? "中" : "低",
+        reasons,
+        commonMoves: smogon.moves?.slice(0, 4) || [],
+        commonItems: smogon.items?.slice(0, 3) || [],
+      };
+    })
+    .sort((a, b) => b.risk - a.risk || b.usage - a.usage);
+  const visible = threats.slice(0, limit);
+  const avgRisk = threats.slice(0, 20).reduce((sum, item) => sum + item.risk, 0) / Math.max(1, Math.min(20, threats.length));
+  const score = Math.max(0, Math.min(100, Math.round(100 - avgRisk)));
+  return {
+    format,
+    score,
+    threats: visible,
+    summary: visible.length ? `基于 ${format} 前 ${Math.min(40, threats.length)} 个环境威胁估算，分数 ${score}/100。` : "没有可用环境威胁数据。",
   };
 }
 
@@ -422,9 +558,45 @@ function validationHints() {
 function renderValidationHints() {
   const target = $("#export-hints");
   if (!target) return;
-  const hints = validationHints();
+  const hints = [...validationHints()];
+  if (state.showdownValidation?.loading) {
+    hints.push("提示：正在调用 Pokemon Showdown 校验器。");
+  } else if (state.showdownValidation) {
+    const result = state.showdownValidation;
+    if (result.ok) {
+      hints.push(`Showdown 校验通过：${result.format}，已解析 ${result.teamSize} 只。`);
+    } else {
+      hints.push(`Showdown 校验未通过：${result.format}，${result.problems?.length || 0} 个问题。`);
+      for (const problem of (result.problems || []).slice(0, 8)) hints.push(problem);
+    }
+  }
   target.innerHTML = hints.map((hint) => `<span class="${hint.startsWith("提示：") ? "is-note" : ""}">${escapeHtml(hint)}</span>`).join("");
-  target.classList.toggle("is-ok", hints.length === 1 && hints[0].startsWith("基础字段完整"));
+  target.classList.toggle("is-ok", hints.some((hint) => hint.startsWith("Showdown 校验通过")) || (hints.length === 1 && hints[0].startsWith("基础字段完整")));
+}
+
+async function validateShowdownText() {
+  const text = showdownTeamText();
+  if (!text) return;
+  state.showdownValidation = { loading: true };
+  renderValidationHints();
+  try {
+    const res = await fetch("/api/validate-team", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text, format: state.format }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `校验服务错误：${res.status}`);
+    state.showdownValidation = data;
+  } catch (err) {
+    state.showdownValidation = {
+      ok: false,
+      format: state.format,
+      teamSize: state.team.length,
+      problems: [`Showdown 校验调用失败：${err.message}`],
+    };
+  }
+  renderValidationHints();
 }
 
 async function copyShowdownText() {
@@ -755,6 +927,7 @@ function aiContext(mode) {
       note,
     })),
     opponentConfigs: getOpponentConfigs().slice(0, 8),
+    matchupReport: getMatchupReport(12),
     metaCandidates: state.data.pokemon
       .filter((mon) => !selectedIds.has(mon.id))
       .slice(0, 40)
@@ -1506,6 +1679,7 @@ function renderMetrics() {
     $("#avg-rank").textContent = "-";
     $("#meta-score").textContent = "-";
     $("#speed-line").textContent = "-";
+    $("#matchup-score").textContent = "-";
     return;
   }
   const rankedTeam = state.team.filter((mon) => !mon.isExternalMember && Number.isFinite(Number(mon.rank)));
@@ -1517,6 +1691,9 @@ function renderMetrics() {
   $("#meta-score").textContent = knowledge.score >= 76 ? "高" : knowledge.score >= 54 ? "中" : "低";
   $("#meta-score").title = `规则状态评分 ${knowledge.score}/100；风险：${knowledge.risks.join("、") || "暂无明显风险"}`;
   $("#speed-line").textContent = String(speed || "-");
+  const matchup = getMatchupReport(8);
+  $("#matchup-score").textContent = String(matchup.score || "-");
+  $("#matchup-score").title = matchup.summary;
 }
 
 function renderRoles() {
@@ -1548,6 +1725,16 @@ function renderSpeedThreats() {
 }
 
 function getOpponentConfigs() {
+  const matchup = getMatchupReport(8);
+  if (matchup.threats.length) {
+    return matchup.threats.map((threat) => ({
+      title: threat.name,
+      risk: threat.level,
+      note: `${threat.reasons.join("；")}。常见：${threat.commonMoves.map((item) => item.name).slice(0, 3).join(" / ") || "暂无"}。`,
+      usage: threat.usage,
+      show: true,
+    }));
+  }
   const ownTaunt = state.team.some((mon) => hasMove(mon, /挑衅/));
   const ownSpeedControl = state.team.some((mon) => hasMove(mon, /顺风|电磁波|戏法空间|冰冻之风/));
   const ownFakeOut = state.team.some((mon) => hasMove(mon, /击掌奇袭/));
@@ -1684,6 +1871,7 @@ function saveTeamEditor() {
     shiny: $("#edit-shiny")?.checked,
     moves: [1, 2, 3, 4].map((index) => $(`#edit-move-${index}`)?.value.trim() || ""),
   });
+  state.showdownValidation = null;
   closeTeamEditor();
   render();
   saveDraft();
@@ -1737,6 +1925,7 @@ function bindEvents() {
   $("#import-team-btn")?.addEventListener("click", importSelectedTeam);
   $("#copy-showdown")?.addEventListener("click", copyShowdownText);
   $("#copy-packed")?.addEventListener("click", copyPackedText);
+  $("#validate-showdown")?.addEventListener("click", validateShowdownText);
   $("#download-showdown")?.addEventListener("click", downloadShowdownText);
   $("#download-json")?.addEventListener("click", downloadJsonDraft);
   $("#import-json-btn")?.addEventListener("click", () => $("#import-json")?.click());
