@@ -36,19 +36,20 @@ const state = {
 const $ = (selector) => document.querySelector(selector);
 const DRAFT_KEY = "champion-lab-current-draft-v2";
 const AI_CONFIG_KEY = "champion-lab-ai-config-v1";
+const AI_MODELS_CACHE_KEY = "champion-lab-ai-models-v1";
 const RULE_PREFS_KEY = "champion-lab-rule-prefs-v1";
 const AI_PROVIDER_PRESETS = {
   openai: {
     baseUrl: "https://api.openai.com/v1",
     model: "gpt-4.1-mini",
     endpoint: "responses",
-    models: ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"],
+    models: ["gpt-5", "gpt-5-mini", "gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"],
   },
   deepseek: {
     baseUrl: "https://api.deepseek.com",
     model: "deepseek-chat",
     endpoint: "chat",
-    models: ["deepseek-chat", "deepseek-reasoner"],
+    models: ["deepseek-chat", "deepseek-reasoner", "deepseek-r1", "deepseek-v4-flash"],
   },
   kimi: {
     baseUrl: "https://api.moonshot.cn/v1",
@@ -679,6 +680,20 @@ function loadAIConfig() {
   }
 }
 
+function loadAIModelCache() {
+  try {
+    return JSON.parse(localStorage.getItem(AI_MODELS_CACHE_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function saveAIModelCache(provider, models = []) {
+  const cache = loadAIModelCache();
+  cache[provider] = [...new Set(models.filter(Boolean))].slice(0, 200);
+  localStorage.setItem(AI_MODELS_CACHE_KEY, JSON.stringify(cache));
+}
+
 function getAIConfigFromForm() {
   const selectedModel = $("#ai-model-select")?.value || "";
   const customModel = $("#ai-model")?.value?.trim() || "";
@@ -722,7 +737,8 @@ function hydrateModelSelect(modelValue = "") {
   const customInput = $("#ai-model");
   const customField = $("#ai-custom-model-field");
   if (!select || !customInput || !customField) return;
-  const models = preset.models || [];
+  const cachedModels = loadAIModelCache()[provider] || [];
+  const models = [...new Set([...(preset.models || []), ...cachedModels])];
   const model = modelValue || preset.model || "";
   select.innerHTML = [
     ...models.map((item) => `<option value="${escapeHtml(item)}">${escapeHtml(item)}</option>`),
@@ -747,6 +763,34 @@ function updateModelInputVisibility() {
   customField.hidden = selected !== "__custom";
   if (selected !== "__custom") customInput.value = "";
   updateAIConfigStatus();
+}
+
+async function refreshAIModels() {
+  const status = $("#ai-config-status");
+  const button = $("#ai-refresh-models");
+  const config = getAIConfigFromForm();
+  if (!config.apiKey || !config.baseUrl) {
+    if (status) status.textContent = "请先填写 API Key 和 Base URL，再获取模型列表。";
+    return;
+  }
+  if (button) button.disabled = true;
+  if (status) status.textContent = "正在从服务商获取模型列表...";
+  try {
+    const res = await fetch("/api/ai-models", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ aiConfig: config }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `获取失败：${res.status}`);
+    saveAIModelCache(config.provider, data.models || []);
+    hydrateModelSelect(config.model || data.models?.[0] || "");
+    if (status) status.textContent = `已获取 ${data.models?.length || 0} 个模型，可在下拉框选择。`;
+  } catch (err) {
+    if (status) status.textContent = `${err.message || "获取模型列表失败"}；可以继续使用自定义模型。`;
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 function hydrateAIConfigForm() {
@@ -1553,6 +1597,7 @@ function bindEvents() {
   });
   $("#ai-provider")?.addEventListener("change", () => applyAIProviderPreset(true));
   $("#ai-model-select")?.addEventListener("change", updateModelInputVisibility);
+  $("#ai-refresh-models")?.addEventListener("click", refreshAIModels);
   ["#ai-endpoint", "#ai-base-url", "#ai-model", "#ai-api-key"].forEach((selector) => {
     $(selector)?.addEventListener("input", updateAIConfigStatus);
     $(selector)?.addEventListener("change", updateAIConfigStatus);

@@ -324,7 +324,9 @@ PokéForge Lab 不只支持 GPT。只要服务商提供 OpenAI 兼容接口，�
 
 填好后可以点击 **测试连接**。如果失败，页面会提示常见原因，例如 API Key 错误、模型不存在、余额不足、Base URL 错误或当前网络无法访问服务商。
 
-如果下拉框里没有你要用的模型，选择 **自定义模型...**，再填写服务商控制台里显示的模型名。
+如果下拉框里没有你要用的模型，可以先点 **获取模型列表**。项目会通过当前 API Key 和 Base URL 请求服务商的 `/v1/models`，把你账号实际可用的模型加入下拉框。
+
+如果服务商不开放 `/v1/models`，或者你使用的是中转站私有模型，选择 **自定义模型...**，再填写服务商控制台里显示的模型名。
 
 ### 2. 两个接口类型怎么选
 
@@ -346,14 +348,14 @@ PokéForge Lab 不只支持 GPT。只要服务商提供 OpenAI 兼容接口，�
 ```text
 OpenAI
 Base URL: https://api.openai.com/v1
-模型: 下拉选择 gpt-4.1-mini / gpt-4.1 / gpt-4o-mini
+模型: 下拉选择 gpt-5 / gpt-5-mini / gpt-4.1-mini / gpt-4.1 / gpt-4o-mini，或点击获取模型列表
 接口类型: Responses
 ```
 
 ```text
 DeepSeek
 Base URL: https://api.deepseek.com
-模型: 下拉选择 deepseek-chat / deepseek-reasoner
+模型: 下拉选择 deepseek-chat / deepseek-reasoner / deepseek-r1 / deepseek-v4-flash，或点击获取模型列表
 接口类型: Chat Completions
 ```
 

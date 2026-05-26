@@ -464,6 +464,43 @@ async function handleAITest(req, res) {
   }
 }
 
+async function handleAIModels(req, res) {
+  const payload = await readJson(req);
+  const aiConfig = resolveRequestAIConfig(payload);
+  if (!aiConfig) {
+    sendJson(res, 400, { error: "请先填写 API Key 和 Base URL。" });
+    return;
+  }
+  try {
+    const response = await fetch(aiEndpoint(aiConfig.baseUrl, "/models"), {
+      method: "GET",
+      headers: {
+        authorization: `Bearer ${aiConfig.apiKey}`,
+        "content-type": "application/json",
+      },
+    });
+    const data = await readAIResponse(response);
+    if (!response.ok) {
+      sendJson(res, response.status, {
+        error: data.error?.message || "获取模型列表失败。该服务商可能不开放 /v1/models。",
+      });
+      return;
+    }
+    const models = (Array.isArray(data.data) ? data.data : [])
+      .map((item) => item.id || item.name)
+      .filter(Boolean)
+      .sort((a, b) => String(a).localeCompare(String(b)));
+    sendJson(res, 200, {
+      provider: aiConfig.source,
+      models,
+    });
+  } catch (err) {
+    sendJson(res, 502, {
+      error: `获取模型列表失败：${err.message || "请检查网络、Base URL 或服务商是否支持 /v1/models。"}`,
+    });
+  }
+}
+
 function runRefreshTask(mode = "data") {
   if (refreshTask?.running) return refreshTask;
   const args =
@@ -605,6 +642,10 @@ createServer(async (req, res) => {
     }
     if (req.method === "POST" && req.url === "/api/ai-test") {
       await handleAITest(req, res);
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/ai-models") {
+      await handleAIModels(req, res);
       return;
     }
     if ((req.method === "POST" || req.method === "GET") && req.url === "/api/refresh-data") {

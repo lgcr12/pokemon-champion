@@ -1062,6 +1062,12 @@ input {
   grid-column: 1 / -1;
 }
 
+.ai-model-refresh {
+  align-self: end;
+  min-height: 40px;
+  justify-content: center;
+}
+
 .ai-settings-actions {
   display: flex;
   align-items: center;
