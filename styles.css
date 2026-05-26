@@ -1287,6 +1287,32 @@ input {
   gap: 8px;
 }
 
+.ai-view-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 4px;
+  border: 1px solid rgba(219, 227, 238, 0.86);
+  border-radius: var(--radius-md);
+  background: #f8fafc;
+}
+
+.ai-view-tabs button {
+  min-height: 36px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.ai-view-tabs button.is-active {
+  background: var(--text-main);
+  color: #ffffff;
+  box-shadow: var(--shadow-sm);
+}
+
 .btn-primary.compact,
 .btn-outline.compact {
   min-height: 36px;
@@ -1298,7 +1324,7 @@ input {
 .ai-mode-grid,
 .ai-team-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1fr;
   gap: 10px;
 }
 
@@ -1317,7 +1343,7 @@ input {
 }
 
 .ai-format-card .ai-team-grid {
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   margin-top: 10px;
 }
 
@@ -1335,7 +1361,7 @@ input {
 .ai-format-card h3,
 .ai-mon-card h3 {
   margin: 0;
-  font-size: 14px;
+  font-size: 13px;
   letter-spacing: 0;
 }
 
@@ -1400,8 +1426,8 @@ input {
 }
 
 .ai-card-actions {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
   margin-top: 10px;
   padding-top: 10px;
@@ -1409,9 +1435,10 @@ input {
 }
 
 .ai-card-actions .compact {
-  flex: 1 1 92px;
   justify-content: center;
-  padding: 0 8px;
+  min-height: 32px;
+  padding: 0 6px;
+  font-size: 11px;
 }
 
 .team-library-preview {

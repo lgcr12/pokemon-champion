@@ -983,9 +983,9 @@ function normalizeAdvice(data) {
 function renderFormatAdvice(title, format, block = {}) {
   const watch = Array.isArray(block.watch) ? block.watch.filter(Boolean).slice(0, 4) : [];
   const team = Array.isArray(block.team) ? block.team.slice(0, 6) : [];
-  const active = state.format === format;
+  const active = (state.aiAdviceView || state.format) === format;
   return `
-    <section class="ai-format-card ${active ? "is-active" : ""}">
+    <section class="ai-format-card ${active ? "is-active" : ""}" ${active ? "" : "hidden"}>
       <div class="ai-format-head">
         <div>
           <h3>${escapeHtml(title)}</h3>
@@ -1002,7 +1002,12 @@ function renderFormatAdvice(title, format, block = {}) {
 
 function renderAdviceCard(item = {}, index, format = state.format) {
   const moves = Array.isArray(item.moves) ? item.moves.filter(Boolean).slice(0, 4) : [];
-  const meta = [item.item, item.ability, item.nature, item.evs].filter(Boolean);
+  const meta = [
+    item.item ? `道具：${item.item}` : "",
+    item.ability ? `特性：${item.ability}` : "",
+    item.nature ? `性格：${item.nature}` : "",
+    item.evs ? `EV：${item.evs}` : "",
+  ].filter(Boolean);
   return `
     <article class="ai-mon-card" data-ai-mon-format="${format}" data-ai-mon-index="${index}">
       <div class="ai-mon-head">
@@ -1026,6 +1031,7 @@ function renderAdviceCard(item = {}, index, format = state.format) {
 function renderAIAdvice(data) {
   const advice = normalizeAdvice(data);
   state.aiLastAdvice = advice;
+  if (!state.aiAdviceView || !advice?.[state.aiAdviceView]) state.aiAdviceView = state.format;
   if (!advice) return `<div class="ai-plain">${escapeHtml(data.text || "AI 没有返回内容。")}</div>`;
   return `
     <div class="ai-result">
@@ -1035,11 +1041,21 @@ function renderAIAdvice(data) {
           <button class="btn-outline neutral compact" type="button" data-ai-retry>重新生成</button>
         </div>
       </div>
+      <div class="ai-view-tabs" role="tablist" aria-label="AI 建议视图">
+        <button class="${state.aiAdviceView === "single" ? "is-active" : ""}" type="button" data-ai-view="single">单打方案</button>
+        <button class="${state.aiAdviceView === "double" ? "is-active" : ""}" type="button" data-ai-view="double">双打方案</button>
+      </div>
       <div class="ai-mode-grid">
         ${renderFormatAdvice("单打", "single", advice.single)}
         ${renderFormatAdvice("双打", "double", advice.double)}
       </div>
     </div>`;
+}
+
+function rerenderAIAdvice() {
+  const output = $("#ai-output");
+  if (!output || !state.aiLastAdvice) return;
+  output.innerHTML = renderAIAdvice({ advice: state.aiLastAdvice });
 }
 
 function applyAIAdviceTeam(format = state.format) {
@@ -1153,6 +1169,7 @@ async function generateAIAdvice(mode) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `AI 服务错误：${res.status}`);
     output.className = "ai-output has-structured-result";
+    state.aiAdviceView = state.format;
     output.innerHTML = renderAIAdvice(data);
   } catch (err) {
     output.className = "ai-output is-error";
@@ -1711,6 +1728,11 @@ function bindEvents() {
     }
     const applyFormat = event.target.closest("[data-ai-apply]")?.dataset.aiApply;
     if (applyFormat) applyAIAdviceTeam(applyFormat);
+    const viewFormat = event.target.closest("[data-ai-view]")?.dataset.aiView;
+    if (viewFormat) {
+      state.aiAdviceView = viewFormat;
+      rerenderAIAdvice();
+    }
     const adviceRef = adviceItemFromEvent(event);
     if (adviceRef && event.target.closest("[data-ai-apply-one]")) applyAdvicePokemon(adviceRef.item, adviceRef.format, false);
     if (adviceRef && event.target.closest("[data-ai-replace-one]")) applyAdvicePokemon(adviceRef.item, adviceRef.format, true);
