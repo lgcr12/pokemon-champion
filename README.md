@@ -317,12 +317,14 @@ PokéForge Lab 不只支持 GPT。只要服务商提供 OpenAI 兼容接口，�
 - 服务商：OpenAI、DeepSeek、Kimi、通义千问、MiniMax、硅基流动或其他兼容接口；
 - 接口类型：`Responses` 或 `Chat Completions`；
 - Base URL；
-- 模型名称；
+- 模型：优先从下拉框选择常用模型；
 - API Key。
 
 配置只保存在当前浏览器的 `localStorage`，不会写入仓库，也不会提交到 GitHub。
 
 填好后可以点击 **测试连接**。如果失败，页面会提示常见原因，例如 API Key 错误、模型不存在、余额不足、Base URL 错误或当前网络无法访问服务商。
+
+如果下拉框里没有你要用的模型，选择 **自定义模型...**，再填写服务商控制台里显示的模型名。
 
 ### 2. 两个接口类型怎么选
 
@@ -344,42 +346,42 @@ PokéForge Lab 不只支持 GPT。只要服务商提供 OpenAI 兼容接口，�
 ```text
 OpenAI
 Base URL: https://api.openai.com/v1
-模型: gpt-4.1-mini
+模型: 下拉选择 gpt-4.1-mini / gpt-4.1 / gpt-4o-mini
 接口类型: Responses
 ```
 
 ```text
 DeepSeek
 Base URL: https://api.deepseek.com
-模型: deepseek-chat
+模型: 下拉选择 deepseek-chat / deepseek-reasoner
 接口类型: Chat Completions
 ```
 
 ```text
 Kimi / Moonshot
 Base URL: https://api.moonshot.cn/v1
-模型: kimi-k2-0711-preview
+模型: 下拉选择 kimi-k2-0711-preview 或 moonshot-v1 系列
 接口类型: Chat Completions
 ```
 
 ```text
 通义千问 / 阿里云百炼
 Base URL: https://dashscope.aliyuncs.com/compatible-mode/v1
-模型: qwen-plus
+模型: 下拉选择 qwen-plus / qwen-turbo / qwen-max / qwen-long
 接口类型: Chat Completions
 ```
 
 ```text
 MiniMax
 Base URL: https://api.minimax.io/v1
-模型: MiniMax-M1
+模型: 下拉选择 MiniMax-M1 / MiniMax-Text-01
 接口类型: Chat Completions
 ```
 
 ```text
 硅基流动
 Base URL: https://api.siliconflow.cn/v1
-模型: deepseek-ai/DeepSeek-V3
+模型: 下拉选择 deepseek-ai/DeepSeek-V3 / deepseek-ai/DeepSeek-R1 / Qwen/Qwen3-32B
 接口类型: Chat Completions
 ```
 

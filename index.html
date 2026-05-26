@@ -148,7 +148,11 @@
               </label>
               <label>
                 <span>模型</span>
-                <input id="ai-model" type="text" placeholder="gpt-4.1-mini / deepseek-chat / qwen-plus" autocomplete="off" />
+                <select id="ai-model-select"></select>
+              </label>
+              <label id="ai-custom-model-field" hidden>
+                <span>自定义模型</span>
+                <input id="ai-model" type="text" placeholder="输入服务商控制台里的模型名" autocomplete="off" />
               </label>
               <label class="ai-secret-field">
                 <span>API Key</span>

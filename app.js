@@ -42,36 +42,43 @@ const AI_PROVIDER_PRESETS = {
     baseUrl: "https://api.openai.com/v1",
     model: "gpt-4.1-mini",
     endpoint: "responses",
+    models: ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"],
   },
   deepseek: {
     baseUrl: "https://api.deepseek.com",
     model: "deepseek-chat",
     endpoint: "chat",
+    models: ["deepseek-chat", "deepseek-reasoner"],
   },
   kimi: {
     baseUrl: "https://api.moonshot.cn/v1",
     model: "kimi-k2-0711-preview",
     endpoint: "chat",
+    models: ["kimi-k2-0711-preview", "moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"],
   },
   qwen: {
     baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     model: "qwen-plus",
     endpoint: "chat",
+    models: ["qwen-plus", "qwen-turbo", "qwen-max", "qwen-long"],
   },
   minimax: {
     baseUrl: "https://api.minimax.io/v1",
     model: "MiniMax-M1",
     endpoint: "chat",
+    models: ["MiniMax-M1", "MiniMax-Text-01"],
   },
   siliconflow: {
     baseUrl: "https://api.siliconflow.cn/v1",
     model: "deepseek-ai/DeepSeek-V3",
     endpoint: "chat",
+    models: ["deepseek-ai/DeepSeek-V3", "deepseek-ai/DeepSeek-R1", "Qwen/Qwen3-32B"],
   },
   custom: {
     baseUrl: "",
     model: "",
     endpoint: "chat",
+    models: [],
   },
 };
 
@@ -673,11 +680,13 @@ function loadAIConfig() {
 }
 
 function getAIConfigFromForm() {
+  const selectedModel = $("#ai-model-select")?.value || "";
+  const customModel = $("#ai-model")?.value?.trim() || "";
   return {
     provider: $("#ai-provider")?.value || "openai",
     endpoint: $("#ai-endpoint")?.value || "responses",
     baseUrl: $("#ai-base-url")?.value?.trim() || "",
-    model: $("#ai-model")?.value?.trim() || "",
+    model: selectedModel === "__custom" ? customModel : selectedModel || customModel,
     apiKey: $("#ai-api-key")?.value?.trim() || "",
   };
 }
@@ -699,11 +708,44 @@ function applyAIProviderPreset(force = false) {
   const provider = $("#ai-provider")?.value || "openai";
   const preset = AI_PROVIDER_PRESETS[provider] || AI_PROVIDER_PRESETS.custom;
   const baseUrl = $("#ai-base-url");
-  const model = $("#ai-model");
   const endpoint = $("#ai-endpoint");
   if (baseUrl && (force || !baseUrl.value)) baseUrl.value = preset.baseUrl;
-  if (model && (force || !model.value)) model.value = preset.model;
   if (endpoint && (force || !endpoint.value)) endpoint.value = preset.endpoint;
+  hydrateModelSelect(force ? preset.model : getAIConfigFromForm().model || preset.model);
+  updateAIConfigStatus();
+}
+
+function hydrateModelSelect(modelValue = "") {
+  const provider = $("#ai-provider")?.value || "openai";
+  const preset = AI_PROVIDER_PRESETS[provider] || AI_PROVIDER_PRESETS.custom;
+  const select = $("#ai-model-select");
+  const customInput = $("#ai-model");
+  const customField = $("#ai-custom-model-field");
+  if (!select || !customInput || !customField) return;
+  const models = preset.models || [];
+  const model = modelValue || preset.model || "";
+  select.innerHTML = [
+    ...models.map((item) => `<option value="${escapeHtml(item)}">${escapeHtml(item)}</option>`),
+    `<option value="__custom">自定义模型...</option>`,
+  ].join("");
+  if (model && models.includes(model)) {
+    select.value = model;
+    customInput.value = "";
+    customField.hidden = true;
+  } else {
+    select.value = "__custom";
+    customInput.value = model;
+    customField.hidden = false;
+  }
+}
+
+function updateModelInputVisibility() {
+  const customField = $("#ai-custom-model-field");
+  const customInput = $("#ai-model");
+  const selected = $("#ai-model-select")?.value || "";
+  if (!customField || !customInput) return;
+  customField.hidden = selected !== "__custom";
+  if (selected !== "__custom") customInput.value = "";
   updateAIConfigStatus();
 }
 
@@ -712,12 +754,11 @@ function hydrateAIConfigForm() {
   const provider = $("#ai-provider");
   const endpoint = $("#ai-endpoint");
   const baseUrl = $("#ai-base-url");
-  const model = $("#ai-model");
   const apiKey = $("#ai-api-key");
   if (provider) provider.value = saved.provider || "openai";
   if (endpoint) endpoint.value = saved.endpoint || AI_PROVIDER_PRESETS[provider?.value || "openai"]?.endpoint || "responses";
   if (baseUrl) baseUrl.value = saved.baseUrl || AI_PROVIDER_PRESETS[provider?.value || "openai"]?.baseUrl || "";
-  if (model) model.value = saved.model || AI_PROVIDER_PRESETS[provider?.value || "openai"]?.model || "";
+  hydrateModelSelect(saved.model || AI_PROVIDER_PRESETS[provider?.value || "openai"]?.model || "");
   if (apiKey) apiKey.value = saved.apiKey || "";
   updateAIConfigStatus();
 }
@@ -1511,6 +1552,7 @@ function bindEvents() {
     if (panel) panel.hidden = !panel.hidden;
   });
   $("#ai-provider")?.addEventListener("change", () => applyAIProviderPreset(true));
+  $("#ai-model-select")?.addEventListener("change", updateModelInputVisibility);
   ["#ai-endpoint", "#ai-base-url", "#ai-model", "#ai-api-key"].forEach((selector) => {
     $(selector)?.addEventListener("input", updateAIConfigStatus);
     $(selector)?.addEventListener("change", updateAIConfigStatus);
