@@ -1076,6 +1076,7 @@ function rerenderAIAdvice() {
   const output = $("#ai-output");
   if (!output || !state.aiLastAdvice) return;
   output.innerHTML = renderAIAdvice({ advice: state.aiLastAdvice });
+  updateDocumentState();
 }
 
 function applyAIAdviceTeam(format = state.format) {
@@ -1191,6 +1192,7 @@ async function generateAIAdvice(mode) {
     output.className = "ai-output has-structured-result";
     state.aiAdviceView = state.format;
     output.innerHTML = renderAIAdvice(data);
+    updateDocumentState();
   } catch (err) {
     output.className = "ai-output is-error";
     output.textContent = `${err.message}\n\n可以在上方“API 设置”里填写 OpenAI 兼容接口，也可以设置 OPENAI_API_KEY，或启用 Cockpit 本地访问。`;

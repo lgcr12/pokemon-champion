@@ -984,14 +984,16 @@ body.has-ai-advice .team-library-preview {
 }
 
 .team-library {
-  min-height: 100%;
+  min-height: auto;
+  align-self: start;
   margin-bottom: 0;
   padding: 20px;
   border-radius: var(--radius-lg);
 }
 
 .ai-builder {
-  min-height: 100%;
+  min-height: auto;
+  align-self: start;
   margin-bottom: 0;
   padding: 20px;
   border-radius: var(--radius-lg);
