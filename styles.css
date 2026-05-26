@@ -384,6 +384,24 @@ input {
   align-items: start;
 }
 
+body.has-ai-advice .team-library {
+  grid-column: 1 / -1;
+  min-height: auto;
+}
+
+body.has-ai-advice .ai-builder {
+  grid-column: 1 / -1;
+}
+
+body.has-ai-advice .team-library .library-header {
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 0.9fr);
+  align-items: end;
+}
+
+body.has-ai-advice .team-library-preview {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
 .top-nav {
   position: sticky;
   top: 0;
@@ -1343,7 +1361,7 @@ input {
 }
 
 .ai-format-card .ai-team-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   margin-top: 10px;
 }
 
@@ -2172,6 +2190,10 @@ body:not(.palette-open) .palette-backdrop {
   }
 
   .main-content {
+    grid-template-columns: 1fr;
+  }
+
+  body.has-ai-advice .team-library .library-header {
     grid-template-columns: 1fr;
   }
 

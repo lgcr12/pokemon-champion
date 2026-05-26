@@ -1412,6 +1412,7 @@ function updateDocumentState() {
   document.body.dataset.teamCount = String(state.team.length);
   document.body.classList.toggle("has-team", state.team.length > 0);
   document.body.classList.toggle("team-complete", state.team.length === 6);
+  document.body.classList.toggle("has-ai-advice", Boolean(state.aiLastAdvice));
   $("#analysis-dashboard")?.classList.toggle("is-empty", state.team.length === 0);
 }
 
