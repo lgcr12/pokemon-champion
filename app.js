@@ -17,6 +17,7 @@ const TEAM_FORM_ALIASES = new Map([
 const state = {
   rawData: null,
   data: null,
+  battleKnowledgeData: null,
   format: "single",
   team: [],
   teamConfigs: {},
@@ -107,6 +108,13 @@ function names(entries = [], limit = 2) {
   return entries.slice(0, limit).filter((item) => item?.name).map((item) => item.name).join(" / ");
 }
 
+function idKey(value = "") {
+  return String(value)
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
 function topNames(entries = [], limit = 2) {
   return entries
     .slice(0, limit)
@@ -180,8 +188,47 @@ function pokemonSummary(mon) {
     commonAbilities: mon.abilities?.slice(0, 5),
     commonNatures: mon.natures?.slice(0, 5),
     roles: getRoles(mon),
+    externalKnowledge: externalKnowledgeFor(mon),
     importedConfig: importedConfigFor(mon),
     customConfig: editableConfigFor(mon),
+  };
+}
+
+function externalKnowledgeFor(mon, format = state.format) {
+  const cache = state.battleKnowledgeData;
+  if (!cache?.pokemon) return null;
+  const keys = [mon.slug, mon.name, mon.id].map(idKey).filter(Boolean);
+  const entry = keys.map((key) => cache.pokemon[key]).find(Boolean);
+  if (!entry) return null;
+  const preferredFormats =
+    format === "double"
+      ? ["gen9doublesou", "gen9vgc2026", "gen9vgc2025", "gen9ou"]
+      : ["gen9ou", "gen9nationaldex", "gen9doublesou"];
+  const smogonFormat = preferredFormats.find((item) => entry.smogon?.[item]) || Object.keys(entry.smogon || {})[0] || "";
+  const smogon = smogonFormat ? entry.smogon[smogonFormat] : null;
+  return {
+    source: smogon ? `Smogon ${smogonFormat}` : "Pokemon Showdown",
+    showdown: entry.showdown
+      ? {
+          types: entry.showdown.types,
+          baseStats: entry.showdown.baseStats,
+          tier: entry.showdown.tier,
+          abilities: entry.showdown.abilities,
+        }
+      : null,
+    usage: smogon
+      ? {
+          format: smogonFormat,
+          usage: smogon.usage,
+          items: smogon.items?.slice(0, 5),
+          abilities: smogon.abilities?.slice(0, 4),
+          moves: smogon.moves?.slice(0, 8),
+          teammates: smogon.teammates?.slice(0, 6),
+          teraTypes: smogon.teraTypes?.slice(0, 5),
+          spreads: smogon.spreads?.slice(0, 4),
+          counters: smogon.counters?.slice(0, 5),
+        }
+      : null,
   };
 }
 
@@ -455,6 +502,12 @@ async function loadLocalData() {
   } catch {
     state.teamLibrary = [];
   }
+  try {
+    const knowledgeRes = await fetch(`data/battle-knowledge.json?t=${Date.now()}`, { cache: "no-store" });
+    if (knowledgeRes.ok) state.battleKnowledgeData = await knowledgeRes.json();
+  } catch {
+    state.battleKnowledgeData = null;
+  }
   state.rawData.formats = state.rawData.formats || { [state.rawData.defaultFormat || state.rawData.format || "single"]: state.rawData };
 }
 
@@ -717,6 +770,7 @@ function aiContext(mode) {
         commonItems: mon.items?.slice(0, 3),
         commonAbilities: mon.abilities?.slice(0, 3),
         roles: getRoles(mon),
+        externalKnowledge: externalKnowledgeFor(mon),
       })),
   };
 }

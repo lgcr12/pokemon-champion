@@ -556,6 +556,8 @@ function runRefreshTask(mode = "data") {
       ? ["run", "fetch:missing-all"]
       : mode === "all"
       ? ["run", "fetch:all"]
+      : mode === "knowledge"
+        ? ["run", "fetch:knowledge"]
       : mode === "teams"
         ? ["run", "fetch:teams:fast"]
         : ["run", "fetch:data"];
@@ -590,6 +592,7 @@ function runRefreshTask(mode = "data") {
     if (key === "output") {
       if (/Filling missing|Fetching #/.test(text)) refreshTask.stage = "data";
       if (/Fetching team page|Wrote \d+ teams/.test(text)) refreshTask.stage = "teams";
+      if (/Fetching Pokemon Showdown|Fetching Smogon|Wrote knowledge cache/.test(text)) refreshTask.stage = "knowledge";
       refreshTask.fetched += (text.match(/Filling missing|Fetching #/g) || []).length;
       for (const match of text.matchAll(/Wrote (\d+) teams/g)) {
         refreshTask.teamsFetched = Number(match[1] || 0);
@@ -617,7 +620,7 @@ function runRefreshTask(mode = "data") {
 
 async function handleRefresh(req, res) {
   const body = req.method === "POST" ? await readJson(req).catch(() => ({})) : {};
-  const mode = ["data", "missing", "missing-all", "teams", "all"].includes(body.mode) ? body.mode : "data";
+  const mode = ["data", "missing", "missing-all", "teams", "knowledge", "all"].includes(body.mode) ? body.mode : "data";
   const task = req.method === "POST" ? runRefreshTask(mode) : refreshTask;
   sendJson(res, 200, {
     running: Boolean(task?.running),
@@ -644,6 +647,9 @@ function explainRefreshFailure(task) {
   if (/pokechamdb|No ranking|Fetch failed/i.test(text)) {
     return "环境数据源暂时无法访问或页面结构变化。请稍后重试，或降低 LIMIT 后再补缺。";
   }
+  if (/pkmn\.github\.io|pokemonshowdown|play\.pokemonshowdown|Smogon/i.test(text)) {
+    return "规则/知识数据源暂时无法访问。请检查服务器是否能访问 Pokemon Showdown、pkmn.github.io 和 Smogon 相关域名。";
+  }
   return "抓取任务失败，请查看终端日志或 /api/refresh-data 返回的 error/output。";
 }
 
@@ -651,6 +657,7 @@ async function ensureInitialData() {
   try {
     await stat(join(ROOT, "data", "champion-data.json"));
     await stat(join(ROOT, "data", "team-data.json"));
+    await stat(join(ROOT, "data", "battle-knowledge.json"));
   } catch {
     console.log("Local data cache missing; starting initial missing-all fetch.");
     runRefreshTask("missing-all");

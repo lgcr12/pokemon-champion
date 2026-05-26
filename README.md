@@ -282,6 +282,7 @@ Showdown 导出区域下方有规则检查选项：
 ```bash
 npm run fetch:data
 npm run fetch:teams
+npm run fetch:knowledge
 npm run fetch:missing-all
 npm run fetch:all
 ```
@@ -295,8 +296,12 @@ $env:LIMIT="120"
 $env:MISSING_ONLY="1"
 $env:TEAM_LIMIT="300"
 $env:ENRICH_TEAMS="0"
+$env:SMOGON_FORMATS="gen9ou,gen9doublesou,gen9vgc2026"
+$env:KNOWLEDGE_POKEMON_LIMIT="120"
 npm run fetch:missing-all
 ```
+
+`fetch:knowledge` 会从 Pokemon Showdown 和 pkmn Smogon stats 采集规则/环境知识，生成本地 `data/battle-knowledge.json`。这个文件会被 AI 配队上下文读取，用来补充常见招式、道具、队友、太晶属性、克制关系、基础种族值和规则字段。
 
 ## 截图更新
 
