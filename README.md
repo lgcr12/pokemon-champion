@@ -244,12 +244,12 @@ AI 默认会优先尝试读取本机 Cockpit / Codex Local Access 配置。如�
 
 - 点击 **复制文本**，可以复制到剪贴板；
 - 点击 **下载 TXT**，可以保存为文本文件；
-- 点击 **Showdown 校验**，可以调用本地服务端的 Pokemon Showdown TeamValidator 做规则校验；
+- 点击 **Showdown 参考校验**，可以调用本地服务端的 Pokemon Showdown TeamValidator 做辅助校验；
 - 点击 **复制 Packed**，可以复制 Showdown packed team 风格文本；
 - 点击 **导出 JSON**，可以保存当前草稿；
 - 点击 **导入 JSON**，可以恢复之前保存的草稿。
 
-导出的 Showdown 文本适合作为 PKHeX 或部分交换机器人流程的输入。项目会提示重复道具、多个 Mega 石、EV 超限、招式不足等常见问题。Showdown 校验器只识别英文 Showdown 名称；如果当前配置里用了中文/日文招式或道具，页面会显示不可识别项，最终合法性仍需要你在 PKHeX 或目标平台确认。
+导出的 Showdown 文本适合作为 PKHeX 或部分交换机器人流程的输入。项目会优先按 Pokémon Champions 当前单打/双打数据检查队伍成员、常见招式、常见道具、常见特性、重复道具、多个 Mega 石、EV 超限、招式不足等问题。Showdown 校验只是参考；它只识别英文 Showdown 名称，而且可用池和 Champions 不一定一致，不能作为 Champions 最终合法性标准。
 
 ### 8. 刷新和补缺数据
 
@@ -304,6 +304,8 @@ npm run fetch:missing-all
 ```
 
 `fetch:knowledge` 会从 Pokemon Showdown 和 pkmn Smogon stats 采集规则/环境知识，生成本地 `data/battle-knowledge.json`。这个文件会被 AI 配队上下文读取，用来补充常见招式、道具、队友、太晶属性、克制关系、基础种族值和规则字段。
+
+数据优先级是：**Pokémon Champions 当前格式数据 > 热门队伍数据 > Showdown / Smogon 参考知识**。AI 配队和页面校验会优先遵守 Champions 当前可用池；Showdown / Smogon 只用于辅助理解环境趋势、英文规则和 matchup。
 
 ## 截图更新
 

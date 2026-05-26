@@ -112,16 +112,19 @@ function buildPrompt(payload) {
 1. 简洁，最多 6 只宝可梦，每只 1 到 2 句说明。
 2. 必须同时给出 single 和 double 两个分区，两个分区都要有各自的 team、plan、watch。
 3. single.team 和 double.team 都必须是最终可应用队伍。优先保留 selectedPokemon，再从 metaCandidates 补到 6 只。
-4. 单打与双打配置要明显按规则分化：单打重视钉子、强化、换血、清场；双打重视守住、控速、站场协作、击掌奇袭、威吓、广域防守或空间/顺风。
-5. 每只配置包含 id、name、role、item、ability、nature、evs、moves。moves 最多 4 个。
-6. 不写“如果你愿意...”之类收尾话。
-7. 如果不确定，用“可替换”标注，不要编造数据来源。
-8. 必须参考 battleKnowledge 中的 risks、strengths、stateTags 和成员 flags，不要只按使用率补队。
-9. 必须优先处理 battleKnowledge.needs、roleCoverage、typeProfile、legality 中暴露的问题；如果 risks 包含缺少控速、缺少清场、守住位偏少、终盘路线不明确，输出方案必须明确补足对应问题。
-10. 同一分区的 6 只宝可梦不能携带重复道具；如果热门配置重复，必须换成合理替代道具。
-11. 每只宝可梦必须包含 level，默认写 "50"。
-12. 选补位时要说明队伍职责：输出端、控速端、防守换入、终盘路线、单打撒钉/除钉或双打站场协作至少覆盖其中 3 类。
-13. 如果 battleKnowledge.legality.violations 不为空，最终 JSON 中必须规避这些问题，不要重复输出同样违规配置。
+4. 必须以 Pokemon Champions 当前数据为主：selectedPokemon、metaCandidates、importedTeam、commonMoves、commonItems、commonAbilities 是主数据源。
+5. Showdown / Smogon / externalKnowledge 只作为补充参考，用来理解环境趋势、英文规则和 matchup；不能覆盖 Champions 可用池，不能凭外部数据加入 metaCandidates 中不存在的宝可梦。
+6. 招式、道具、特性优先使用 Champions 数据中的 commonMoves、commonItems、commonAbilities；外部知识只在 Champions 数据缺失或写“可替换”时辅助说明。
+7. 单打与双打配置要明显按规则分化：单打重视钉子、强化、换血、清场；双打重视守住、控速、站场协作、击掌奇袭、威吓、广域防守或空间/顺风。
+8. 每只配置包含 id、name、role、item、ability、nature、evs、moves。moves 最多 4 个。
+9. 不写“如果你愿意...”之类收尾话。
+10. 如果不确定，用“可替换”标注，不要编造数据来源。
+11. 必须参考 battleKnowledge 中的 risks、strengths、stateTags 和成员 flags，不要只按使用率补队。
+12. 必须优先处理 battleKnowledge.needs、roleCoverage、typeProfile、legality 中暴露的问题；如果 risks 包含缺少控速、缺少清场、守住位偏少、终盘路线不明确，输出方案必须明确补足对应问题。
+13. 同一分区的 6 只宝可梦不能携带重复道具；如果热门配置重复，必须换成合理替代道具。
+14. 每只宝可梦必须包含 level，默认写 "50"。
+15. 选补位时要说明队伍职责：输出端、控速端、防守换入、终盘路线、单打撒钉/除钉或双打站场协作至少覆盖其中 3 类。
+16. 如果 battleKnowledge.legality.violations 不为空，最终 JSON 中必须规避这些问题，不要重复输出同样违规配置。
 
 JSON 结构：
 {

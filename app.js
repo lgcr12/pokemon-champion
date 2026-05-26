@@ -533,13 +533,20 @@ function validationHints() {
   for (const mon of state.team) {
     const config = editableConfigFor(mon);
     const name = mon.name || mon.slug;
+    const championMon = state.data?.pokemon?.find((item) => Number(item.id) === Number(mon.id) || item.slug === mon.slug || item.name === mon.name);
+    if (!championMon && !mon.isExternalMember) hints.push(`Champions 当前${formatLabel(state.format)}数据中未找到 ${name}。`);
     if (!config.item) hints.push(`${name} 缺少道具。`);
+    else if (championMon?.items?.length && !championMon.items.some((item) => item.name === config.item || item.rawName === config.item)) hints.push(`提示：${name} 的道具 ${config.item} 不在 Champions 当前缓存常见道具中。`);
     if (!config.ability) hints.push(`${name} 缺少特性。`);
+    else if (championMon?.abilities?.length && !championMon.abilities.some((item) => item.name === config.ability || item.rawName === config.ability)) hints.push(`提示：${name} 的特性 ${config.ability} 不在 Champions 当前缓存常见特性中。`);
     if (!config.nature) hints.push(`${name} 缺少性格。`);
     if (!config.teraType && !state.rulePrefs.ignoreTera) hints.push(`提示：${name} 未填写太晶属性；如目标规则不使用太晶可忽略。`);
     if (!config.level) hints.push(`${name} 缺少等级。`);
     else if (Number(config.level) < 1 || Number(config.level) > 100) hints.push(`${name} 等级 ${config.level} 超出 1-100 范围。`);
     if ((config.moves || []).length < 4) hints.push(`${name} 招式少于 4 个。`);
+    for (const move of config.moves || []) {
+      if (move && championMon?.moves?.length && !championMon.moves.some((item) => item.name === move || item.rawName === move)) hints.push(`提示：${name} 的招式 ${move} 不在 Champions 当前缓存常见招式中。`);
+    }
     const evTotal = parseStatTotal(config.evs);
     if (evTotal > 510) hints.push(`${name} EV 总和 ${evTotal} 超过 510。`);
     for (const ev of parseStatParts(config.evs)) {
@@ -551,7 +558,7 @@ function validationHints() {
       if (iv.value > 31) hints.push(`${name} ${iv.stat} IV ${iv.value} 超过单项 31。`);
     }
   }
-  if (!hints.length) hints.push("基础字段完整；仍建议用 PKHeX 做最终合法性检查。");
+  if (!hints.length) hints.push("Champions 基础校验通过；仍建议用 PKHeX 或目标平台做最终确认。");
   return hints;
 }
 
@@ -559,19 +566,22 @@ function renderValidationHints() {
   const target = $("#export-hints");
   if (!target) return;
   const hints = [...validationHints()];
+  const championsOk = hints.length === 1 && hints[0].startsWith("Champions 基础校验通过");
+  let referenceFailed = false;
   if (state.showdownValidation?.loading) {
-    hints.push("提示：正在调用 Pokemon Showdown 校验器。");
+    hints.push("提示：正在调用 Pokemon Showdown 参考校验器。");
   } else if (state.showdownValidation) {
     const result = state.showdownValidation;
     if (result.ok) {
-      hints.push(`Showdown 校验通过：${result.format}，已解析 ${result.teamSize} 只。`);
+      hints.push(`Showdown 参考校验通过：${result.format}，已解析 ${result.teamSize} 只。`);
     } else {
-      hints.push(`Showdown 校验未通过：${result.format}，${result.problems?.length || 0} 个问题。`);
+      referenceFailed = true;
+      hints.push(`Showdown 参考校验未通过：${result.format}，${result.problems?.length || 0} 个问题。`);
       for (const problem of (result.problems || []).slice(0, 8)) hints.push(problem);
     }
   }
   target.innerHTML = hints.map((hint) => `<span class="${hint.startsWith("提示：") ? "is-note" : ""}">${escapeHtml(hint)}</span>`).join("");
-  target.classList.toggle("is-ok", hints.some((hint) => hint.startsWith("Showdown 校验通过")) || (hints.length === 1 && hints[0].startsWith("基础字段完整")));
+  target.classList.toggle("is-ok", championsOk && !referenceFailed);
 }
 
 async function validateShowdownText() {
@@ -593,7 +603,7 @@ async function validateShowdownText() {
       ok: false,
       format: state.format,
       teamSize: state.team.length,
-      problems: [`Showdown 校验调用失败：${err.message}`],
+      problems: [`Showdown 参考校验调用失败：${err.message}`],
     };
   }
   renderValidationHints();
@@ -884,6 +894,11 @@ function aiContext(mode) {
     promptMode: $("#ai-prompt-mode")?.value || "quick",
     format: state.format,
     formatLabel: formatLabel(state.format),
+    sourcePriority: [
+      "Pokemon Champions 当前格式数据为主规则和主可用池",
+      "Showdown 只做参考校验和英文规则参考",
+      "Smogon 只做环境趋势和 matchup 参考",
+    ],
     userGoal: $("#ai-user-goal")?.value?.trim() || "",
     battleKnowledge: {
       sourceModel: knowledge.sourceModel,
