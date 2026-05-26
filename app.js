@@ -453,6 +453,10 @@ function isMegaStone(item = "") {
   return /mega|进化石|超进化石|mega stone/i.test(String(item));
 }
 
+function containsNonShowdownText(value = "") {
+  return /[\u3040-\u30ff\u3400-\u9fff]/.test(String(value));
+}
+
 function showdownSpeciesName(mon) {
   if (!mon?.slug) return mon?.name || "";
   return mon.slug
@@ -515,6 +519,7 @@ function validationHints() {
   const itemCounts = new Map();
   const speciesCounts = new Map();
   const megaUsers = [];
+  const missingTera = [];
   for (const mon of state.team) {
     const item = editableConfigFor(mon).item;
     const key = normalizedItemName(item);
@@ -536,17 +541,12 @@ function validationHints() {
     const championMon = state.data?.pokemon?.find((item) => Number(item.id) === Number(mon.id) || item.slug === mon.slug || item.name === mon.name);
     if (!championMon && !mon.isExternalMember) hints.push(`Champions 当前${formatLabel(state.format)}数据中未找到 ${name}。`);
     if (!config.item) hints.push(`${name} 缺少道具。`);
-    else if (championMon?.items?.length && !championMon.items.some((item) => item.name === config.item || item.rawName === config.item)) hints.push(`提示：${name} 的道具 ${config.item} 不在 Champions 当前缓存常见道具中。`);
     if (!config.ability) hints.push(`${name} 缺少特性。`);
-    else if (championMon?.abilities?.length && !championMon.abilities.some((item) => item.name === config.ability || item.rawName === config.ability)) hints.push(`提示：${name} 的特性 ${config.ability} 不在 Champions 当前缓存常见特性中。`);
     if (!config.nature) hints.push(`${name} 缺少性格。`);
-    if (!config.teraType && !state.rulePrefs.ignoreTera) hints.push(`提示：${name} 未填写太晶属性；如目标规则不使用太晶可忽略。`);
+    if (!config.teraType && !state.rulePrefs.ignoreTera) missingTera.push(name);
     if (!config.level) hints.push(`${name} 缺少等级。`);
     else if (Number(config.level) < 1 || Number(config.level) > 100) hints.push(`${name} 等级 ${config.level} 超出 1-100 范围。`);
     if ((config.moves || []).length < 4) hints.push(`${name} 招式少于 4 个。`);
-    for (const move of config.moves || []) {
-      if (move && championMon?.moves?.length && !championMon.moves.some((item) => item.name === move || item.rawName === move)) hints.push(`提示：${name} 的招式 ${move} 不在 Champions 当前缓存常见招式中。`);
-    }
     const evTotal = parseStatTotal(config.evs);
     if (evTotal > 510) hints.push(`${name} EV 总和 ${evTotal} 超过 510。`);
     for (const ev of parseStatParts(config.evs)) {
@@ -558,6 +558,7 @@ function validationHints() {
       if (iv.value > 31) hints.push(`${name} ${iv.stat} IV ${iv.value} 超过单项 31。`);
     }
   }
+  if (missingTera.length) hints.push(`提示：${missingTera.join("、")} 未填写太晶属性；如目标规则不使用太晶可勾选“不检查太晶属性”。`);
   if (!hints.length) hints.push("Champions 基础校验通过；仍建议用 PKHeX 或目标平台做最终确认。");
   return hints;
 }
@@ -590,6 +591,17 @@ function renderValidationHints() {
 async function validateShowdownText() {
   const text = showdownTeamText();
   if (!text) return;
+  if (containsNonShowdownText(text)) {
+    state.showdownValidation = {
+      ok: false,
+      unavailable: true,
+      format: state.format,
+      teamSize: state.team.length,
+      problems: ["当前队伍文本包含中文或日文名称，Pokemon Showdown 参考校验只识别英文 Showdown 名称。请以 Champions 基础校验为主。"],
+    };
+    renderValidationHints();
+    return;
+  }
   state.showdownValidation = { loading: true };
   renderValidationHints();
   try {
