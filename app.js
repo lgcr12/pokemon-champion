@@ -783,6 +783,10 @@ async function refreshAIModels() {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `获取失败：${res.status}`);
+    if (data.unsupported) {
+      if (status) status.textContent = data.message || "当前服务商不开放模型列表接口，请使用预设模型或自定义模型。";
+      return;
+    }
     saveAIModelCache(config.provider, data.models || []);
     hydrateModelSelect(config.model || data.models?.[0] || "");
     if (status) status.textContent = `已获取 ${data.models?.length || 0} 个模型，可在下拉框选择。`;

@@ -480,6 +480,15 @@ async function handleAIModels(req, res) {
       },
     });
     const data = await readAIResponse(response);
+    if ([404, 405].includes(response.status)) {
+      sendJson(res, 200, {
+        provider: aiConfig.source,
+        models: [],
+        unsupported: true,
+        message: "当前服务商不开放 /v1/models 模型列表接口，请使用预设模型或自定义模型。",
+      });
+      return;
+    }
     if (!response.ok) {
       sendJson(res, response.status, {
         error: data.error?.message || "获取模型列表失败。该服务商可能不开放 /v1/models。",
