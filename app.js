@@ -1,5 +1,7 @@
 ﻿const TYPES = ["一般", "火", "水", "电", "草", "冰", "格斗", "毒", "地面", "飞行", "超能力", "虫", "岩石", "幽灵", "龙", "恶", "钢", "妖精"];
 
+import { buildBattleKnowledge, packTeam } from "./battle-knowledge.mjs";
+
 const TEAM_FORM_ALIASES = new Map([
   [10061, { id: 670, slug: "floette" }],
   [10008, { id: 479, slug: "rotom-heat" }],
@@ -301,6 +303,21 @@ function showdownTeamText() {
     .join("\n\n");
 }
 
+function battleKnowledge() {
+  return buildBattleKnowledge(state.team, {
+    format: state.format,
+    getConfig: editableConfigFor,
+    stat,
+    effectiveSpeed,
+    hasMove,
+    hasAbility,
+  });
+}
+
+function packedTeamText() {
+  return packTeam(state.team, editableConfigFor, showdownSpeciesName);
+}
+
 function renderShowdownExport() {
   const output = $("#showdown-export");
   if (!output) return;
@@ -373,6 +390,12 @@ async function copyShowdownText() {
     output?.select();
     document.execCommand("copy");
   }
+}
+
+async function copyPackedText() {
+  const text = packedTeamText();
+  if (!text) return;
+  await navigator.clipboard?.writeText(text);
 }
 
 function downloadShowdownText() {
@@ -630,11 +653,28 @@ function fallbackPokemonForTeamMember(member) {
 
 function aiContext(mode) {
   const selectedIds = new Set(state.team.map((mon) => mon.id));
+  const knowledge = battleKnowledge();
   return {
     mode,
+    promptMode: $("#ai-prompt-mode")?.value || "quick",
     format: state.format,
     formatLabel: formatLabel(state.format),
     userGoal: $("#ai-user-goal")?.value?.trim() || "",
+    battleKnowledge: {
+      score: knowledge.score,
+      risks: knowledge.risks,
+      strengths: knowledge.strengths,
+      stateTags: knowledge.stateTags,
+      members: knowledge.members.map((item) => ({
+        name: item.name,
+        item: item.item,
+        ability: item.ability,
+        moves: item.moves,
+        speed: item.speed,
+        flags: item.flags,
+      })),
+    },
+    packedTeam: packedTeamText(),
     selectedPokemon: state.team.map(pokemonSummary),
     importedTeam: state.importedTeam
       ? {
@@ -1369,8 +1409,10 @@ function renderMetrics() {
   const avgRank = rankedTeam.length ? rankedTeam.reduce((sum, mon) => sum + Number(mon.rank || 0), 0) / rankedTeam.length : null;
   const top20 = rankedTeam.filter((mon) => Number(mon.rank) <= 20).length;
   const speed = Math.max(...state.team.map((mon) => effectiveSpeed(mon).value));
+  const knowledge = battleKnowledge();
   $("#avg-rank").textContent = avgRank === null ? "-" : avgRank.toFixed(1);
-  $("#meta-score").textContent = top20 >= 4 ? "高" : top20 >= 2 ? "中" : "低";
+  $("#meta-score").textContent = knowledge.score >= 76 ? "高" : knowledge.score >= 54 ? "中" : "低";
+  $("#meta-score").title = `规则状态评分 ${knowledge.score}/100；风险：${knowledge.risks.join("、") || "暂无明显风险"}`;
   $("#speed-line").textContent = String(speed || "-");
 }
 
@@ -1591,6 +1633,7 @@ function bindEvents() {
   $("#refresh-data")?.addEventListener("click", refreshData);
   $("#import-team-btn")?.addEventListener("click", importSelectedTeam);
   $("#copy-showdown")?.addEventListener("click", copyShowdownText);
+  $("#copy-packed")?.addEventListener("click", copyPackedText);
   $("#download-showdown")?.addEventListener("click", downloadShowdownText);
   $("#download-json")?.addEventListener("click", downloadJsonDraft);
   $("#import-json-btn")?.addEventListener("click", () => $("#import-json")?.click());

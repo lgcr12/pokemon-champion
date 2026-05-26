@@ -87,12 +87,19 @@ async function readJson(req) {
 
 function buildPrompt(payload) {
   const task = payload.mode === "complete-team" ? "补全队伍" : "给当前队伍配招";
+  const promptMode =
+    payload.promptMode === "compare"
+      ? "多方案比较：先给 2 到 3 个方向，再选择最稳方向输出最终 JSON。"
+      : payload.promptMode === "deep"
+        ? "详细推理：重点分析速度控制、轮转、终盘、双打守住/站位，但最终仍只输出 JSON。"
+        : "快速建议：优先给可直接应用的稳妥配置。";
   return `
 你是 Pokemon Champions 队伍配置助手。只返回一个 JSON 对象。
 第一个字符必须是 {，最后一个字符必须是 }。
 不要 Markdown，不要标题，不要项目符号，不要解释性结尾，不写“如果你愿意...”之类收尾话。
 
 任务：${task}
+推理模式：${promptMode}
 当前规则：${payload.formatLabel || payload.format}
 用户目标：${payload.userGoal || "未填写"}
 
@@ -104,6 +111,8 @@ function buildPrompt(payload) {
 5. 每只配置包含 id、name、role、item、ability、nature、evs、moves。moves 最多 4 个。
 6. 不写“如果你愿意...”之类收尾话。
 7. 如果不确定，用“可替换”标注，不要编造数据来源。
+8. 必须参考 battleKnowledge 中的 risks、strengths、stateTags 和成员 flags，不要只按使用率补队。
+9. 如果 risks 包含缺少控速、缺少清场、守住位偏少、终盘路线不明确，输出方案必须明确补足对应问题。
 
 JSON 结构：
 {

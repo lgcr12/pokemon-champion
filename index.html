@@ -79,6 +79,7 @@
               <div class="export-actions">
                 <button id="copy-showdown" class="btn-primary compact" type="button">复制文本</button>
                 <button id="download-showdown" class="btn-outline neutral compact" type="button">下载 TXT</button>
+                <button id="copy-packed" class="btn-outline neutral compact" type="button">复制 Packed</button>
                 <button id="download-json" class="btn-outline neutral compact" type="button">导出 JSON</button>
                 <button id="import-json-btn" class="btn-outline neutral compact" type="button">导入 JSON</button>
                 <input id="import-json" type="file" accept="application/json,.json" hidden />
@@ -117,6 +118,11 @@
             </div>
             <div class="ai-actions">
               <button id="ai-settings-toggle" class="btn-outline neutral" type="button">API 设置</button>
+              <select id="ai-prompt-mode" class="ai-mode-select" aria-label="AI 推理模式">
+                <option value="quick">快速</option>
+                <option value="deep">详细</option>
+                <option value="compare">多方案</option>
+              </select>
               <button id="ai-build-config" class="btn-primary" type="button">想配置</button>
               <button id="ai-complete-team" class="btn-outline neutral" type="button">补全队伍</button>
             </div>
