@@ -572,7 +572,10 @@ function renderValidationHints() {
     hints.push("提示：正在调用 Pokemon Showdown 参考校验器。");
   } else if (state.showdownValidation) {
     const result = state.showdownValidation;
-    if (result.ok) {
+    if (result.unavailable) {
+      hints.push("提示：Showdown 参考校验暂不可用；这不代表 Champions 队伍非法。");
+      for (const problem of (result.problems || []).slice(0, 4)) hints.push(problem);
+    } else if (result.ok) {
       hints.push(`Showdown 参考校验通过：${result.format}，已解析 ${result.teamSize} 只。`);
     } else {
       referenceFailed = true;
@@ -596,11 +599,17 @@ async function validateShowdownText() {
       body: JSON.stringify({ text, format: state.format }),
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `校验服务错误：${res.status}`);
+    if (!res.ok) {
+      if (res.status === 404 || res.status === 405) {
+        throw new Error("当前页面没有连接到最新本地 AI 服务。请用 npm run start:ai 启动后，从 http://127.0.0.1:4174/ 打开页面。");
+      }
+      throw new Error(data.error || `校验服务错误：${res.status}`);
+    }
     state.showdownValidation = data;
   } catch (err) {
     state.showdownValidation = {
       ok: false,
+      unavailable: true,
       format: state.format,
       teamSize: state.team.length,
       problems: [`Showdown 参考校验调用失败：${err.message}`],
