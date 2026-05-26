@@ -236,7 +236,7 @@ function setEditableConfig(mon, config) {
     evs: config.evs || "",
     ivs: config.ivs || "",
     teraType: config.teraType || "",
-    level: config.level || "",
+    level: config.level || "50",
     gender: config.gender || "",
     shiny: Boolean(config.shiny),
     ball: config.ball || "",
@@ -947,16 +947,17 @@ async function refreshDataHealth() {
 }
 
 function normalizeAdvice(data) {
+  const normalize = (advice) => normalizeAdviceDefaults(advice);
   if (data?.advice) {
     const advice = data.advice;
     if (Array.isArray(advice.team)) {
-      return {
+      return normalize({
         ...advice,
         single: { team: advice.team, ...(advice.single || {}) },
         double: { team: advice.team, ...(advice.double || {}) },
-      };
+      });
     }
-    return advice;
+    return normalize(advice);
   }
   if (!data?.text) return null;
   const text = data.text.trim();
@@ -968,16 +969,35 @@ function normalizeAdvice(data) {
   try {
     const advice = JSON.parse(candidate.slice(start, end + 1));
     if (Array.isArray(advice.team)) {
-      return {
+      return normalize({
         ...advice,
         single: { team: advice.team, ...(advice.single || {}) },
         double: { team: advice.team, ...(advice.double || {}) },
-      };
+      });
     }
-    return advice;
+    return normalize(advice);
   } catch {
     return null;
   }
+}
+
+function normalizeAdviceDefaults(advice) {
+  for (const format of ["single", "double"]) {
+    const team = Array.isArray(advice?.[format]?.team) ? advice[format].team : [];
+    const used = new Set();
+    team.forEach((item, index) => {
+      item.level = String(item.level || "50");
+      const key = normalizedItemName(item.item);
+      if (!key || used.has(key)) {
+        const fallback = ["生命宝珠", "气势披带", "讲究围巾", "讲究眼镜", "突击背心", "剩饭"].find((candidate) => !used.has(normalizedItemName(candidate))) || `可替换道具${index + 1}`;
+        item.item = fallback;
+        used.add(normalizedItemName(fallback));
+      } else {
+        used.add(key);
+      }
+    });
+  }
+  return advice;
 }
 
 function renderFormatAdvice(title, format, block = {}) {
@@ -1138,7 +1158,7 @@ function applyAdvicePokemon(item, format = state.format, replace = false) {
 
 function advicePokemonText(item = {}) {
   const moves = Array.isArray(item.moves) ? item.moves.filter(Boolean) : [];
-  return [`${item.name || item.id}${item.item ? ` @ ${item.item}` : ""}`, item.ability ? `Ability: ${item.ability}` : "", item.evs ? `EVs: ${item.evs}` : "", item.nature ? `${item.nature} Nature` : "", ...moves.map((move) => `- ${move}`)].filter(Boolean).join("\n");
+  return [`${item.name || item.id}${item.item ? ` @ ${item.item}` : ""}`, item.ability ? `Ability: ${item.ability}` : "", `Level: ${item.level || "50"}`, item.evs ? `EVs: ${item.evs}` : "", item.nature ? `${item.nature} Nature` : "", ...moves.map((move) => `- ${move}`)].filter(Boolean).join("\n");
 }
 
 async function generateAIAdvice(mode) {

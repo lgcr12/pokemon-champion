@@ -15,10 +15,11 @@ const COCKPIT_LOCAL_ACCESS_CONFIG =
 const COCKPIT_DEFAULT_MODEL = "gpt-5.4-mini";
 const OPENAI_DEFAULT_MODEL = "gpt-4.1-mini";
 let refreshTask = null;
+const DEFAULT_ITEM_POOL = ["生命宝珠", "气势披带", "讲究围巾", "讲究眼镜", "突击背心", "剩饭"];
 const ADVICE_POKEMON_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["id", "name", "role", "item", "ability", "nature", "evs", "moves", "note"],
+  required: ["id", "name", "role", "item", "ability", "nature", "evs", "level", "moves", "note"],
   properties: {
     id: { type: "string" },
     name: { type: "string" },
@@ -27,6 +28,7 @@ const ADVICE_POKEMON_SCHEMA = {
     ability: { type: "string" },
     nature: { type: "string" },
     evs: { type: "string" },
+    level: { type: "string" },
     moves: {
       type: "array",
       maxItems: 4,
@@ -113,20 +115,22 @@ function buildPrompt(payload) {
 7. 如果不确定，用“可替换”标注，不要编造数据来源。
 8. 必须参考 battleKnowledge 中的 risks、strengths、stateTags 和成员 flags，不要只按使用率补队。
 9. 如果 risks 包含缺少控速、缺少清场、守住位偏少、终盘路线不明确，输出方案必须明确补足对应问题。
+10. 同一分区的 6 只宝可梦不能携带重复道具；如果热门配置重复，必须换成合理替代道具。
+11. 每只宝可梦必须包含 level，默认写 "50"。
 
 JSON 结构：
 {
   "summary": "一句话总判断",
   "single": {
     "team": [
-      {"id":"", "name":"", "role":"", "item":"", "ability":"", "nature":"", "evs":"", "moves":[""], "note":""}
+      {"id":"", "name":"", "role":"", "item":"", "ability":"", "nature":"", "evs":"", "level":"50", "moves":[""], "note":""}
     ],
     "plan":"",
     "watch":[""]
   },
   "double": {
     "team": [
-      {"id":"", "name":"", "role":"", "item":"", "ability":"", "nature":"", "evs":"", "moves":[""], "note":""}
+      {"id":"", "name":"", "role":"", "item":"", "ability":"", "nature":"", "evs":"", "level":"50", "moves":[""], "note":""}
     ],
     "plan":"",
     "watch":[""]
@@ -211,6 +215,7 @@ function advicePokemon(mon = {}, index, format = "single") {
     ability: firstName(mon.commonAbilities || mon.abilities) || "可替换特性",
     nature: firstName(mon.commonNatures || mon.natures) || "按速度线调整",
     evs: role.includes("耐久") || role.includes("功能") ? "耐久为主" : "速度与主攻为主",
+    level: "50",
     moves,
     note:
       format === "double"
@@ -219,6 +224,29 @@ function advicePokemon(mon = {}, index, format = "single") {
           ? "负责转场、钉子、控速或状态压制。"
           : "承担主要输出、强化或收尾任务。",
   };
+}
+
+function normalizeAdviceItems(advice) {
+  for (const format of ["single", "double"]) {
+    const team = Array.isArray(advice?.[format]?.team) ? advice[format].team : [];
+    const used = new Set();
+    team.forEach((mon, index) => {
+      mon.level = String(mon.level || "50");
+      const key = normalizedItem(mon.item);
+      if (!key || used.has(key)) {
+        const replacement = DEFAULT_ITEM_POOL.find((item) => !used.has(normalizedItem(item))) || `可替换道具${index + 1}`;
+        mon.item = replacement;
+        used.add(normalizedItem(replacement));
+      } else {
+        used.add(key);
+      }
+    });
+  }
+  return advice;
+}
+
+function normalizedItem(value = "") {
+  return String(value).trim().replace(/\s+/g, " ").toLowerCase();
 }
 
 function fallbackAdvice(payload, text) {
@@ -241,7 +269,7 @@ function fallbackAdvice(payload, text) {
   const singlePlan = payload.format === "single" ? currentPlan : "单打更重视一换一效率、钉子压力、强化机会和后期清场。";
   const doublePlan = payload.format === "double" ? currentPlan : "双打需要补守住、站场协作、威吓、顺风或空间等控速手段。";
 
-  return {
+  return normalizeAdviceItems({
     summary: currentPlan,
     single: {
       team: baseTeam.map((mon, index) => advicePokemon(mon, index, "single")),
@@ -253,7 +281,7 @@ function fallbackAdvice(payload, text) {
       plan: doublePlan,
       watch,
     },
-  };
+  });
 }
 
 function parseSseResponse(raw) {
@@ -425,7 +453,7 @@ async function handleAI(req, res) {
   }
 
   const text = extractOutputText(data);
-  const advice = parseAdviceJson(text) || fallbackAdvice(payload, text);
+  const advice = normalizeAdviceItems(parseAdviceJson(text) || fallbackAdvice(payload, text));
   sendJson(res, 200, {
     model: aiConfig.model,
     provider: aiConfig.source,
