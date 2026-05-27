@@ -191,11 +191,27 @@ function hasItem(pokemon, pattern) {
   return pattern.test(textOf(pokemon, "items"));
 }
 
+const MOVE_PATTERNS = {
+  hazard: /隐形岩|撒菱|毒菱|黏黏网|ステルスロック|まきびし|どくびし|ねばねばネット|stealth rock|spikes|toxic spikes|sticky web/i,
+  removal: /高速旋转|清除浓雾|こうそくスピン|きりばらい|rapid spin|defog/i,
+  setup: /剑舞|龙舞|诡计|冥想|健美|蝶舞|破壳|腹鼓|つるぎのまい|りゅうのまい|わるだくみ|めいそう|ビルドアップ|ちょうのまい|からをやぶる|はらだいこ|swords dance|dragon dance|nasty plot|calm mind|bulk up|quiver dance|shell smash|belly drum/i,
+  speedControl: /顺风|电磁波|戏法空间|冰冻之风|岩石封锁|黏黏网|おいかぜ|でんじは|トリックルーム|こごえるかぜ|がんせきふうじ|ねばねばネット|tailwind|thunder wave|trick room|icy wind|rock tomb|sticky web/i,
+  pivot: /急速折返|伏特替换|抛下狠话|接棒|とんぼがえり|ボルトチェンジ|すてゼリフ|バトンタッチ|u-turn|volt switch|parting shot|baton pass/i,
+  priority: /神速|突袭|子弹拳|水流喷射|冰砾|影子偷袭|音速拳|击掌奇袭|しんそく|ふいうち|バレットパンチ|アクアジェット|こおりのつぶて|かげうち|マッハパンチ|ねこだまし|extreme speed|sucker punch|bullet punch|aqua jet|ice shard|shadow sneak|mach punch|fake out/i,
+  protect: /守住|看穿|まもる|みきり|protect|detect/i,
+  fakeOut: /击掌奇袭|ねこだまし|fake out/i,
+  intimidate: /威吓|いかく|intimidate/i,
+  redirection: /看我嘛|愤怒粉|このゆびとまれ|いかりのこな|follow me|rage powder/i,
+  spread: /地震|岩崩|热风|魔法闪耀|喷水|喷火|暴风雪|放电|じしん|いわなだれ|ねっぷう|マジカルシャイン|しおふき|ふんか|ふぶき|ほうでん|earthquake|rock slide|heat wave|dazzling gleam|water spout|eruption|blizzard|discharge/i,
+  status: /剧毒|电磁波|鬼火|挑衅|どくどく|でんじは|おにび|ちょうはつ|toxic|thunder wave|will-o-wisp|taunt/i,
+  sustain: /自我再生|羽栖|月光|晨光|光合作用|じこさいせい|はねやすめ|つきのひかり|あさのひざし|こうごうせい|recover|roost|moonlight|morning sun|synthesis/i,
+};
+
 function effectiveSpeed(pokemon) {
   const base = stat(pokemon, "速度");
   const boosts = [];
   if (hasItem(pokemon, /讲究围巾/)) boosts.push({ label: "围巾", value: Math.floor(base * 1.5) });
-  if (hasMove(pokemon, /顺风/)) boosts.push({ label: "顺风", value: base * 2 });
+  if (hasMove(pokemon, MOVE_PATTERNS.speedControl)) boosts.push({ label: "控速", value: base * 2 });
   if (hasAbility(pokemon, /悠游自如|叶绿素|拨沙|拨雪|轻装|加速/)) boosts.push({ label: "特性加速", value: base * 2 });
   return boosts.sort((a, b) => b.value - a.value)[0] || { label: "原速", value: base };
 }
@@ -205,12 +221,12 @@ function getRoles(pokemon) {
   const moves = textOf(pokemon, "moves");
   const abilities = textOf(pokemon, "abilities");
   const items = textOf(pokemon, "items");
-  if (stat(pokemon, "攻击") >= 115 || /剑舞|龙舞/.test(moves)) roles.add("物理输出");
-  if (stat(pokemon, "特攻") >= 115 || /冥想|诡计/.test(moves)) roles.add("特殊输出");
+  if (stat(pokemon, "攻击") >= 115 || MOVE_PATTERNS.setup.test(moves)) roles.add("物理输出");
+  if (stat(pokemon, "特攻") >= 115 || MOVE_PATTERNS.setup.test(moves)) roles.add("特殊输出");
   if (stat(pokemon, "速度") >= 100) roles.add("高速位");
   if (stat(pokemon, "HP") + stat(pokemon, "防御") + stat(pokemon, "特防") >= 290) roles.add("耐久位");
-  if (/隐形岩|撒菱|剧毒|电磁波|鬼火|挑衅|顺风|戏法空间|看我嘛|击掌奇袭|广域防守|守住/.test(moves)) roles.add("功能位");
-  if (/威吓|再生力|魔法镜|粗糙皮肤|恶作剧之心|友情防守|避雷针/.test(abilities)) roles.add("特性价值");
+  if (MOVE_PATTERNS.hazard.test(moves) || MOVE_PATTERNS.status.test(moves) || MOVE_PATTERNS.speedControl.test(moves) || MOVE_PATTERNS.fakeOut.test(moves) || MOVE_PATTERNS.protect.test(moves) || MOVE_PATTERNS.redirection.test(moves)) roles.add("功能位");
+  if (/威吓|いかく|再生力|さいせいりょく|魔法镜|マジックミラー|粗糙皮肤|さめはだ|恶作剧之心|いたずらごころ|友情防守|フレンドガード|避雷针|ひらいしん/.test(abilities)) roles.add("特性价值");
   if (/气势披带|讲究|生命宝珠|突击背心|吃剩的东西|防尘护目镜/.test(items)) roles.add("标准配置");
   return [...roles];
 }
@@ -910,6 +926,7 @@ function fallbackPokemonForTeamMember(member) {
 function aiContext(mode) {
   const selectedIds = new Set(state.team.map((mon) => mon.id));
   const knowledge = battleKnowledge();
+  const compositionReport = getTeamCompositionReport();
   return {
     mode,
     promptMode: $("#ai-prompt-mode")?.value || "quick",
@@ -921,6 +938,7 @@ function aiContext(mode) {
       "Smogon 只做环境趋势和 matchup 参考",
     ],
     userGoal: $("#ai-user-goal")?.value?.trim() || "",
+    compositionReport,
     battleKnowledge: {
       sourceModel: knowledge.sourceModel,
       score: knowledge.score,
@@ -1732,10 +1750,170 @@ function renderMetrics() {
   $("#matchup-score").title = matchup.summary;
 }
 
+function getTeamCompositionReport() {
+  const team = state.team;
+  if (!team.length) {
+    return {
+      style: "未成队",
+      summary: "还没有队伍成员。",
+      cores: [],
+      winConditions: [],
+      supportPlan: [],
+      gaps: ["先选择 3 到 6 只宝可梦。"],
+      buildPriorities: [],
+    };
+  }
+
+  const profiles = team.map((mon) => {
+    const moves = textOf(mon, "moves");
+    const abilityText = textOf(mon, "abilities");
+    const itemText = textOf(mon, "items");
+    const atk = stat(mon, "攻击");
+    const spa = stat(mon, "特攻");
+    const spe = stat(mon, "速度");
+    const bulk = stat(mon, "HP") + stat(mon, "防御") + stat(mon, "特防");
+    const roles = getRoles(mon);
+    const flags = {
+      physical: atk >= 115 || MOVE_PATTERNS.setup.test(moves),
+      special: spa >= 115 || MOVE_PATTERNS.setup.test(moves),
+      fast: effectiveSpeed(mon).value >= 100 || spe >= 100,
+      bulky: bulk >= 290,
+      setup: MOVE_PATTERNS.setup.test(moves),
+      speedControl: MOVE_PATTERNS.speedControl.test(moves),
+      hazard: MOVE_PATTERNS.hazard.test(moves),
+      removal: MOVE_PATTERNS.removal.test(moves),
+      pivot: MOVE_PATTERNS.pivot.test(moves),
+      priority: MOVE_PATTERNS.priority.test(moves),
+      protect: MOVE_PATTERNS.protect.test(moves),
+      fakeOut: MOVE_PATTERNS.fakeOut.test(moves),
+      intimidate: MOVE_PATTERNS.intimidate.test(abilityText),
+      redirection: MOVE_PATTERNS.redirection.test(moves),
+      spread: MOVE_PATTERNS.spread.test(moves),
+      groundImmune: mon.types?.includes("飞行") || /漂浮/.test(abilityText),
+      choice: /讲究/.test(itemText),
+      sustain: MOVE_PATTERNS.sustain.test(`${moves} ${itemText} ${abilityText}`) || /剩饭|再生力|たべのこし|さいせいりょく/.test(`${itemText} ${abilityText}`),
+    };
+    const score = (flags.physical || flags.special ? 3 : 0) + (flags.fast ? 2 : 0) + (flags.setup ? 2 : 0) + (flags.choice ? 1 : 0) + (Number(mon.rank) <= 30 ? 1 : 0);
+    return { mon, roles, flags, score };
+  });
+
+  const count = (flag) => profiles.filter((item) => item.flags[flag]).length;
+  const offenseScore = count("fast") + count("setup") + count("priority") + count("choice") + count("physical") + count("special");
+  const structureScore = count("pivot") + count("sustain") + count("groundImmune") + count("hazard") + count("removal");
+  const doubleScore = count("protect") + count("fakeOut") + count("intimidate") + count("redirection") + count("spread");
+  const style =
+    state.format === "double"
+      ? doubleScore >= 5
+        ? "双打协作队"
+        : offenseScore >= 6
+          ? "双打进攻队"
+          : "双打平衡队"
+      : offenseScore >= 8
+        ? "单打进攻队"
+        : structureScore >= 5
+          ? "单打平衡/轮转队"
+          : "单打半攻队";
+
+  const cores = profiles
+    .filter((item) => item.flags.physical || item.flags.special || item.flags.setup || item.flags.speedControl || Number(item.mon.rank) <= 20)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3)
+    .map((item) => ({
+      name: item.mon.name,
+      reason: [
+        item.flags.physical ? "物攻压力" : "",
+        item.flags.special ? "特攻压力" : "",
+        item.flags.setup ? "强化终盘" : "",
+        item.flags.speedControl ? "控速" : "",
+        item.flags.fast ? "高速" : "",
+      ].filter(Boolean).join(" / ") || "环境核心",
+    }));
+
+  const winConditions = [];
+  const setup = profiles.find((item) => item.flags.setup);
+  const fastest = [...profiles].sort((a, b) => effectiveSpeed(b.mon).value - effectiveSpeed(a.mon).value)[0];
+  const priority = profiles.find((item) => item.flags.priority);
+  if (setup) winConditions.push(`保护 ${setup.mon.name} 的强化窗口，先削弱其换入点再收尾。`);
+  if (fastest) winConditions.push(`围绕 ${fastest.mon.name} 的速度线制造先手压制。`);
+  if (priority) winConditions.push(`${priority.mon.name} 可作为残局先制收割点。`);
+
+  const supportPlan = [];
+  const speedControl = profiles.find((item) => item.flags.speedControl);
+  const pivot = profiles.find((item) => item.flags.pivot);
+  const hazard = profiles.find((item) => item.flags.hazard);
+  const removal = profiles.find((item) => item.flags.removal);
+  if (speedControl) supportPlan.push(`${speedControl.mon.name} 负责控速，让核心更稳定进攻。`);
+  if (pivot) supportPlan.push(`${pivot.mon.name} 负责转场，把核心安全带上场。`);
+  if (hazard) supportPlan.push(`${hazard.mon.name} 提供撒场压力。`);
+  if (removal) supportPlan.push(`${removal.mon.name} 负责清场/除钉。`);
+  if (state.format === "double") {
+    const protectCount = count("protect");
+    if (protectCount) supportPlan.push(`当前有 ${protectCount} 个守住位，可围绕保护和集火节奏展开。`);
+  }
+
+  const gaps = [];
+  if (!count("speedControl")) gaps.push("缺少稳定控速。");
+  if (!count("groundImmune")) gaps.push("缺少地面免疫/安全换入点。");
+  if (!count("physical") || !count("special")) gaps.push("物攻/特攻压力不均衡。");
+  if (state.format === "single") {
+    if (!count("hazard")) gaps.push("单打缺少撒场压力。");
+    if (!count("removal")) gaps.push("单打缺少清场/除钉手段。");
+    if (!count("pivot") && !count("sustain")) gaps.push("换入链偏薄，核心容易被消耗。");
+  } else {
+    if (count("protect") < 3) gaps.push("双打守住数量偏少。");
+    if (!count("fakeOut") && !count("intimidate") && !count("redirection")) gaps.push("双打缺少击掌/威吓/掩护一类站场辅助。");
+    if (!count("spread")) gaps.push("双打缺少范围压制招式。");
+  }
+
+  const buildPriorities = gaps.slice(0, 4).map((gap) => {
+    if (gap.includes("控速")) return "优先补顺风、电磁波、岩石封锁、黏黏网或戏法空间。";
+    if (gap.includes("地面")) return "补飞行系、漂浮特性或能吃地面攻击的中转位。";
+    if (gap.includes("物攻/特攻")) return "补另一侧输出，避免被单一防守端卡住。";
+    if (gap.includes("撒场")) return "补隐形岩/撒菱/黏黏网。";
+    if (gap.includes("除钉")) return "补高速旋转或清除浓雾。";
+    if (gap.includes("守住")) return "双打配置至少让 3 只携带守住/看穿。";
+    if (gap.includes("站场辅助")) return "补击掌奇袭、威吓、看我嘛、愤怒粉或广域防守。";
+    return gap;
+  });
+
+  return {
+    style,
+    summary: `${style}：${cores.length ? `核心围绕 ${cores.map((item) => item.name).join("、")} 展开` : "核心尚不明确"}。`,
+    cores,
+    winConditions: winConditions.slice(0, 3),
+    supportPlan: supportPlan.slice(0, 4),
+    gaps: gaps.slice(0, 6),
+    buildPriorities: [...new Set(buildPriorities)].slice(0, 4),
+    counts: {
+      physical: count("physical"),
+      special: count("special"),
+      speedControl: count("speedControl"),
+      pivot: count("pivot"),
+      hazard: count("hazard"),
+      removal: count("removal"),
+      protect: count("protect"),
+      support: count("fakeOut") + count("intimidate") + count("redirection"),
+    },
+  };
+}
+
 function renderRoles() {
   const roles = new Map();
   state.team.forEach((mon) => getRoles(mon).forEach((role) => roles.set(role, (roles.get(role) || 0) + 1)));
-  $("#role-tags").innerHTML = roles.size ? [...roles.entries()].map(([role, count]) => `<span class="tag">${escapeHtml(role)} ${count}</span>`).join("") : `<p class="empty">选择宝可梦后显示队伍定位。</p>`;
+  if (!roles.size) {
+    $("#role-tags").innerHTML = `<p class="empty">选择宝可梦后显示队伍定位。</p>`;
+    return;
+  }
+  const composition = getTeamCompositionReport();
+  const compositionTags = [
+    composition.style,
+    ...composition.cores.map((item) => `核心 ${item.name}`),
+    ...composition.buildPriorities.slice(0, 2),
+  ];
+  $("#role-tags").innerHTML = [
+    ...compositionTags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`),
+    ...[...roles.entries()].map(([role, count]) => `<span class="tag">${escapeHtml(role)} ${count}</span>`),
+  ].join("");
 }
 
 function getSpeedThreats() {
@@ -1771,9 +1949,9 @@ function getOpponentConfigs() {
       show: true,
     }));
   }
-  const ownTaunt = state.team.some((mon) => hasMove(mon, /挑衅/));
-  const ownSpeedControl = state.team.some((mon) => hasMove(mon, /顺风|电磁波|戏法空间|冰冻之风/));
-  const ownFakeOut = state.team.some((mon) => hasMove(mon, /击掌奇袭/));
+  const ownTaunt = state.team.some((mon) => hasMove(mon, /挑衅|ちょうはつ|taunt/i));
+  const ownSpeedControl = state.team.some((mon) => hasMove(mon, MOVE_PATTERNS.speedControl));
+  const ownFakeOut = state.team.some((mon) => hasMove(mon, MOVE_PATTERNS.fakeOut));
   const ownGroundImmune = state.team.some((mon) => mon.types?.includes("飞行") || hasAbility(mon, /漂浮/));
   return [
     { title: "戏法空间", risk: ownTaunt ? "中" : "高", note: ownTaunt ? "有挑衅点，注意保护使用时机。" : "缺少直接阻止空间的手段。", show: true },
@@ -1815,14 +1993,16 @@ function renderPlan() {
   const byRank = [...team].filter((mon) => Number.isFinite(Number(mon.rank))).sort((a, b) => a.rank - b.rank);
   const anchors = byRank.length ? byRank.slice(0, 2) : team.slice(0, 2);
   const fastest = [...team].sort((a, b) => effectiveSpeed(b).value - effectiveSpeed(a).value)[0];
-  const hazard = team.find((mon) => hasMove(mon, /隐形岩|撒菱|毒菱|黏黏网/));
-  const removal = team.find((mon) => hasMove(mon, /高速旋转|清除浓雾/));
-  const setup = team.find((mon) => hasMove(mon, /剑舞|龙舞|诡计|冥想|健美|蝶舞|破壳/));
-  const speedControl = team.find((mon) => hasMove(mon, /顺风|电磁波|戏法空间|冰冻之风|岩石封锁|黏黏网/));
-  const pivot = team.find((mon) => hasMove(mon, /急速折返|伏特替换|抛下狠话|接棒/));
-  const priority = team.find((mon) => hasMove(mon, /神速|突袭|子弹拳|水流喷射|冰砾|影子偷袭|音速拳|击掌奇袭/));
-  const protect = team.filter((mon) => hasMove(mon, /守住/));
+  const hazard = team.find((mon) => hasMove(mon, MOVE_PATTERNS.hazard));
+  const removal = team.find((mon) => hasMove(mon, MOVE_PATTERNS.removal));
+  const setup = team.find((mon) => hasMove(mon, MOVE_PATTERNS.setup));
+  const speedControl = team.find((mon) => hasMove(mon, MOVE_PATTERNS.speedControl));
+  const pivot = team.find((mon) => hasMove(mon, MOVE_PATTERNS.pivot));
+  const priority = team.find((mon) => hasMove(mon, MOVE_PATTERNS.priority));
+  const protect = team.filter((mon) => hasMove(mon, MOVE_PATTERNS.protect));
+  const composition = getTeamCompositionReport();
   const plans = [];
+  plans.push(`阵容结构：${composition.summary}${composition.gaps.length ? ` 主要缺口：${composition.gaps.slice(0, 2).join(" ")}` : ""}`);
   plans.push(`核心路线：优先围绕 ${anchors.map((m) => m.name).join("、")} 建立输出或换入节奏。`);
   if (hazard) plans.push(`开局压力：${hazard.name} 可以铺场；${removal ? `${removal.name} 负责清场防止被反压。` : "队伍缺少清场手段，注意别被对面撒场滚雪球。"}`);
   else plans.push(state.format === "single" ? "单打缺少撒场点，主要依赖直接对攻、强化或轮转制造突破。" : "双打不依赖撒场，优先处理首回合站位、控速和集火目标。");
@@ -1838,7 +2018,7 @@ function renderPlan() {
   } else {
     plans.push("单打换入链偏少，选出时要提前确认谁负责吃关键属性攻击。");
   }
-  const plan = plans.slice(0, 5);
+  const plan = plans.slice(0, 6);
   $("#game-plan").innerHTML = plan.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
 }
 
