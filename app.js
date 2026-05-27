@@ -207,6 +207,49 @@ const MOVE_PATTERNS = {
   sustain: /自我再生|羽栖|月光|晨光|光合作用|じこさいせい|はねやすめ|つきのひかり|あさのひざし|こうごうせい|recover|roost|moonlight|morning sun|synthesis/i,
 };
 
+const ROLE_TEMPLATES = {
+  garchomp: {
+    roles: ["地面物攻核心", "撒场压制", "围巾清场"],
+    notes: ["常用来压制电/钢/火位，也能用隐形岩建立单打节奏。", "如果携带围巾，重点是中后期清场；如果携带气势披带，更像开局压制。"],
+  },
+  charizard: {
+    roles: ["Mega 核心", "晴天输出", "终盘强化"],
+    notes: ["需要保护进场和岩石抗性压力，队伍最好有清场/除钉或强换入节奏。"],
+  },
+  kangaskhan: {
+    roles: ["Mega 普通核心", "击掌/先制压制", "换血突破"],
+    notes: ["适合作为进攻轴起点，队伍需要处理格斗和鬼系换入。"],
+  },
+  gengar: {
+    roles: ["高速干扰", "鬼毒压制", "状态/收割"],
+    notes: ["适合补高速控制和对受队压力，但需要避免被先制和围巾位反杀。"],
+  },
+  primarina: {
+    roles: ["特殊破坏", "水妖联防", "龙/恶压制"],
+    notes: ["能补龙、恶、火等对位，但速度线偏慢，需要控速或安全换入。"],
+  },
+  corviknight: {
+    roles: ["物理中转", "地面免疫", "清场/轮转"],
+    notes: ["适合补换入链和地面免疫，能缓解队伍被物攻滚雪球。"],
+  },
+  duraludon: {
+    roles: ["钢龙炮台", "妖精/龙抗性", "特攻压制"],
+    notes: ["能补钢系联防和特殊输出，但需要注意地面与格斗压力。"],
+  },
+  incineroar: {
+    roles: ["威吓枢纽", "击掌辅助", "轮转"],
+    notes: ["双打常见节奏位，能帮核心获得安全行动回合。"],
+  },
+  rillaboom: {
+    roles: ["青草场地", "击掌辅助", "先制草压制"],
+    notes: ["适合帮队伍控地面伤害和补先制节奏。"],
+  },
+  amoonguss: {
+    roles: ["掩护辅助", "催眠干扰", "空间/慢速轴"],
+    notes: ["双打能用愤怒粉和蘑菇孢子保护核心，但要处理挑衅和草系免疫。"],
+  },
+};
+
 function effectiveSpeed(pokemon) {
   const base = stat(pokemon, "速度");
   const boosts = [];
@@ -245,6 +288,8 @@ function pokemonSummary(mon) {
     commonAbilities: mon.abilities?.slice(0, 5),
     commonNatures: mon.natures?.slice(0, 5),
     roles: getRoles(mon),
+    nameMap: nameMapFor(mon),
+    roleTemplate: roleTemplateFor(mon),
     externalKnowledge: externalKnowledgeFor(mon),
     importedConfig: importedConfigFor(mon),
     customConfig: editableConfigFor(mon),
@@ -297,6 +342,23 @@ function knowledgeEntryFor(mon) {
     return Object.values(cache.pokemon).find((entry) => Number(entry?.showdown?.num) === numericId) || null;
   }
   return null;
+}
+
+function nameMapFor(mon) {
+  const imported = importedConfigFor(mon);
+  const showdown = knowledgeEntryFor(mon)?.showdown;
+  return {
+    champion: mon?.name || "",
+    imported: imported?.name || "",
+    slug: mon?.slug || "",
+    showdown: showdown?.name || showdownSpeciesName(mon),
+    id: mon?.id || "",
+  };
+}
+
+function roleTemplateFor(mon) {
+  const keys = [mon?.slug, knowledgeEntryFor(mon)?.showdown?.name, mon?.name].map(idKey).filter(Boolean);
+  return keys.map((key) => ROLE_TEMPLATES[key]).find(Boolean) || null;
 }
 
 function englishTypesFor(mon) {
@@ -1768,6 +1830,7 @@ function getTeamCompositionReport() {
     const moves = textOf(mon, "moves");
     const abilityText = textOf(mon, "abilities");
     const itemText = textOf(mon, "items");
+    const roleTemplate = roleTemplateFor(mon);
     const atk = stat(mon, "攻击");
     const spa = stat(mon, "特攻");
     const spe = stat(mon, "速度");
@@ -1793,8 +1856,8 @@ function getTeamCompositionReport() {
       choice: /讲究/.test(itemText),
       sustain: MOVE_PATTERNS.sustain.test(`${moves} ${itemText} ${abilityText}`) || /剩饭|再生力|たべのこし|さいせいりょく/.test(`${itemText} ${abilityText}`),
     };
-    const score = (flags.physical || flags.special ? 3 : 0) + (flags.fast ? 2 : 0) + (flags.setup ? 2 : 0) + (flags.choice ? 1 : 0) + (Number(mon.rank) <= 30 ? 1 : 0);
-    return { mon, roles, flags, score };
+    const score = (flags.physical || flags.special ? 3 : 0) + (flags.fast ? 2 : 0) + (flags.setup ? 2 : 0) + (flags.choice ? 1 : 0) + (roleTemplate ? 1 : 0) + (Number(mon.rank) <= 30 ? 1 : 0);
+    return { mon, roles, flags, roleTemplate, nameMap: nameMapFor(mon), score };
   });
 
   const count = (flag) => profiles.filter((item) => item.flags[flag]).length;
@@ -1828,6 +1891,8 @@ function getTeamCompositionReport() {
         item.flags.fast ? "高速" : "",
       ].filter(Boolean).join(" / ") || "环境核心",
     }));
+
+  const archetypes = detectCoreArchetypes(profiles, state.format);
 
   const winConditions = [];
   const setup = profiles.find((item) => item.flags.setup);
@@ -1878,8 +1943,17 @@ function getTeamCompositionReport() {
 
   return {
     style,
-    summary: `${style}：${cores.length ? `核心围绕 ${cores.map((item) => item.name).join("、")} 展开` : "核心尚不明确"}。`,
+    summary: `${style}：${archetypes.length ? `${archetypes[0].name}，` : ""}${cores.length ? `核心围绕 ${cores.map((item) => item.name).join("、")} 展开` : "核心尚不明确"}。`,
     cores,
+    archetypes,
+    roleTemplates: profiles
+      .filter((item) => item.roleTemplate)
+      .map((item) => ({
+        name: item.mon.name,
+        roles: item.roleTemplate.roles,
+        notes: item.roleTemplate.notes,
+        nameMap: item.nameMap,
+      })),
     winConditions: winConditions.slice(0, 3),
     supportPlan: supportPlan.slice(0, 4),
     gaps: gaps.slice(0, 6),
@@ -1897,6 +1971,74 @@ function getTeamCompositionReport() {
   };
 }
 
+function detectCoreArchetypes(profiles, format) {
+  const hasType = (type) => profiles.some((item) => item.mon.types?.includes(type));
+  const hasFlag = (flag) => profiles.some((item) => item.flags[flag]);
+  const hasMoveText = (pattern) => profiles.some((item) => pattern.test(textOf(item.mon, "moves")));
+  const hasAbilityText = (pattern) => profiles.some((item) => pattern.test(textOf(item.mon, "abilities")));
+  const hasItemText = (pattern) => profiles.some((item) => pattern.test(textOf(item.mon, "items")));
+  const hasTemplate = (key) => profiles.some((item) => idKey(item.mon.slug) === key || idKey(item.nameMap.showdown) === key);
+  const archetypes = [];
+
+  if (hasItemText(/进化石|ナイト|mega/i)) {
+    archetypes.push({
+      name: "Mega 核心轴",
+      reason: "队伍携带 Mega 石，需要围绕 Mega 位创造安全进场和清场窗口。",
+      needs: ["保护 Mega 位血量", "补抗性换入", "避免多个 Mega 石冲突"],
+    });
+  }
+  if (hasAbilityText(/日照|ひでり|drought/i) || hasMoveText(/大晴天|にほんばれ|sunny day/i) || hasTemplate("charizard")) {
+    archetypes.push({
+      name: "晴天进攻轴",
+      reason: "队伍有晴天来源或晴天核心，适合放大火系/草系速度与输出。",
+      needs: ["补水/岩石应对", "保护天气手", "准备非晴天时的第二路线"],
+    });
+  }
+  if (hasAbilityText(/降雨|あめふらし|drizzle/i) || hasMoveText(/求雨|あまごい|rain dance/i)) {
+    archetypes.push({
+      name: "雨天速度轴",
+      reason: "队伍具备雨天来源，适合围绕水系高压和雨天加速推进。",
+      needs: ["补草/电抗性", "保护雨天回合", "准备反天气方案"],
+    });
+  }
+  if (hasFlag("hazard") && (hasFlag("fast") || hasFlag("priority") || hasFlag("setup"))) {
+    archetypes.push({
+      name: "撒场进攻轴",
+      reason: "有撒场压力和高速/先制/强化点，适合通过削血铺垫终盘。",
+      needs: ["保住撒场收益", "补清场防反压", "明确终盘清理手"],
+    });
+  }
+  if (hasFlag("pivot") && (hasFlag("bulky") || hasFlag("sustain"))) {
+    archetypes.push({
+      name: "轮转平衡轴",
+      reason: "有转场和耐久中转，适合通过换入链消耗对手。",
+      needs: ["避免被撒场拖垮", "补破盾或终盘点", "保持关键抗性血量"],
+    });
+  }
+  if (format === "double" && (hasFlag("fakeOut") || hasFlag("intimidate") || hasFlag("redirection"))) {
+    archetypes.push({
+      name: "双打站场协作轴",
+      reason: "具备击掌、威吓或掩护能力，适合围绕首回合节奏和核心输出展开。",
+      needs: ["提高守住数量", "补范围输出", "规划首发组合"],
+    });
+  }
+  if (format === "double" && hasFlag("speedControl")) {
+    archetypes.push({
+      name: "双打控速轴",
+      reason: "有顺风、空间、电磁波或冰风等控速手段，核心应围绕控速回合行动。",
+      needs: ["明确控速后谁输出", "防挑衅/击掌打断", "准备控速失效后的路线"],
+    });
+  }
+  if (hasType("钢") && hasType("妖精")) {
+    archetypes.push({
+      name: "钢妖联防轴",
+      reason: "钢与妖精能覆盖大量龙、恶、冰、妖精相关攻防压力。",
+      needs: ["补火/地面应对", "保留钢系血量", "补针对水火核心的打点"],
+    });
+  }
+  return archetypes.slice(0, 4);
+}
+
 function renderRoles() {
   const roles = new Map();
   state.team.forEach((mon) => getRoles(mon).forEach((role) => roles.set(role, (roles.get(role) || 0) + 1)));
@@ -1907,6 +2049,7 @@ function renderRoles() {
   const composition = getTeamCompositionReport();
   const compositionTags = [
     composition.style,
+    ...composition.archetypes.slice(0, 2).map((item) => item.name),
     ...composition.cores.map((item) => `核心 ${item.name}`),
     ...composition.buildPriorities.slice(0, 2),
   ];

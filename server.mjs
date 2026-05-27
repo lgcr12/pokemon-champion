@@ -127,6 +127,7 @@ function buildPrompt(payload) {
 16. 如果 battleKnowledge.legality.violations 不为空，最终 JSON 中必须规避这些问题，不要重复输出同样违规配置。
 17. 必须参考 compositionReport 的 style、cores、winConditions、gaps、buildPriorities。输出队伍不能只堆热门成员，必须围绕已识别核心补足阵容结构。
 18. 如果 compositionReport.gaps 和 matchupReport.threats 指向同一问题，优先用补位或配置调整解决这个问题，并在 note 中说明该成员解决了什么缺口。
+19. 如果 compositionReport 中有 archetypes 或 roleTemplates，必须优先沿用这些队伍轴和职责模板，除非它们与 Champions 当前数据冲突。
 
 JSON 结构：
 {
