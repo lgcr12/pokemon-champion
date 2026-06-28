@@ -17,6 +17,10 @@ const SOURCES = {
   },
   smogonIndex: "https://pkmn.github.io/smogon/data/stats/index.json",
   smogonFormat: (format) => `https://pkmn.github.io/smogon/data/stats/${format}.json`,
+  pokeCamp: {
+    pokemon: "https://pokecamp.cc/zh/champions/pokemon",
+    speedline: "https://pokecamp.cc/zh/champions/speedline",
+  },
 };
 
 const headers = {
@@ -47,6 +51,13 @@ async function fetchText(url, retries = 4) {
 
 async function fetchJson(url) {
   return JSON.parse(await fetchText(url));
+}
+
+async function fetchNextPageProps(url) {
+  const html = await fetchText(url);
+  const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/);
+  if (!match) throw new Error(`Missing __NEXT_DATA__ in ${url}`);
+  return JSON.parse(match[1]).props?.pageProps || {};
 }
 
 async function fetchShowdownExport(url, exportName) {
@@ -162,6 +173,93 @@ function summarizeAbility(id, ability = {}) {
   };
 }
 
+function summarizePokeCampPokemon(entry = {}) {
+  const usage = entry.usage || {};
+  return {
+    id: entry.id,
+    identifier: entry.identifier || "",
+    speciesIdentifier: entry.speciesIdentifier || "",
+    names: {
+      zh: entry.nameZh || entry.displayName || "",
+      ja: entry.nameJa || "",
+      en: entry.nameEn || usage.sourceName || "",
+    },
+    types: entry.types || [],
+    sprite: entry.sprite || "",
+    generationId: entry.generationId || 0,
+    baseSpeed: entry.stats?.speed || 0,
+    stats: entry.stats || {},
+    isMega: Boolean(entry.isMega),
+    usesMegaItem: Boolean(entry.usesMegaItem),
+    usage: {
+      dateRange: usage.dateRange || null,
+      rank: usage.rank || 0,
+      usagePercent: usage.usagePercent || 0,
+      teamCount: usage.teamCount || 0,
+      singlesRank: usage.singlesRank || 0,
+      singlesUsagePercent: usage.singlesUsagePercent || 0,
+      singlesTeamCount: usage.singlesTeamCount || 0,
+      doublesRank: usage.doublesRank || 0,
+      doublesUsagePercent: usage.doublesUsagePercent || 0,
+      doublesTeamCount: usage.doublesTeamCount || 0,
+      tournamentCount: usage.tournamentCount || 0,
+      winRate: usage.winRate || 0,
+      sourceKey: usage.sourceKey || "",
+    },
+  };
+}
+
+function summarizePokeCampSpeedPokemon(entry = {}) {
+  return {
+    id: entry.id,
+    linkId: entry.linkId || entry.id,
+    name: entry.displayName || "",
+    types: entry.types || [],
+    sprite: entry.sprite || "",
+  };
+}
+
+function summarizePokeCampPreset(preset = {}) {
+  const pick = (value = {}) => ({
+    natureId: value.natureId || "",
+    speedSp: Number(value.speedSp || 0),
+    speedSpPercentage: Number(value.speedSpPercentage || 0),
+    natureStats: value.natureStats || {},
+  });
+  return {
+    all: pick(preset.all),
+    singles: pick(preset.singles),
+    doubles: pick(preset.doubles),
+  };
+}
+
+function summarizePokeCampData(pokemonProps = {}, speedProps = {}) {
+  const pokemonRegulations = pokemonProps.dataByRegulation || {};
+  const speedRegulations = speedProps.dataByRegulation || {};
+  const regulations = {};
+  const names = [...new Set([...Object.keys(pokemonRegulations), ...Object.keys(speedRegulations)])];
+  for (const regulation of names) {
+    const usageData = pokemonRegulations[regulation]?.limitless || {};
+    const speedData = speedRegulations[regulation]?.limitless || {};
+    const pokemonList = (usageData.pokemonList || speedData.pokemonList || []).map(summarizePokeCampPokemon);
+    const baseGroups = (speedData.panelData?.baseGroups || []).map((group) => ({
+      baseSpeed: group.baseSpeed,
+      pokemons: (group.pokemons || []).map(summarizePokeCampSpeedPokemon),
+    }));
+    regulations[regulation] = {
+      source: "limitless",
+      meta: usageData.meta || {},
+      dateRange: pokemonList.find((item) => item.usage?.rank)?.usage?.dateRange || usageData.pokemonList?.[0]?.usage?.dateRange || null,
+      pokemonList,
+      speedline: {
+        baseGroups,
+        presets: Object.fromEntries(Object.entries(speedData.presets || {}).map(([id, preset]) => [id, summarizePokeCampPreset(preset)])),
+      },
+    };
+  }
+  return regulations;
+}
+
 async function main() {
   await mkdir("data", { recursive: true });
   console.log("Fetching Pokemon Showdown dex data...");
@@ -202,16 +300,26 @@ async function main() {
     }
   }
 
+  console.log("Fetching PokeCamp Champions usage and speedline data...");
+  const pokeCamp = await Promise.all([fetchNextPageProps(SOURCES.pokeCamp.pokemon), fetchNextPageProps(SOURCES.pokeCamp.speedline)])
+    .then(([pokemonProps, speedProps]) => summarizePokeCampData(pokemonProps, speedProps))
+    .catch((err) => {
+      console.warn(`Skipped PokeCamp data: ${err.message}`);
+      return {};
+    });
+
   const output = {
     source: {
       showdown: SOURCES.showdown,
       smogonIndex: SOURCES.smogonIndex,
       smogonFormats: selectedFormats.map((format) => SOURCES.smogonFormat(format)),
+      pokeCamp: SOURCES.pokeCamp,
     },
     fetchedAt: new Date().toISOString(),
     notes: [
       "Pokemon Showdown data is used for rules, species, moves, abilities and items.",
       "pkmn Smogon stats is used for aggregated usage, moves, items, teammates, tera types and counters.",
+      "PokeCamp Champions data is used for Limitless usage summaries and speedline presets.",
       "This file is a compact AI knowledge cache, not a full legality engine.",
     ],
     formats: selectedFormats,
@@ -223,6 +331,7 @@ async function main() {
     moves: Object.fromEntries(Object.entries(moves).map(([id, move]) => [id, summarizeMove(id, move)])),
     items: Object.fromEntries(Object.entries(items).map(([id, item]) => [id, summarizeItem(id, item)])),
     abilities: Object.fromEntries(Object.entries(abilities).map(([id, ability]) => [id, summarizeAbility(id, ability)])),
+    pokeCamp,
   };
 
   await writeFile(OUT_FILE, `${JSON.stringify(output, null, 2)}\n`, "utf8");
@@ -230,6 +339,7 @@ async function main() {
   console.log(`Formats: ${selectedFormats.join(", ")}`);
   console.log(`Pokemon entries: ${Object.keys(output.pokemon).length}`);
   console.log(`Moves: ${Object.keys(output.moves).length}, items: ${Object.keys(output.items).length}, abilities: ${Object.keys(output.abilities).length}`);
+  console.log(`PokeCamp regulations: ${Object.keys(output.pokeCamp).join(", ") || "none"}`);
 }
 
 main().catch((err) => {

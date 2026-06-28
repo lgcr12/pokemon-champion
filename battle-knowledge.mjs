@@ -282,7 +282,7 @@ function buildLegality(members) {
   const violations = [
     ...duplicateSpecies.map((names) => `重复宝可梦：${names.join("、")}`),
     ...duplicateItems.map((entry) => `重复道具：${entry.members.join("、")} 都携带 ${entry.item}`),
-    ...(megaUsers.length > 1 ? [`Mega 进化限制：同队只允许 1 个 Mega，当前 ${megaUsers.join("、")}`] : []),
+    ...(megaUsers.length > 2 ? [`Mega 位过多：通常保留 1 个主 Mega，最多 2 个主副分支，当前 ${megaUsers.join("、")}`] : []),
     ...missing,
   ];
 

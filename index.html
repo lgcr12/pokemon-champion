@@ -56,6 +56,22 @@
         <div><strong>3</strong><span>查看分析并导出文本</span></div>
       </section>
 
+      <section class="speedline-board floating-card" aria-label="速度线表">
+        <div class="speedline-head">
+          <div>
+            <p class="eyebrow">Speed Benchmarks</p>
+            <h2>速度线表</h2>
+            <p class="section-note">按当前格式展示环境里的关键速度档，加入队伍后会标出你方最高速度能压过哪些档位。</p>
+          </div>
+          <div class="speedline-legend">
+            <span><i class="is-ahead"></i> 已压过</span>
+            <span><i class="is-close"></i> 接近</span>
+            <span><i></i> 需控速</span>
+          </div>
+        </div>
+        <div id="speedline-table" class="speedline-table"></div>
+      </section>
+
       <main class="main-content">
         <section class="team-builder floating-card">
           <div class="builder-header">
@@ -100,9 +116,11 @@
             <div>
               <p class="eyebrow">Team Library</p>
               <h2>热门队伍构筑</h2>
-              <p class="section-note">来自 pokemon-teams.pages.dev。选择一支队伍后，会按可匹配成员导入，并继续生成速度威胁、空间和阵容风险提示。</p>
+              <p class="section-note">公开热门构筑与玩家上传队伍分开选择。玩家上传队伍会显示租借码，导入后继续生成速度威胁、空间和阵容风险提示。</p>
             </div>
             <div class="library-actions">
+              <select id="team-season-select" aria-label="选择队伍赛季"></select>
+              <select id="team-source-select" aria-label="选择队伍来源"></select>
               <select id="team-library-select" aria-label="选择热门队伍"></select>
               <button id="import-team-btn" class="btn-primary" type="button">使用这支队伍</button>
             </div>
@@ -119,6 +137,14 @@
             </div>
             <div class="ai-actions">
               <button id="ai-settings-toggle" class="btn-outline neutral" type="button">API 设置</button>
+              <select id="ai-build-intent" class="ai-mode-select" aria-label="构筑意图">
+                <option value="auto">自动判断</option>
+                <option value="new-team">从零构筑</option>
+                <option value="current-team">围绕当前队伍</option>
+                <option value="counter-target">反制目标</option>
+                <option value="complete-team">补全队伍</option>
+                <option value="moveset-only">只改配置</option>
+              </select>
               <select id="ai-prompt-mode" class="ai-mode-select" aria-label="AI 推理模式">
                 <option value="quick">快速</option>
                 <option value="deep">详细</option>
@@ -126,6 +152,7 @@
               </select>
               <button id="ai-build-config" class="btn-primary" type="button">想配置</button>
               <button id="ai-complete-team" class="btn-outline neutral" type="button">补全队伍</button>
+              <button id="battle-review-btn" class="btn-outline neutral" type="button">对局回顾</button>
             </div>
           </div>
           <div id="ai-settings-panel" class="ai-settings-panel" hidden>
@@ -172,14 +199,14 @@
               <p>大多数国产模型选择 Chat Completions。Base URL 可以带 /v1，也可以不带；项目会自动处理。</p>
             </details>
             <div class="ai-settings-actions">
-              <small id="ai-config-status">未填写时会自动尝试环境变量或 Cockpit 本地访问。</small>
+              <small id="ai-config-status">请在此填写 API Key、Base URL 和模型后再使用。</small>
               <button id="ai-save-config" class="btn-primary compact" type="button">保存配置</button>
               <button id="ai-test-config" class="btn-outline neutral compact" type="button">测试连接</button>
               <button id="ai-clear-config" class="btn-outline neutral compact" type="button">清除</button>
             </div>
           </div>
-          <textarea id="ai-user-goal" class="ai-goal-input" rows="3" placeholder="可选：写下你的目标，例如想围绕烈咬陆鲨做单打进攻队、想要更稳的空间对策、不要太依赖先读。"></textarea>
-          <div id="ai-output" class="ai-output" aria-live="polite">选择宝可梦后点击上方按钮。需要用 AI 时，请用本地 AI 服务启动页面。</div>
+          <textarea id="ai-user-goal" class="ai-goal-input" rows="3" placeholder="可选：写下你的目标。可以不选宝可梦，例如“帮我想一个克制姆克鹰的阵容”；也可以围绕已选宝可梦补强。"></textarea>
+          <div id="ai-output" class="ai-output" aria-live="polite">选择宝可梦，或直接写目标后点击上方按钮。需要用 AI 时，请用本地 AI 服务启动页面。</div>
         </section>
         <section class="data-health floating-card">
           <div class="library-header">

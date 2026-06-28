@@ -4,5 +4,9 @@ server.log
 server.err.log
 .env
 .DS_Store
+__pycache__/
+*.py[cod]
 data/*.json
 !data/.gitkeep
+skills/pocket-ag-coach/references/audio/
+skills/pocket-ag-coach/references/audio-transcripts/

@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 
 const BASE_URL = "https://pokechamdb.com/zh-Hans";
 const FORMATS = (process.env.FORMATS || process.env.FORMAT || "single,double")
@@ -6,10 +6,15 @@ const FORMATS = (process.env.FORMATS || process.env.FORMAT || "single,double")
   .map((format) => format.trim())
   .filter(Boolean);
 const SEASON = process.env.SEASON || "M-2";
-const LIMIT = Number(process.env.LIMIT || 220);
+const LIMIT = Number(process.env.LIMIT || 300);
+const SUPPLEMENT_TARGET = Number(process.env.SUPPLEMENT_TARGET || 227);
+const POKECAMP_REGULATION = process.env.POKECAMP_REGULATION || "M-A";
 const REQUEST_DELAY_MS = Number(process.env.REQUEST_DELAY_MS || 650);
 const MISSING_ONLY = process.env.MISSING_ONLY === "1";
+const SKIP_DETAILS = process.env.SKIP_DETAILS === "1";
 const OUT_FILE = "data/champion-data.json";
+const TEMP_OUT_FILE = `${OUT_FILE}.tmp`;
+const POKECAMP_URL = "https://pokecamp.cc/zh/champions/pokemon";
 
 const headers = {
   "user-agent":
@@ -190,13 +195,213 @@ function extractDetail(html, base) {
   };
 }
 
+const TYPE_EN_TO_CN = {
+  normal: "一般",
+  fire: "火",
+  water: "水",
+  electric: "电",
+  grass: "草",
+  ice: "冰",
+  fighting: "格斗",
+  poison: "毒",
+  ground: "地面",
+  flying: "飞行",
+  psychic: "超能力",
+  bug: "虫",
+  rock: "岩石",
+  ghost: "幽灵",
+  dragon: "龙",
+  dark: "恶",
+  steel: "钢",
+  fairy: "妖精",
+};
+
+function statBlock(stats = {}) {
+  return {
+    HP: Number(stats.hp || 0),
+    攻击: Number(stats.attack || 0),
+    防御: Number(stats.defense || 0),
+    特攻: Number(stats.specialAttack || 0),
+    特防: Number(stats.specialDefense || 0),
+    速度: Number(stats.speed || 0),
+  };
+}
+
+function absolutePokeCampSprite(sprite = "") {
+  if (!sprite) return "";
+  if (/^https?:\/\//i.test(sprite)) return sprite;
+  return `https://pokecamp.cc${sprite.startsWith("/") ? "" : "/"}${sprite}`;
+}
+
+function idFromSprite(sprite = "") {
+  return Number(String(sprite).match(/\/pokemon\/(\d+)\.png/)?.[1] || 0);
+}
+
+async function fetchPokeCampPokemon() {
+  const html = await fetchText(POKECAMP_URL);
+  const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/);
+  if (!match) return { regulation: "", pokemonList: [] };
+
+  const pageProps = JSON.parse(match[1]).props?.pageProps || {};
+  const dataByRegulation = pageProps.dataByRegulation || {};
+  const preferred = dataByRegulation[POKECAMP_REGULATION] ? POKECAMP_REGULATION : Object.keys(dataByRegulation)[0] || "";
+  const pokemonList = dataByRegulation[preferred]?.limitless?.pokemonList || [];
+  return {
+    regulation: preferred,
+    meta: dataByRegulation[preferred]?.limitless?.meta || {},
+    pokemonList,
+  };
+}
+
+function pokeCampEntryForBase(base, pokeCampData) {
+  if (!pokeCampData?.pokemonList?.length) return null;
+  const id = idFromSprite(base.sprite);
+  const keys = new Set([base.slug, base.name].map((value) => String(value || "").toLowerCase()).filter(Boolean));
+  return (
+    pokeCampData.pokemonList.find((entry) => Number(entry.id) === id && id) ||
+    pokeCampData.pokemonList.find((entry) =>
+      [entry.identifier, entry.speciesIdentifier, entry.nameZh, entry.displayName, entry.nameEn]
+        .map((value) => String(value || "").toLowerCase())
+        .some((key) => keys.has(key)),
+    ) ||
+    null
+  );
+}
+
+function baseFromPokeCamp(entry, rank) {
+  const usage = entry.usage || {};
+  const slug = entry.identifier || entry.speciesIdentifier || "";
+  return {
+    rank,
+    slug,
+    name: entry.nameZh || entry.displayName || entry.nameEn || slug,
+    sprite: absolutePokeCampSprite(entry.sprite),
+    id: Number(entry.id || 0),
+    types: (entry.types || []).map((type) => TYPE_EN_TO_CN[type] || type).filter(Boolean),
+    stats: statBlock(entry.stats),
+    moves: [],
+    items: [],
+    abilities: [],
+    natures: [],
+    partners: [],
+    supplemental: true,
+    supplementalSource: "PokeCamp Champions / Limitless",
+    usage: {
+      rank: Number(usage.rank || 0),
+      singlesRank: Number(usage.singlesRank || 0),
+      doublesRank: Number(usage.doublesRank || 0),
+      usagePercent: Number(usage.usagePercent || 0),
+      teamCount: Number(usage.teamCount || 0),
+    },
+  };
+}
+
+function enrichBaseFromPokeCamp(base, pokeCampData) {
+  const entry = pokeCampEntryForBase(base, pokeCampData);
+  if (!entry) {
+    return {
+      ...base,
+      id: idFromSprite(base.sprite),
+      types: [],
+      stats: {},
+      moves: [],
+      items: [],
+      abilities: [],
+      natures: [],
+      partners: [],
+    };
+  }
+  return {
+    ...baseFromPokeCamp(entry, base.rank),
+    slug: base.slug || entry.identifier || entry.speciesIdentifier || "",
+    name: base.name || entry.nameZh || entry.displayName || entry.nameEn || "",
+    sprite: base.sprite || absolutePokeCampSprite(entry.sprite),
+    supplemental: false,
+    supplementalSource: "",
+  };
+}
+
+function supplementFromPokeCamp(pokemon, pokeCampData, format) {
+  if (!SUPPLEMENT_TARGET || pokemon.length >= SUPPLEMENT_TARGET || !pokeCampData?.pokemonList?.length) {
+    return { pokemon, added: 0, source: null };
+  }
+
+  const seenIds = new Set(pokemon.map((mon) => Number(mon.id)).filter(Boolean));
+  const seenKeys = new Set(
+    pokemon
+      .flatMap((mon) => [mon.slug, mon.name])
+      .map((value) => String(value || "").toLowerCase())
+      .filter(Boolean),
+  );
+  const next = [...pokemon];
+
+  const scoreForFormat = (entry) => {
+    const usage = entry.usage || {};
+    if (format === "single") return Number(usage.singlesRank || usage.rank || 9999);
+    if (format === "double") return Number(usage.doublesRank || usage.rank || 9999);
+    return Number(usage.rank || 9999);
+  };
+
+  const candidates = [...pokeCampData.pokemonList].sort((a, b) => scoreForFormat(a) - scoreForFormat(b));
+  for (const entry of candidates) {
+    if (next.length >= SUPPLEMENT_TARGET) break;
+    const usage = entry.usage || {};
+    const id = Number(entry.id || 0);
+    const slug = entry.identifier || entry.speciesIdentifier || "";
+    const name = entry.nameZh || entry.displayName || entry.nameEn || slug;
+    const keys = [slug, name, entry.nameEn].map((value) => String(value || "").toLowerCase()).filter(Boolean);
+    if ((id && seenIds.has(id)) || keys.some((key) => seenKeys.has(key))) continue;
+
+    next.push(baseFromPokeCamp(entry, next.length + 1));
+    if (id) seenIds.add(id);
+    keys.forEach((key) => seenKeys.add(key));
+  }
+
+  return {
+    pokemon: next,
+    added: next.length - pokemon.length,
+    source: next.length > pokemon.length ? "PokeCamp Champions / Limitless" : null,
+  };
+}
+
 async function fetchFormat(format, existingFormat = null) {
   const listUrl = `${BASE_URL}?format=${format}&season=${SEASON}&view=pokemon`;
   const listHtml = await fetchText(listUrl);
-  const ranking = extractRanking(listHtml, format).slice(0, LIMIT);
+  let ranking = extractRanking(listHtml, format).slice(0, LIMIT);
+  if (!ranking.length && existingFormat?.pokemon?.length) {
+    console.warn(`[${format}] Ranking list unavailable; reusing ${existingFormat.pokemon.length} cached entries.`);
+    ranking = existingFormat.pokemon
+      .map((mon, index) => ({
+        rank: Number(mon.rank || index + 1),
+        slug: mon.slug,
+        name: mon.name,
+        sprite: mon.sprite,
+      }))
+      .filter((mon) => mon.slug);
+  }
   if (!ranking.length) throw new Error(`No ranking entries found for ${format}.`);
 
   const cached = new Map((existingFormat?.pokemon || []).map((mon) => [mon.slug, mon]));
+  const pokeCampData = ranking.length < SUPPLEMENT_TARGET ? await fetchPokeCampPokemon().catch((err) => {
+    console.warn(`[${format}] PokeCamp supplement unavailable: ${err.message}`);
+    return null;
+  }) : null;
+
+  if (SKIP_DETAILS) {
+    const pokemon = ranking.map((base) => enrichBaseFromPokeCamp(base, pokeCampData));
+    const supplemented = supplementFromPokeCamp(pokemon, pokeCampData, format);
+    if (supplemented.added) console.log(`[${format}] Added ${supplemented.added} supplemental entries from PokeCamp.`);
+    return {
+      source: `${BASE_URL}?format=${format}&season=${SEASON}&view=pokemon`,
+      fetchedAt: new Date().toISOString(),
+      updatedAt: extractUpdatedAt(listHtml),
+      season: SEASON,
+      format,
+      supplementalSource: supplemented.source || "",
+      pokemon: supplemented.pokemon,
+    };
+  }
+
   if (MISSING_ONLY) {
     const existingPokemon = existingFormat?.pokemon || [];
     const existingBySlug = new Map(existingPokemon.map((mon) => [mon.slug, mon]));
@@ -215,6 +420,12 @@ async function fetchFormat(format, existingFormat = null) {
       await sleep(REQUEST_DELAY_MS);
     }
     console.log(`[${format}] Missing-only refresh filled ${missingCount} entries.`);
+    const supplemented = supplementFromPokeCamp(
+      [...existingBySlug.values()].sort((a, b) => Number(a.rank || 9999) - Number(b.rank || 9999)),
+      pokeCampData,
+      format,
+    );
+    if (supplemented.added) console.log(`[${format}] Added ${supplemented.added} supplemental entries from PokeCamp.`);
     return {
       ...(existingFormat || {}),
       source: `${BASE_URL}?format=${format}&season=${SEASON}&view=pokemon`,
@@ -223,7 +434,8 @@ async function fetchFormat(format, existingFormat = null) {
       updatedAt: extractUpdatedAt(listHtml) || existingFormat?.updatedAt || "",
       season: SEASON,
       format,
-      pokemon: [...existingBySlug.values()].sort((a, b) => Number(a.rank || 9999) - Number(b.rank || 9999)),
+      supplementalSource: supplemented.source || existingFormat?.supplementalSource || "",
+      pokemon: supplemented.pokemon,
     };
   }
 
@@ -237,10 +449,19 @@ async function fetchFormat(format, existingFormat = null) {
 
     const url = `${BASE_URL}/pokemon/${base.slug}?season=${SEASON}&format=${format}`;
     console.log(`[${format}] Fetching #${base.rank} ${base.name} (${base.slug})`);
-    const html = await fetchText(url);
-    pokemon.push(extractDetail(html, base));
+    try {
+      const html = await fetchText(url);
+      pokemon.push(extractDetail(html, base));
+    } catch (err) {
+      const fallback = old || base;
+      console.warn(`[${format}] Skipped ${base.slug}: ${err.message}`);
+      pokemon.push({ ...fallback, ...base });
+    }
     await sleep(REQUEST_DELAY_MS);
   }
+
+  const supplemented = supplementFromPokeCamp(pokemon, pokeCampData, format);
+  if (supplemented.added) console.log(`[${format}] Added ${supplemented.added} supplemental entries from PokeCamp.`);
 
   return {
     source: `${BASE_URL}?format=${format}&season=${SEASON}&view=pokemon`,
@@ -248,7 +469,8 @@ async function fetchFormat(format, existingFormat = null) {
     updatedAt: extractUpdatedAt(listHtml),
     season: SEASON,
     format,
-    pokemon,
+    supplementalSource: supplemented.source || "",
+    pokemon: supplemented.pokemon,
   };
 }
 
@@ -277,7 +499,8 @@ async function main() {
     formats,
   };
 
-  await writeFile(OUT_FILE, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+  await writeFile(TEMP_OUT_FILE, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+  await rename(TEMP_OUT_FILE, OUT_FILE);
   console.log(`Wrote ${Object.keys(formats).join(", ")} data to ${OUT_FILE}`);
 }
 
