@@ -506,6 +506,10 @@ function buildPrompt(payload) {
       : payload.promptMode === "deep"
         ? "详细推理：重点分析速度控制、轮转、终盘、双打守住/站位，但最终仍只输出 JSON。"
         : "快速建议：优先给可直接应用的稳妥配置。";
+  const uiLevel = payload.uiLevel || payload.intent?.uiLevel || {};
+  const uiLevelText = uiLevel.label
+    ? `\n当前界面层级：${uiLevel.label}\n表达密度要求：${uiLevel.instruction || "按当前用户熟练度调整说明密度。"}\n注意：界面层级只影响 summary/plan/watch/note 的表达密度，不降低构筑质量和结构自检要求。`
+    : "";
   const pocketAgCoach = formatPocketAgCoachRules(pocketAgCoachRules, payload);
   const quickOutputRequirements = `输出要求：
 1. 只返回严格 JSON，不要 Markdown 或解释性结尾。
@@ -546,6 +550,7 @@ function buildPrompt(payload) {
 构筑意图：${buildIntent}
 当前规则：${payload.formatLabel || payload.format}
 用户目标：${payload.userGoal || "未填写"}
+${uiLevelText}
 ${requestedStyle}
 ${requestedTemplate}
 ${hardGoalConstraints}

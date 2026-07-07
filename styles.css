@@ -377,6 +377,76 @@ input {
   padding: 0 24px 56px;
 }
 
+body[data-ui-level="beginner"] [data-ui-min="intermediate"],
+body[data-ui-level="beginner"] [data-ui-min="advanced"],
+body[data-ui-level="intermediate"] [data-ui-min="advanced"] {
+  display: none !important;
+}
+
+body[data-ui-level="beginner"] .analysis-dashboard .metrics-row,
+body[data-ui-level="beginner"] .analysis-dashboard .bento-card:not(.bento-primary),
+body[data-ui-level="beginner"] .analysis-dashboard .set-matrix {
+  display: none !important;
+}
+
+body[data-ui-level="beginner"] .analysis-dashboard .bento-grid {
+  display: block;
+}
+
+body[data-ui-level="beginner"] .analysis-dashboard .bento-primary,
+body[data-ui-level="beginner"] .analysis-dashboard .bento-primary .game-plan-list {
+  display: block;
+}
+
+body[data-ui-level="beginner"] .team-library .library-header,
+body[data-ui-level="beginner"] .ai-builder .library-header,
+body[data-ui-level="beginner"] .data-health .library-header {
+  gap: 10px;
+}
+
+body[data-ui-level="beginner"] .ai-builder .ai-actions {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+body[data-ui-level="beginner"] .ai-builder .ai-actions-main,
+body[data-ui-level="beginner"] .ai-builder .ai-actions-workbench,
+body[data-ui-level="beginner"] .ai-builder .ai-actions-advanced {
+  display: grid;
+  gap: 8px;
+}
+
+body[data-ui-level="beginner"] .ai-builder .ai-actions-workbench,
+body[data-ui-level="beginner"] .ai-builder .ai-actions-advanced,
+body[data-ui-level="beginner"] .ai-builder .ai-settings-panel {
+  display: none !important;
+}
+
+body[data-ui-level="beginner"] .ai-output {
+  min-height: 92px;
+}
+
+body[data-ui-level="beginner"] .speedline-table,
+body[data-ui-level="beginner"] .speedline-legend {
+  display: none !important;
+}
+
+body[data-ui-level="beginner"] .speedline-head {
+  grid-template-columns: 1fr;
+  padding-bottom: 8px;
+}
+
+body[data-ui-level="beginner"] .speedline-head h2 {
+  font-size: 20px;
+}
+
+body[data-ui-level="beginner"] .speedline-head .section-note {
+  max-width: 680px;
+}
+
+body[data-ui-level="intermediate"] .refresh-log {
+  display: none !important;
+}
+
 .main-content {
   display: grid;
   grid-template-columns: minmax(0, 1.05fr) minmax(360px, 0.95fr);
@@ -608,6 +678,14 @@ body.has-ai-advice .team-library-preview {
   letter-spacing: 0;
 }
 
+.hero-subtitle {
+  max-width: 760px;
+  margin: 10px 0 0;
+  color: var(--text-muted);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
 .eyebrow {
   margin: 0;
   color: var(--color-info);
@@ -625,6 +703,10 @@ body.has-ai-advice .team-library-preview {
   border: 1px solid rgba(219, 227, 238, 0.9);
   border-radius: var(--radius-lg);
   background: var(--bg-surface);
+}
+
+.control-panel label {
+  min-width: 0;
 }
 
 .control-panel label {
@@ -653,33 +735,46 @@ body.has-ai-advice .team-library-preview {
   margin: -8px 0 20px;
 }
 
-.quickstart-strip div {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 48px;
-  padding: 10px 12px;
+.quickstart-action {
+  display: grid;
+  gap: 4px;
+  min-height: 64px;
+  padding: 12px 14px;
   border: 1px solid rgba(219, 227, 238, 0.86);
   border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.82);
   box-shadow: var(--shadow-sm);
+  text-align: left;
+  cursor: pointer;
 }
 
-.quickstart-strip strong {
-  display: grid;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  background: var(--text-main);
-  color: #ffffff;
-  font-size: 13px;
+.quickstart-action strong {
+  color: var(--text-main);
+  font-size: 14px;
+  font-weight: 900;
 }
 
-.quickstart-strip span {
+.quickstart-action span {
+  display: block;
   color: var(--text-main);
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 700;
+}
+
+.quickstart-action.is-primary {
+  border-color: rgba(37, 99, 235, 0.28);
+  background: rgba(239, 246, 255, 0.96);
+}
+
+.speedline-summary {
+  margin-top: 12px;
+}
+
+.speedline-summary-text {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1.6;
 }
 
 .floating-card,
@@ -987,6 +1082,10 @@ body.has-ai-advice .team-library-preview {
   margin: 18px 0 20px;
   padding: 20px;
   border-radius: var(--radius-lg);
+}
+
+.speedline-summary {
+  padding: 12px 14px 0;
 }
 
 .speedline-head {
@@ -1396,9 +1495,31 @@ body.has-ai-advice .team-library-preview {
 }
 
 .ai-actions {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
   align-items: center;
+}
+
+.ai-actions-main,
+.ai-actions-workbench,
+.ai-actions-advanced {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.ai-actions-main {
+  justify-content: flex-start;
+}
+
+.ai-actions-workbench {
+  justify-content: flex-start;
+}
+
+.ai-actions-advanced {
+  justify-content: flex-end;
 }
 
 .btn-outline.neutral {
@@ -1452,6 +1573,34 @@ body.has-ai-advice .team-library-preview {
 
 .ai-output.has-structured-result {
   white-space: normal;
+}
+
+.ai-result-compact {
+  gap: 10px;
+}
+
+.ai-mini-plan {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid rgba(219, 227, 238, 0.9);
+  border-radius: var(--radius-md);
+  background: #ffffff;
+}
+
+.ai-mini-plan strong {
+  font-size: 12px;
+  color: var(--color-info);
+  font-family: var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.ai-mini-plan p {
+  margin: 0;
+  color: var(--text-main);
+  font-size: 14px;
+  line-height: 1.6;
 }
 
 .ai-progress-panel {
@@ -1613,6 +1762,10 @@ body.has-ai-advice .team-library-preview {
   display: grid;
   grid-template-columns: 1fr;
   gap: 10px;
+}
+
+.ai-team-grid.is-compact {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .ai-format-card,
@@ -2084,6 +2237,28 @@ body.battle-review-open {
   opacity: 0.42;
   pointer-events: none;
   filter: grayscale(80%);
+}
+
+body[data-ui-level="beginner"] .analysis-dashboard {
+  margin-top: 0;
+}
+
+body[data-ui-level="beginner"] .analysis-dashboard .bento-primary {
+  padding: 16px;
+}
+
+body[data-ui-level="beginner"] .analysis-dashboard .card-header {
+  margin-bottom: 10px;
+}
+
+body[data-ui-level="beginner"] .analysis-dashboard .game-plan-list {
+  gap: 8px;
+}
+
+body[data-ui-level="intermediate"] .analysis-dashboard .set-matrix,
+body[data-ui-level="intermediate"] .analysis-dashboard .bento-card:nth-child(4),
+body[data-ui-level="intermediate"] .analysis-dashboard .bento-card:nth-child(5) {
+  display: none;
 }
 
 .metrics-row {

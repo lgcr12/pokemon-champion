@@ -30,6 +30,7 @@
         <div>
           <p class="eyebrow">Competitive Team Intelligence</p>
           <h2>冠军队伍分析中枢</h2>
+          <p class="hero-subtitle" id="ui-level-copy">默认先从初级开始，按你熟悉的节奏看队、改队、再进细节。</p>
         </div>
         <div class="control-panel" aria-label="界面偏好">
           <label>
@@ -48,12 +49,20 @@
               <option value="large">放大</option>
             </select>
           </label>
+          <label>
+            界面层级
+            <select id="ui-level-select">
+              <option value="beginner">初级</option>
+              <option value="intermediate">中级</option>
+              <option value="advanced">高级</option>
+            </select>
+          </label>
         </div>
       </section>
-      <section class="quickstart-strip" aria-label="快速上手">
-        <div><strong>1</strong><span>选单打 / 双打</span></div>
-        <div><strong>2</strong><span>添加宝可梦或导入热门队伍</span></div>
-        <div><strong>3</strong><span>查看分析并导出文本</span></div>
+      <section id="quickstart-strip" class="quickstart-strip" aria-label="快速上手" data-ui-min="beginner">
+        <button class="quickstart-action" type="button" data-quickstart="import-team"><strong>导入推荐队伍</strong><span>从热门样本开始</span></button>
+        <button class="quickstart-action" type="button" data-quickstart="new-team"><strong>从零开始</strong><span>自己拼 6 只</span></button>
+        <button class="quickstart-action" type="button" data-quickstart="counter-target"><strong>按目标反制</strong><span>先定对手再构筑</span></button>
       </section>
 
       <section class="speedline-board floating-card" aria-label="速度线表">
@@ -69,6 +78,7 @@
             <span><i></i> 需控速</span>
           </div>
         </div>
+        <div id="speedline-summary" class="speedline-summary" aria-live="polite"></div>
         <div id="speedline-table" class="speedline-table"></div>
       </section>
 
@@ -86,7 +96,7 @@
             </button>
           </div>
           <div id="team-slots" class="team-slots" aria-live="polite"></div>
-          <div class="export-panel">
+          <div class="export-panel" data-ui-min="intermediate">
             <div class="export-header">
               <div>
                 <p class="eyebrow">PKHeX / Bot Text</p>
@@ -111,7 +121,7 @@
           </div>
         </section>
 
-        <section class="team-library floating-card">
+        <section class="team-library floating-card" data-ui-min="intermediate">
           <div class="library-header">
             <div>
               <p class="eyebrow">Team Library</p>
@@ -136,26 +146,32 @@
               <p class="section-note">先选择一只或多只宝可梦，再让 AI 基于当前环境、速度线、空间风险和公开队伍配置给出配置与补强建议。</p>
             </div>
             <div class="ai-actions">
-              <button id="ai-settings-toggle" class="btn-outline neutral" type="button">API 设置</button>
-              <select id="ai-build-intent" class="ai-mode-select" aria-label="构筑意图">
-                <option value="auto">自动判断</option>
-                <option value="new-team">从零构筑</option>
-                <option value="current-team">围绕当前队伍</option>
-                <option value="counter-target">反制目标</option>
-                <option value="complete-team">补全队伍</option>
-                <option value="moveset-only">只改配置</option>
-              </select>
-              <select id="ai-prompt-mode" class="ai-mode-select" aria-label="AI 推理模式">
-                <option value="quick">快速</option>
-                <option value="deep">详细</option>
-                <option value="compare">多方案</option>
-              </select>
-              <button id="ai-build-config" class="btn-primary" type="button">想配置</button>
-              <button id="ai-complete-team" class="btn-outline neutral" type="button">补全队伍</button>
-              <button id="battle-review-btn" class="btn-outline neutral" type="button">对局回顾</button>
+              <div class="ai-actions-main">
+                <button id="ai-build-config" class="btn-primary" type="button">给我建议</button>
+                <button id="ai-complete-team" class="btn-outline neutral" type="button">补强当前队伍</button>
+              </div>
+              <div class="ai-actions-workbench">
+                <select id="ai-build-intent" class="ai-mode-select" aria-label="构筑意图">
+                  <option value="auto">自动判断</option>
+                  <option value="new-team">从零构筑</option>
+                  <option value="current-team">围绕当前队伍</option>
+                  <option value="counter-target">反制目标</option>
+                  <option value="complete-team">补全队伍</option>
+                  <option value="moveset-only">只改配置</option>
+                </select>
+                <select id="ai-prompt-mode" class="ai-mode-select" aria-label="AI 推理模式">
+                  <option value="quick">快速</option>
+                  <option value="deep">详细</option>
+                  <option value="compare">多方案</option>
+                </select>
+              </div>
+              <div class="ai-actions-advanced">
+                <button id="ai-settings-toggle" class="btn-outline neutral" type="button">API 设置</button>
+                <button id="battle-review-btn" class="btn-outline neutral" type="button">对局回顾</button>
+              </div>
             </div>
           </div>
-          <div id="ai-settings-panel" class="ai-settings-panel" hidden>
+          <div id="ai-settings-panel" class="ai-settings-panel" hidden data-ui-min="advanced">
             <div class="ai-settings-grid">
               <label>
                 <span>服务商</span>
@@ -208,7 +224,7 @@
           <textarea id="ai-user-goal" class="ai-goal-input" rows="3" placeholder="可选：写下你的目标。可以不选宝可梦，例如“帮我想一个克制姆克鹰的阵容”；也可以围绕已选宝可梦补强。"></textarea>
           <div id="ai-output" class="ai-output" aria-live="polite">选择宝可梦，或直接写目标后点击上方按钮。需要用 AI 时，请用本地 AI 服务启动页面。</div>
         </section>
-        <section class="data-health floating-card">
+        <section class="data-health floating-card" data-ui-min="intermediate">
           <div class="library-header">
             <div>
               <p class="eyebrow">Data Health</p>
@@ -221,7 +237,7 @@
           <pre id="refresh-log" class="refresh-log" hidden></pre>
         </section>
 
-        <section id="analysis-dashboard" class="analysis-dashboard is-empty">
+        <section id="analysis-dashboard" class="analysis-dashboard is-empty" data-ui-min="beginner">
           <div class="metrics-row">
             <div class="metric-card floating-card">
               <span class="label">AVG RANK</span>

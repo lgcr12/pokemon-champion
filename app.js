@@ -69,6 +69,7 @@ const state = {
   battleReviewFormat: "single",
   battleReviewEntry: null,
   showdownValidation: null,
+  uiLevel: "beginner",
   query: "",
   searchOpen: false,
   teamLibraryConfigCache: new Map(),
@@ -87,6 +88,7 @@ const AI_MODELS_CACHE_KEY = "champion-lab-ai-models-v1";
 const AI_FAILURE_MEMORY_KEY = "champion-lab-ai-failure-memory-v1";
 const AI_BATTLE_HISTORY_KEY = "champion-lab-ai-battle-history-v1";
 const RULE_PREFS_KEY = "champion-lab-rule-prefs-v1";
+const UI_LEVEL_KEY = "champion-lab-ui-level-v1";
 const AI_REQUEST_TIMEOUTS_MS = {
   quick: 120000,
   deep: 240000,
@@ -96,6 +98,69 @@ const AI_REQUEST_TIMEOUTS_MS = {
 function aiRequestTimeoutMs(promptMode = "quick") {
   return AI_REQUEST_TIMEOUTS_MS[promptMode] || AI_REQUEST_TIMEOUTS_MS.quick;
 }
+
+const UI_LEVELS = {
+  beginner: {
+    label: "初级",
+    value: "beginner",
+    aiTone: "面向新手：少用 Showdown/速度档/校验术语，先写队伍怎么打、下一步点什么、最小改动是什么。",
+  },
+  intermediate: {
+    label: "中级",
+    value: "intermediate",
+    aiTone: "面向中手：聚焦短板、补强、结构和替换代价，术语可以用但要给动作建议。",
+  },
+  advanced: {
+    label: "高级",
+    value: "advanced",
+    aiTone: "面向高级玩家：可以展开速度档、对局分支、配置依据、本地模拟和日志级细节。",
+  },
+};
+
+function loadUiLevel() {
+  const saved = localStorage.getItem(UI_LEVEL_KEY);
+  return saved && UI_LEVELS[saved] ? saved : "beginner";
+}
+
+function saveUiLevel(level) {
+  if (!UI_LEVELS[level]) return;
+  localStorage.setItem(UI_LEVEL_KEY, level);
+}
+
+function uiLevelLabel(level = state.uiLevel) {
+  return UI_LEVELS[level]?.label || UI_LEVELS.intermediate.label;
+}
+
+function uiLevelPrompt(level = state.uiLevel) {
+  if (level === "advanced") return "高级：直接看速度档、对局回顾和完整校验。";
+  if (level === "intermediate") return "中级：看短板、补强和结构。";
+  return "初级：先知道下一步该点什么。";
+}
+
+function uiLevelInstruction(level = state.uiLevel) {
+  return UI_LEVELS[level]?.aiTone || UI_LEVELS.beginner.aiTone;
+}
+
+function isUiLevel(level) {
+  return state.uiLevel === level;
+}
+
+function isUiAtLeast(level) {
+  const order = { beginner: 0, intermediate: 1, advanced: 2 };
+  return (order[state.uiLevel] || 0) >= (order[level] || 0);
+}
+
+function setUiLevel(level) {
+  if (!UI_LEVELS[level] || state.uiLevel === level) return;
+  state.uiLevel = level;
+  saveUiLevel(level);
+  if (state.aiLastAdvice) {
+    rerenderAIAdvice();
+    return;
+  }
+  render();
+}
+
 const TYPE_CN_TO_EN = {
   一般: "Normal",
   火: "Fire",
@@ -4796,6 +4861,11 @@ function aiContext(mode) {
   return {
     mode,
     promptMode,
+    uiLevel: {
+      value: state.uiLevel,
+      label: uiLevelLabel(),
+      instruction: uiLevelInstruction(),
+    },
     buildIntent,
     format: state.format,
     formatLabel: formatLabel(state.format),
@@ -4814,6 +4884,11 @@ function aiContext(mode) {
       teamStyle,
       teamTemplate,
       goalConstraints,
+      uiLevel: {
+        value: state.uiLevel,
+        label: uiLevelLabel(),
+        instruction: uiLevelInstruction(),
+      },
       megaPlan,
       understanding,
       slotModel,
@@ -5055,6 +5130,7 @@ function trimAIContextForRequest(context = {}) {
   } : null;
   return {
     ...context,
+    uiLevel: context.uiLevel,
     formatModels,
     understanding,
     slotModel: formatModels[context.format]?.slotModel || context.slotModel,
@@ -5066,6 +5142,7 @@ function trimAIContextForRequest(context = {}) {
     branchModel: formatModels[context.format]?.branchModel || context.branchModel,
     intent: {
       ...context.intent,
+      uiLevel: context.intent?.uiLevel || context.uiLevel,
       understanding,
       formatModels,
       slotModel: formatModels[context.format]?.slotModel || context.intent?.slotModel,
@@ -5361,6 +5438,45 @@ function renderDataHealth(status = null) {
   }
 }
 
+function renderHeroCopy() {
+  const copy = $("#ui-level-copy");
+  if (!copy) return;
+  copy.textContent = uiLevelPrompt();
+}
+
+function renderQuickstartCopy() {
+  const strip = $("#quickstart-strip");
+  if (!strip) return;
+  strip.dataset.uiLevel = state.uiLevel;
+  strip.querySelectorAll("[data-quickstart]").forEach((button) => {
+    const key = button.dataset.quickstart;
+    button.hidden = false;
+    button.classList.toggle("is-primary", key === "import-team" && isUiLevel("beginner"));
+  });
+}
+
+function renderSpeedlineSummary() {
+  const target = $("#speedline-summary");
+  if (!target) return;
+  const rows = speedlineRows();
+  if (!rows.length) {
+    target.innerHTML = `<p class="empty">暂无速度线数据。运行 npm run fetch:knowledge 后会显示 PokeCamp 速度线。</p>`;
+    return;
+  }
+  if (!state.team.length) {
+    target.innerHTML = `<p class="speedline-summary-text">先选队伍，速度线会自动告诉你哪些档位已压过、哪些接近、哪些还得控速。</p>`;
+    return;
+  }
+  const ownMax = Math.max(...state.team.map((mon) => effectiveSpeed(mon).value));
+  const ahead = rows.filter((row) => ownMax >= row.actualSpeed).length;
+  const close = rows.filter((row) => ownMax < row.actualSpeed && ownMax >= row.actualSpeed - 10).length;
+  const firstGap = rows.find((row) => ownMax < row.actualSpeed) || rows[0];
+  const mainText = isUiLevel("beginner")
+    ? `你当前最高速度是 ${ownMax}，已压过 ${ahead} 档；先盯住 ${firstGap.actualSpeed} 这一档。`
+    : `当前最高速度 ${ownMax}，已压过 ${ahead} 档、接近 ${close} 档；最该盯住 ${firstGap.actualSpeed} 这一档。`;
+  target.innerHTML = `<p class="speedline-summary-text">${escapeHtml(mainText)}</p>`;
+}
+
 async function refreshDataHealth() {
   const status = await fetch(aiApiUrl("/api/refresh-data"), { cache: "no-store" }).then((res) => res.json()).catch(() => null);
   renderDataHealth(status);
@@ -5480,20 +5596,21 @@ function renderFormatAdvice(title, format, block = {}) {
   const watch = Array.isArray(block.watch) ? block.watch.filter(Boolean).slice(0, 4) : [];
   const team = Array.isArray(block.team) ? block.team.slice(0, 6) : [];
   const active = (state.aiAdviceView || state.format) === format;
+  const compact = isUiLevel("intermediate") && !isUiLevel("advanced");
   return `
     <section class="ai-format-card ${active ? "is-active" : ""}" ${active ? "" : "hidden"}>
       <div class="ai-format-head">
         <div>
           <h3>${escapeHtml(title)}</h3>
-          <p>${escapeHtml(block.plan || "按当前队伍微调配置。")}</p>
+          <p>${escapeHtml(compact ? (block.plan || "按当前队伍微调配置。").slice(0, 96) : block.plan || "按当前队伍微调配置。")}</p>
         </div>
         <button class="${active ? "btn-primary" : "btn-outline neutral"} compact" type="button" data-ai-apply="${format}">
           应用${escapeHtml(title)}
         </button>
       </div>
-      ${watch.length ? `<div class="ai-tags">${watch.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
-      ${renderBattleEvalBlock(format)}
-      <div class="ai-team-grid">${team.map((item, index) => renderAdviceCard(item, index, format)).join("")}</div>
+      ${watch.length && !compact ? `<div class="ai-tags">${watch.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
+      ${isUiAtLeast("advanced") ? renderBattleEvalBlock(format) : ""}
+      <div class="ai-team-grid ${compact ? "is-compact" : ""}">${team.map((item, index) => renderAdviceCard(item, index, format)).join("")}</div>
     </section>`;
 }
 
@@ -6544,6 +6661,24 @@ function renderAIAdvice(data) {
   const styleWarnings = compactAdviceWarnings(adviceStyleWarnings(advice));
   const scoreClass = structure.score >= 85 ? "is-good" : structure.score >= 70 ? "is-warn" : "is-bad";
   const scoreLabel = structure.score === 0 ? "结构可信度 0/100（输出未达标）" : `结构可信度 ${structure.score}/100`;
+  if (isUiLevel("beginner")) {
+    const block = advice?.[state.aiAdviceView] || advice?.[state.format] || advice.single || {};
+    const watch = Array.isArray(block.watch) ? block.watch.filter(Boolean).slice(0, 1) : [];
+    return `
+      <div class="ai-result ai-result-compact">
+        <div class="ai-result-head">
+          <div class="ai-result-summary">
+            <p>${escapeHtml(advice.summary || "先看这版建议。")}</p>
+            <span class="ai-structure-score ${scoreClass}" title="这是前端结构检查分，不是本地模拟胜率。">${escapeHtml(scoreLabel)}</span>
+          </div>
+        </div>
+        <div class="ai-mini-plan">
+          <strong>下一步</strong>
+          <p>${escapeHtml(block.plan || "先用当前队伍或热门样本跑一版。")}</p>
+        </div>
+        ${watch.length ? `<div class="ai-tags">${watch.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
+      </div>`;
+  }
   return `
     <div class="ai-result">
       <div class="ai-result-head">
@@ -7130,12 +7265,19 @@ function bindDecorMotion() {
 function applyPreferences() {
   const theme = localStorage.getItem("champion-lab-theme") || "aurora";
   const fontScale = localStorage.getItem("champion-lab-font-scale") || "normal";
+  state.uiLevel = loadUiLevel();
   document.body.dataset.theme = theme;
   document.body.dataset.fontScale = fontScale;
+  document.body.dataset.uiLevel = state.uiLevel;
+  document.body.classList.toggle("ui-beginner", isUiLevel("beginner"));
+  document.body.classList.toggle("ui-intermediate", isUiLevel("intermediate"));
+  document.body.classList.toggle("ui-advanced", isUiLevel("advanced"));
   const themeSelect = $("#theme-select");
   const fontSelect = $("#font-scale");
+  const uiLevelSelect = $("#ui-level-select");
   if (themeSelect) themeSelect.value = theme;
   if (fontSelect) fontSelect.value = fontScale;
+  if (uiLevelSelect) uiLevelSelect.value = state.uiLevel;
 }
 
 function setPreference(key, value) {
@@ -7291,10 +7433,14 @@ function renderSlots() {
 
 function updateDocumentState() {
   document.body.dataset.teamCount = String(state.team.length);
+  document.body.dataset.uiLevel = state.uiLevel;
   document.body.classList.toggle("has-team", state.team.length > 0);
   document.body.classList.toggle("team-complete", state.team.length === 6);
   document.body.classList.toggle("has-ai-advice", Boolean(state.aiLastAdvice));
   document.body.classList.toggle("battle-review-open", Boolean(state.battleReviewOpen));
+  document.body.classList.toggle("ui-beginner", isUiLevel("beginner"));
+  document.body.classList.toggle("ui-intermediate", isUiLevel("intermediate"));
+  document.body.classList.toggle("ui-advanced", isUiLevel("advanced"));
   $("#analysis-dashboard")?.classList.toggle("is-empty", state.team.length === 0);
 }
 
@@ -7472,6 +7618,12 @@ function getTeamCompositionReport() {
   return {
     style,
     summary: `${style}：${archetypes.length ? `${archetypes[0].name}，` : ""}${cores.length ? `核心围绕 ${cores.map((item) => item.name).join("、")} 展开` : "核心尚不明确"}。`,
+    beginnerSummary: team.length
+      ? `${style}，先抓核心 ${cores[0]?.name || team[0]?.name || "成员"}，再补 ${gaps[0] || "速度/换入/终盘"}.`
+      : "先选 3 到 6 只宝可梦，再看队伍怎么打。",
+    intermediateSummary: team.length
+      ? `${style}，短板是 ${gaps.slice(0, 2).join("、") || "暂无明显短板"}。`
+      : "先导入队伍，再看短板和补强。",
     cores,
     archetypes,
     roleTemplates: profiles
@@ -7710,9 +7862,10 @@ function renderSets() {
 function renderPlan() {
   const team = state.team;
   if (!team.length) {
-    $("#game-plan").innerHTML = `<li>先选择 3 到 6 只宝可梦，再生成对局准备建议。</li>`;
+    $("#game-plan").innerHTML = `<li>${escapeHtml(isUiLevel("beginner") ? "先选 3 到 6 只宝可梦，再看怎么打。" : "先选择 3 到 6 只宝可梦，再生成对局准备建议。")}</li>`;
     return;
   }
+  const composition = getTeamCompositionReport();
   const byRank = [...team].filter((mon) => Number.isFinite(Number(mon.rank))).sort((a, b) => a.rank - b.rank);
   const anchors = byRank.length ? byRank.slice(0, 2) : team.slice(0, 2);
   const fastest = [...team].sort((a, b) => effectiveSpeed(b).value - effectiveSpeed(a).value)[0];
@@ -7723,9 +7876,8 @@ function renderPlan() {
   const pivot = team.find((mon) => hasMove(mon, MOVE_PATTERNS.pivot));
   const priority = team.find((mon) => hasMove(mon, MOVE_PATTERNS.priority));
   const protect = team.filter((mon) => hasMove(mon, MOVE_PATTERNS.protect));
-  const composition = getTeamCompositionReport();
   const plans = [];
-  plans.push(`阵容结构：${composition.summary}${composition.gaps.length ? ` 主要缺口：${composition.gaps.slice(0, 2).join(" ")}` : ""}`);
+  plans.push(`阵容结构：${isUiLevel("beginner") ? composition.beginnerSummary : isUiLevel("intermediate") ? composition.intermediateSummary : composition.summary}`);
   plans.push(`核心路线：优先围绕 ${anchors.map((m) => m.name).join("、")} 建立输出或换入节奏。`);
   if (hazard) plans.push(`开局压力：${hazard.name} 可以铺场；${removal ? `${removal.name} 负责清场防止被反压。` : "队伍缺少清场手段，注意别被对面撒场滚雪球。"}`);
   else plans.push(state.format === "single" ? "单打缺少撒场点，主要依赖直接对攻、强化或轮转制造突破。" : "双打不依赖撒场，优先处理首回合站位、控速和集火目标。");
@@ -7741,12 +7893,16 @@ function renderPlan() {
   } else {
     plans.push("单打换入链偏少，选出时要提前确认谁负责吃关键属性攻击。");
   }
-  const plan = plans.slice(0, 6);
+  const planLimit = isUiLevel("beginner") ? 3 : isUiLevel("intermediate") ? 5 : 6;
+  const plan = plans.slice(0, planLimit);
   $("#game-plan").innerHTML = plan.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
 }
 
 function render() {
   updateDocumentState();
+  renderHeroCopy();
+  renderQuickstartCopy();
+  renderSpeedlineSummary();
   renderSlots();
   renderList();
   renderTeamLibrary();
@@ -7845,6 +8001,7 @@ function closePalette(clearSearch = true) {
 }
 
 function bindEvents() {
+  $("#ui-level-select")?.addEventListener("change", (event) => setUiLevel(event.target.value));
   $("#search")?.addEventListener("input", (event) => {
     state.query = event.target.value;
     state.searchOpen = true;
@@ -7907,6 +8064,25 @@ function bindEvents() {
   document.querySelectorAll("[data-format]").forEach((button) => button.addEventListener("click", () => setFormat(button.dataset.format)));
   $("#open-palette-btn")?.addEventListener("click", () => openPalette());
   $("#close-palette-btn")?.addEventListener("click", () => closePalette());
+  document.querySelectorAll("[data-quickstart]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const action = button.dataset.quickstart;
+      if (action === "import-team") {
+        const teams = currentLibraryTeams();
+        if (teams.length) {
+          state.selectedTeamId = teams[0].id;
+          importSelectedTeam();
+        } else {
+          openPalette();
+        }
+      } else if (action === "counter-target") {
+        $("#ai-build-intent") && ($("#ai-build-intent").value = "counter-target");
+        $("#ai-build-config")?.click();
+      } else {
+        openPalette();
+      }
+    });
+  });
   $("#close-team-editor")?.addEventListener("click", closeTeamEditor);
   $("#cancel-team-editor")?.addEventListener("click", closeTeamEditor);
   $("#save-team-editor")?.addEventListener("click", saveTeamEditor);
