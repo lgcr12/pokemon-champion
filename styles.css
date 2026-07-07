@@ -404,6 +404,25 @@ body[data-ui-level="beginner"] .data-health .library-header {
   gap: 10px;
 }
 
+body[data-ui-level="beginner"] .team-library .section-note,
+body[data-ui-level="beginner"] #team-season-select,
+body[data-ui-level="beginner"] #team-source-select {
+  display: none !important;
+}
+
+body[data-ui-level="beginner"] .team-library {
+  padding: 16px;
+}
+
+body[data-ui-level="beginner"] .team-library .library-actions {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+body[data-ui-level="beginner"] .team-library-preview {
+  gap: 12px;
+  padding: 12px;
+}
+
 body[data-ui-level="beginner"] .ai-builder .ai-actions {
   grid-template-columns: minmax(0, 1fr);
 }
