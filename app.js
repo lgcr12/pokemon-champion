@@ -7297,8 +7297,16 @@ function teamSourceLabel(kind) {
   return kind === "player" ? "玩家上传" : "公开热门";
 }
 
-function availableTeamSources() {
-  const kinds = [...new Set(state.teamLibrary.map(teamSourceKind))];
+function teamSeasonCount(season = state.teamSeasonFilter, format = state.format) {
+  return state.teamLibrary.filter((team) => team.season === season && team.format === format).length;
+}
+
+function teamSourceCount(kind, { season = state.teamSeasonFilter, format = state.format } = {}) {
+  return state.teamLibrary.filter((team) => team.format === format && team.season === season && teamSourceKind(team) === kind).length;
+}
+
+function availableTeamSources({ season = state.teamSeasonFilter, format = state.format } = {}) {
+  const kinds = [...new Set(state.teamLibrary.filter((team) => team.season === season && team.format === format).map(teamSourceKind))];
   const order = ["public", "player"];
   return order.filter((kind) => kinds.includes(kind));
 }
@@ -7308,7 +7316,7 @@ function ensureTeamSourceFilter() {
   if (!sources.length) {
     state.teamSourceFilter = "";
   } else if (!state.teamSourceFilter || !sources.includes(state.teamSourceFilter)) {
-    state.teamSourceFilter = sources[0];
+    state.teamSourceFilter = [...sources].sort((a, b) => teamSourceCount(b) - teamSourceCount(a))[0];
   }
   return sources;
 }
@@ -7351,13 +7359,13 @@ function renderTeamLibrary() {
   const sources = ensureTeamSourceFilter();
   if (seasonSelect) {
     seasonSelect.innerHTML = seasons.length
-      ? seasons.map((season) => `<option value="${escapeHtml(season)}" ${season === state.teamSeasonFilter ? "selected" : ""}>${escapeHtml(season)}</option>`).join("")
+      ? seasons.map((season) => `<option value="${escapeHtml(season)}" ${season === state.teamSeasonFilter ? "selected" : ""}>${escapeHtml(season)} · ${teamSeasonCount(season)}</option>`).join("")
       : `<option value="">暂无赛季</option>`;
     seasonSelect.disabled = seasons.length <= 1;
   }
   if (sourceSelect) {
     sourceSelect.innerHTML = sources.length
-      ? sources.map((source) => `<option value="${escapeHtml(source)}" ${source === state.teamSourceFilter ? "selected" : ""}>${escapeHtml(teamSourceLabel(source))}</option>`).join("")
+      ? sources.map((source) => `<option value="${escapeHtml(source)}" ${source === state.teamSourceFilter ? "selected" : ""}>${escapeHtml(teamSourceLabel(source))} · ${teamSourceCount(source)}</option>`).join("")
       : `<option value="">暂无来源</option>`;
     sourceSelect.disabled = sources.length <= 1;
   }
@@ -7375,24 +7383,30 @@ function renderTeamLibrary() {
   const team = teams.find((item) => item.id === state.selectedTeamId) || teams[0];
   const matched = team.members.filter((member) => pokemonForTeamMember(member)).length;
   const fullData = team.members.filter((member) => pokemonForTeamMember(member, { allowFallback: false })).length;
+  const sourceLinks = [
+    team.articleUrl ? { url: team.articleUrl, label: "查看文章", primary: true } : null,
+    team.href ? { url: team.href, label: "原始来源" } : null,
+    ...(team.sourceLinks || [])
+      .filter((url) => url && url !== team.href && url !== team.articleUrl)
+      .slice(0, 2)
+      .map((url, index) => ({ url, label: `来源 ${index + 2}` })),
+  ].filter(Boolean);
   preview.innerHTML = `
-    <div class="team-preview-meta">
+    <div class="team-preview-copy">
       <strong>${escapeHtml(team.title)}</strong>
-      <span class="team-preview-chip">${escapeHtml(team.season)}</span>
-      <span class="team-preview-chip">${escapeHtml(team.formatLabel)}</span>
-      <span class="team-preview-chip team-preview-source">${escapeHtml(teamSourceLabel(teamSourceKind(team)))}</span>
-      <span class="team-preview-chip team-preview-rate">${team.rate ? `Rate ${team.rate}` : "No rate"}</span>
-      <span class="team-preview-chip team-preview-source-name">${escapeHtml(team.source || "Unknown source")}</span>
-      ${team.rentalCode ? `<span class="team-preview-chip team-preview-rental">租借码 ${escapeHtml(team.rentalCode)}</span>` : ""}
-      <span class="team-preview-chip team-preview-importable">可导入 ${matched}/${team.members.length}</span>
-      ${fullData < team.members.length ? `<span class="team-preview-chip team-preview-full-data">完整数据 ${fullData}/${team.members.length}</span>` : ""}
-      ${team.articleUrl ? `<a class="team-source-link" href="${team.articleUrl}" target="_blank" rel="noopener noreferrer">打开文章</a>` : ""}
-      ${team.href ? `<a class="team-source-link secondary" href="${team.href}" target="_blank" rel="noopener noreferrer">打开来源</a>` : ""}
-      ${(team.sourceLinks || [])
-        .filter((url) => url && url !== team.href && url !== team.articleUrl)
-        .slice(0, 2)
-        .map((url, index) => `<a class="team-source-link secondary" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">来源 ${index + 2}</a>`)
-        .join("")}
+      <div class="team-preview-tags">
+        <span class="team-preview-chip">${escapeHtml(team.season)}</span>
+        <span class="team-preview-chip">${escapeHtml(team.formatLabel)}</span>
+        <span class="team-preview-chip team-preview-source">${escapeHtml(teamSourceLabel(teamSourceKind(team)))}</span>
+        <span class="team-preview-chip team-preview-rate">${team.rate ? `Rate ${team.rate}` : "No rate"}</span>
+        <span class="team-preview-chip team-preview-source-name">${escapeHtml(team.source || "Unknown source")}</span>
+        ${team.rentalCode ? `<span class="team-preview-chip team-preview-rental">租借码 ${escapeHtml(team.rentalCode)}</span>` : ""}
+        <span class="team-preview-chip team-preview-importable">可导入 ${matched}/${team.members.length}</span>
+        ${fullData < team.members.length ? `<span class="team-preview-chip team-preview-full-data">完整数据 ${fullData}/${team.members.length}</span>` : ""}
+      </div>
+      ${sourceLinks.length ? `<div class="team-preview-links">${sourceLinks
+        .map((link) => `<a class="team-preview-link ${link.primary ? "is-primary" : ""}" href="${escapeHtml(link.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(link.label)}</a>`)
+        .join("")}</div>` : ""}
     </div>
     <div class="team-preview-mons">
       ${team.members

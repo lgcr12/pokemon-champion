@@ -409,8 +409,7 @@ body[data-ui-level="beginner"] .data-health .library-header {
 }
 
 body[data-ui-level="beginner"] .team-library .section-note,
-body[data-ui-level="beginner"] #team-season-select,
-body[data-ui-level="beginner"] #team-source-select {
+body[data-ui-level="beginner"] .team-preview-links {
   display: none !important;
 }
 
@@ -419,7 +418,7 @@ body[data-ui-level="beginner"] .team-library {
 }
 
 body[data-ui-level="beginner"] .team-library .library-actions {
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(84px, 0.5fr) minmax(104px, 0.7fr) minmax(0, 1.3fr) auto;
 }
 
 body[data-ui-level="beginner"] .team-library-preview {
@@ -2137,64 +2136,90 @@ body.battle-review-open {
 
 .team-library-preview {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 18px;
-  align-items: center;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
   margin-top: 14px;
   padding: 16px;
   border: 1px solid rgba(219, 227, 238, 0.92);
   border-radius: var(--radius-lg);
-  background: var(--bg-surface-soft);
+  background: linear-gradient(135deg, rgba(248, 250, 252, 0.94), rgba(239, 246, 255, 0.72));
 }
 
-.team-preview-meta strong {
+.team-preview-copy {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.team-preview-copy strong {
   display: block;
-  font-size: 15px;
-  margin-bottom: 6px;
+  color: var(--text-main);
+  font-size: 16px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
-.team-preview-meta span {
+.team-preview-tags,
+.team-preview-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.team-preview-chip {
   display: inline-flex;
-  margin-right: 8px;
+  align-items: center;
+  min-height: 24px;
+  margin: 0 !important;
+  padding: 3px 7px;
+  border: 1px solid rgba(203, 213, 225, 0.9);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.76);
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: 11px;
+  line-height: 1;
 }
 
-.team-preview-meta a.team-source-link {
+.team-preview-link {
   display: inline-flex;
-  width: fit-content;
-  margin-right: 8px;
-  margin-top: 8px;
-  padding: 8px 12px;
-  border: 1px solid rgba(37, 99, 235, 0.22);
-  border-radius: 10px;
-  background: rgba(239, 246, 255, 0.82);
-  color: var(--color-info);
-  font-size: 15px;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid rgba(148, 163, 184, 0.36);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.8);
+  color: var(--text-muted);
+  font-size: 12px;
   font-weight: 800;
   text-decoration: none;
 }
 
-.team-preview-meta a.team-source-link.secondary {
-  background: rgba(255, 255, 255, 0.7);
-  color: var(--text-muted);
+.team-preview-link.is-primary {
+  border-color: rgba(37, 99, 235, 0.26);
+  background: rgba(239, 246, 255, 0.92);
+  color: var(--color-info);
 }
 
-.team-preview-meta a.team-source-link:hover {
+.team-preview-link:hover,
+.team-preview-link:focus-visible {
   border-color: rgba(37, 99, 235, 0.42);
   background: rgba(219, 234, 254, 0.92);
+  outline: none;
 }
 
 .team-preview-mons {
   display: grid;
-  grid-template-columns: repeat(6, 46px);
+  grid-template-columns: repeat(6, minmax(44px, 1fr));
+  width: 100%;
   gap: 8px;
 }
 
 .team-preview-mons img {
-  width: 46px;
-  height: 46px;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
   object-fit: contain;
   border: 1px solid rgba(226, 232, 240, 0.86);
   border-radius: var(--radius-md);
@@ -2989,10 +3014,6 @@ select,
   flex: 1 1 160px;
 }
 
-.team-preview-meta {
-  min-width: 0;
-}
-
 .team-preview-chip {
   align-items: center;
   min-height: 24px;
@@ -3065,20 +3086,8 @@ body[data-ui-level="beginner"] .team-library-preview {
   align-items: start;
 }
 
-body[data-ui-level="beginner"] .team-preview-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-body[data-ui-level="beginner"] .team-preview-meta strong {
-  flex: 1 0 100%;
-  margin-bottom: 2px;
-}
-
 body[data-ui-level="beginner"] .team-preview-source-name,
-body[data-ui-level="beginner"] .team-preview-full-data,
-body[data-ui-level="beginner"] .team-source-link {
+body[data-ui-level="beginner"] .team-preview-full-data {
   display: none !important;
 }
 
@@ -3282,6 +3291,15 @@ body[data-font-scale="large"] select {
     grid-template-columns: 1fr;
   }
 
+  .team-library .library-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .team-library #team-library-select,
+  .team-library #import-team-btn {
+    grid-column: 1 / -1;
+  }
+
   .ai-settings-grid {
     grid-template-columns: 1fr;
   }
@@ -3440,12 +3458,7 @@ body[data-font-scale="large"] select {
   }
 
   .team-library .library-actions {
-    grid-template-columns: 1fr;
-  }
-
-  .team-preview-meta a.team-source-link {
-    width: 100%;
-    justify-content: center;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

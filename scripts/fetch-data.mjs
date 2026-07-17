@@ -5,7 +5,7 @@ const FORMATS = (process.env.FORMATS || process.env.FORMAT || "single,double")
   .split(",")
   .map((format) => format.trim())
   .filter(Boolean);
-const SEASON = process.env.SEASON || "M-2";
+const SEASON = process.env.SEASON || "M-3";
 const LIMIT = Number(process.env.LIMIT || 300);
 const SUPPLEMENT_TARGET = Number(process.env.SUPPLEMENT_TARGET || 227);
 const POKECAMP_REGULATION = process.env.POKECAMP_REGULATION || "M-A";

@@ -15,6 +15,11 @@ const GAMEWITH_SEASONS = (process.env.GAMEWITH_SEASONS || "")
   .split(",")
   .map((item) => item.trim())
   .filter(Boolean);
+const TEAM_ARCHIVE_SEASONS = (process.env.TEAM_ARCHIVE_SEASONS || "M-2")
+  .split(",")
+  .map((item) => item.trim())
+  .filter(Boolean);
+const TEAM_ARCHIVE_LIMIT = Number(process.env.TEAM_ARCHIVE_LIMIT || Math.max(60, Math.floor(TEAM_LIMIT * 0.25)));
 const OPGG_FORMATS = (process.env.OPGG_FORMATS || "DOUBLE,SINGLE")
   .split(",")
   .map((item) => item.trim().toUpperCase())
@@ -352,16 +357,16 @@ async function fetchGameWithTeams(seasons) {
   ];
 }
 
-async function fetchOpggReplicaTeams(formats = OPGG_FORMATS) {
+async function fetchOpggReplicaTeams(formats = OPGG_FORMATS, season = "") {
   const teams = [];
   for (const rawFormat of formats) {
     const first = await fetchOpggReplicaPage(rawFormat, 1);
-    teams.push(...first.teams);
+    teams.push(...first.teams.map((team) => ({ ...team, season: season || team.season })));
     const pageCount = Math.min(OPGG_PAGE_LIMIT, Math.max(1, Math.ceil(first.total / first.pageSize)));
     for (let page = 2; page <= pageCount; page += 1) {
       console.log(`Fetching OP.GG ${rawFormat} page ${page}/${pageCount}`);
       const next = await fetchOpggReplicaPage(rawFormat, page);
-      teams.push(...next.teams);
+      teams.push(...next.teams.map((team) => ({ ...team, season: season || team.season })));
       await sleep(REQUEST_DELAY_MS);
     }
   }
@@ -602,7 +607,7 @@ async function main() {
   for (const team of teams) {
     if (!unique.has(team.id)) unique.set(team.id, team);
   }
-  const seasonsToFetch = uniqueValues([season, ...GAMEWITH_SEASONS]);
+  const seasonsToFetch = uniqueValues([season, ...GAMEWITH_SEASONS, ...TEAM_ARCHIVE_SEASONS]);
   if (seasonsToFetch.length) {
     console.log(`Fetching GameWith top builds for ${seasonsToFetch.join(", ")}.`);
     const gameWithTeams = await fetchGameWithTeams(seasonsToFetch);
@@ -611,20 +616,29 @@ async function main() {
     }
   }
   console.log(`Fetching OP.GG replica teams for ${OPGG_FORMATS.join(", ")}.`);
-  const opggTeams = await fetchOpggReplicaTeams();
+  const opggTeams = await fetchOpggReplicaTeams(OPGG_FORMATS, season);
   for (const team of opggTeams) {
     if (!unique.has(team.id)) unique.set(team.id, team);
   }
 
-  let selected = [...unique.values()]
+  const sortedTeams = [...unique.values()]
     .sort(
       (a, b) =>
         String(b.season || "").localeCompare(String(a.season || "")) ||
         Number(Boolean(b.rentalCode)) - Number(Boolean(a.rentalCode)) ||
         Number(a.rank || 9999) - Number(b.rank || 9999) ||
         Number(b.rate || 0) - Number(a.rate || 0),
-    )
-    .slice(0, TEAM_LIMIT);
+    );
+  const currentSeasonTeams = sortedTeams.filter((team) => !team.season || team.season === season);
+  const archiveTeams = sortedTeams.filter((team) => team.season && team.season !== season);
+  const archiveLimit = Math.min(archiveTeams.length, TEAM_ARCHIVE_LIMIT);
+  const primaryLimit = Math.max(0, TEAM_LIMIT - archiveLimit);
+  const selectedIds = new Set();
+  let selected = [...currentSeasonTeams.slice(0, primaryLimit), ...archiveTeams.slice(0, archiveLimit)];
+  selected.forEach((team) => selectedIds.add(team.id));
+  if (selected.length < TEAM_LIMIT) {
+    selected = [...selected, ...sortedTeams.filter((team) => !selectedIds.has(team.id)).slice(0, TEAM_LIMIT - selected.length)];
+  }
   const source = uniqueValues([baseUrl, GAMEWITH_ARTICLE_URL, GAMEWITH_BASE_URL, OPGG_REPLICA_URL]).join(" / ");
 
   if (ENRICH_TEAMS) {
