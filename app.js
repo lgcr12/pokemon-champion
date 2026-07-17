@@ -7126,7 +7126,7 @@ async function generateAIAdvice(mode) {
     output.className = "ai-output is-error";
     const timeoutSeconds = Math.round(aiRequestTimeoutMs(state.aiLastContext?.promptMode || "quick") / 1000);
     const message = err.name === "AbortError" ? `AI 请求超过 ${timeoutSeconds} 秒未返回，已自动停止。可以切换“快速”、减少目标描述，或换用响应更快的模型。` : err.message;
-    output.textContent = `${message}\n\n可以在上方“API 设置”里填写 OpenAI 兼容接口。`;
+    output.textContent = `${message}\n\n点击“配置 API”检查密钥、模型、余额或 OpenAI 兼容接口。`;
   } finally {
     progress.stop();
     state.aiBusy = false;
@@ -8057,7 +8057,10 @@ function bindEvents() {
   $("#import-json")?.addEventListener("change", (event) => importJsonDraft(event.target.files?.[0]));
   $("#ai-settings-toggle")?.addEventListener("click", () => {
     const panel = $("#ai-settings-panel");
-    if (panel) panel.hidden = !panel.hidden;
+    const button = $("#ai-settings-toggle");
+    if (!panel) return;
+    panel.hidden = !panel.hidden;
+    button?.setAttribute("aria-expanded", String(!panel.hidden));
   });
   $("#ai-provider")?.addEventListener("change", () => applyAIProviderPreset(true));
   $("#ai-model-select")?.addEventListener("change", updateModelInputVisibility);

@@ -149,6 +149,7 @@
               <div class="ai-actions-main">
                 <button id="ai-build-config" class="btn-primary" type="button">给我建议</button>
                 <button id="ai-complete-team" class="btn-outline neutral" type="button">补强当前队伍</button>
+                <button id="ai-settings-toggle" class="btn-outline neutral" type="button" aria-controls="ai-settings-panel" aria-expanded="false">配置 API</button>
               </div>
               <div class="ai-actions-workbench">
                 <select id="ai-build-intent" class="ai-mode-select" aria-label="构筑意图">
@@ -166,12 +167,11 @@
                 </select>
               </div>
               <div class="ai-actions-advanced">
-                <button id="ai-settings-toggle" class="btn-outline neutral" type="button">API 设置</button>
                 <button id="battle-review-btn" class="btn-outline neutral" type="button">对局回顾</button>
               </div>
             </div>
           </div>
-          <div id="ai-settings-panel" class="ai-settings-panel" hidden data-ui-min="advanced">
+          <div id="ai-settings-panel" class="ai-settings-panel" hidden>
             <div class="ai-settings-grid">
               <label>
                 <span>服务商</span>
