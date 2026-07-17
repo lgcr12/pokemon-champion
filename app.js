@@ -1948,6 +1948,20 @@ function targetPokemonFromGoal(goal = goalText()) {
 function requestedTeamStyle(goal = "") {
   const text = String(goal || "").toLowerCase();
   const cn = cnKey(goal);
+  if (/接棒|强化接棒|baton pass|pass chain|boost pass|传递强化/i.test(`${cn} ${text}`)) {
+    return {
+      id: "pass-chain",
+      name: "强化接棒",
+      hardRules: [
+        "必须有一名成员实际携带接棒和强化招式，不能只在说明里提到接棒。",
+        "必须有独立的强化接收者与安全上场/保护位，三者不能用普通泛用输出位冒充。",
+        "当前格式无法验证接棒链时，必须明确返回不可构筑原因，不能改成泛用攻队。",
+      ],
+      preferRoles: ["转场位", "功能位", "终盘收割", "主轴核心"],
+      preferMoves: ["baton-pass", "接棒", "focus-energy", "聚气", "swords-dance", "bulk-up", "nasty-plot", "protect", "守住", "剑舞", "健美", "诡计"],
+      avoidThemes: ["sun", "rain", "trick-room"],
+    };
+  }
   if (/stall|semi-?stall|fat/i.test(text) || /受队|盾队|消耗队|轮转受|半受/.test(cn)) {
     return {
       id: "stall",
@@ -1997,6 +2011,13 @@ function selectedBuildIntent() {
 function requestedTeamTemplate(goal = "", style = null) {
   const text = String(goal || "").toLowerCase();
   const cn = cnKey(goal);
+  if (style?.id === "pass-chain" || /接棒|强化接棒|baton pass|pass chain|boost pass|传递强化/i.test(`${cn} ${text}`)) {
+    return {
+      id: "pass-chain",
+      requiredComponents: ["实际携带接棒与强化招式的传递者", "独立强化接收者", "安全上场或保护位", "终盘收割路线", "接棒失败后的备用路线"],
+      avoidPitfalls: ["不能把普通转场当成接棒", "不能把接棒写在文案里而队伍没有接棒招式", "当前格式没有合法链条时不能用泛用攻队替代"],
+    };
+  }
   if (style?.id === "stall") {
     return {
       id: "stall",
@@ -2036,7 +2057,46 @@ function requestedTeamTemplate(goal = "", style = null) {
   return null;
 }
 
-function requiredCorePokemonFromGoal(goal = "", source = state.data?.pokemon || []) {
+function goalPokemonLibraryCandidates(goal = "", format = state.format) {
+  if (!goal || goalIsCounterTarget(goal)) return [];
+  const allKnown = Object.values(state.rawData?.formats || {}).flatMap((formatData) => formatData?.pokemon || []);
+  const sameFormat = (team = {}) => {
+    const value = String(team.format || team.mode || "").toLowerCase();
+    if (!value) return true;
+    return format === "double" ? /double|双打|vgc/.test(value) : /single|单打|ou/.test(value);
+  };
+  const seen = new Set();
+  return (state.teamLibrary || [])
+    .filter(sameFormat)
+    .flatMap((team) => team.configurations || team.members || [])
+    .map((entry) => {
+      const key = idKey(entry.slug || entry.name || entry.id);
+      const base = allKnown.find((mon) => [mon.slug, mon.name, mon.id].some((value) => idKey(value) === key));
+      return {
+        ...(base || {}),
+        id: entry.id || base?.id || entry.slug || entry.name,
+        slug: entry.slug || base?.slug || idKey(entry.name),
+        name: base?.name || localizePokemonName(entry.name) || entry.name || entry.slug,
+        sprite: entry.sprite || base?.sprite || "",
+        moves: (entry.moves || []).map((move) => ({ name: localizeTerm(move, "moves") })),
+        items: entry.item ? [{ name: localizeTerm(entry.item, "items") }] : base?.items || [],
+        abilities: entry.ability ? [{ name: localizeTerm(entry.ability, "abilities") }] : base?.abilities || [],
+        natures: entry.nature ? [{ name: localizeTerm(entry.nature, "natures") }] : base?.natures || [],
+        rank: base?.rank || 9999,
+        isExternalMember: true,
+      };
+    })
+    .filter((mon) => goalMatchesPokemon(goal, mon) || nameMatchesGoal(goal, mon.name || mon.slug || mon.id || ""))
+    .filter((mon) => {
+      const key = idKey(mon.slug || mon.name || mon.id);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 2);
+}
+
+function requiredCorePokemonFromGoal(goal = "", source = state.data?.pokemon || [], format = state.format) {
   if (!goal || goalIsCounterTarget(goal)) return [];
   const data = Array.isArray(source) ? source : [];
   const wantsMega = /mega|超级/i.test(goal);
@@ -2048,8 +2108,7 @@ function requiredCorePokemonFromGoal(goal = "", source = state.data?.pokemon || 
       .replace(/midnight$/i, "")
       .replace(/dusk$/i, "");
   const isMegaForm = (mon = {}) => /mega|超级/i.test(`${mon.slug || ""} ${mon.name || ""}`);
-  const direct = data
-    .filter((mon) => goalMatchesPokemon(goal, mon))
+  const direct = [...data.filter((mon) => goalMatchesPokemon(goal, mon)), ...goalPokemonLibraryCandidates(goal, format)]
     .sort((a, b) => {
       const megaPreference = wantsMega ? Number(isMegaForm(b)) - Number(isMegaForm(a)) : Number(isMegaForm(a)) - Number(isMegaForm(b));
       return megaPreference || Number(a.rank || 9999) - Number(b.rank || 9999);
@@ -2069,7 +2128,32 @@ function requiredCorePokemonFromGoal(goal = "", source = state.data?.pokemon || 
     .slice(0, 2);
 }
 
-function goalConstraintsFromGoal(goal = "", requiredPokemon = []) {
+function unavailableGoalPokemonFromGoal(goal = "", source = state.data?.pokemon || [], format = state.format) {
+  if (!goal || goalIsCounterTarget(goal)) return [];
+  const available = [...(Array.isArray(source) ? source : []), ...goalPokemonLibraryCandidates(goal, format)];
+  const allKnown = Object.values(state.rawData?.formats || {}).flatMap((formatData) => formatData?.pokemon || []);
+  const familyKey = (mon = {}) =>
+    idKey(mon.slug || mon.name || mon.id)
+      .replace(/mega.*$/i, "")
+      .replace(/gmax.*$/i, "")
+      .replace(/midday$/i, "")
+      .replace(/midnight$/i, "")
+      .replace(/dusk$/i, "");
+  const availableFamilies = new Set(available.map(familyKey).filter(Boolean));
+  const seen = new Set();
+  return allKnown
+    .filter((mon) => goalMatchesPokemon(goal, mon))
+    .filter((mon) => {
+      const family = familyKey(mon);
+      if (!family || availableFamilies.has(family) || seen.has(family)) return false;
+      seen.add(family);
+      return true;
+    })
+    .slice(0, 2)
+    .map((mon) => ({ id: mon.id, name: mon.name, slug: mon.slug }));
+}
+
+function goalConstraintsFromGoal(goal = "", requiredPokemon = [], source = state.data?.pokemon || [], format = state.format) {
   const cn = cnKey(goal);
   const text = String(goal || "").toLowerCase();
   const goalText = `${goal} ${text}`;
@@ -2082,6 +2166,7 @@ function goalConstraintsFromGoal(goal = "", requiredPokemon = []) {
     })),
     requiredMoves: [],
     requiredRoles: [],
+    unavailablePokemon: unavailableGoalPokemonFromGoal(goal, source, format),
     themes: [],
     hardRules: [],
   };
@@ -2091,6 +2176,22 @@ function goalConstraintsFromGoal(goal = "", requiredPokemon = []) {
   if (/喷火龙|charizard/i.test(goalText) && !constraints.requiredPokemon.some((item) => /喷火龙|charizard/i.test(`${item.name || ""} ${item.slug || ""}`))) {
     constraints.requiredPokemon.push({ id: 6, name: "喷火龙", slug: "charizard", reason: "用户明确点名喷火龙，必须进入最终阵容。" });
     constraints.hardRules.push("如果用户点名喷火龙，最终队伍必须包含喷火龙，不得用三首恶龙、暴鲤龙等泛用位替代。");
+  }
+  if (constraints.unavailablePokemon.length) {
+    constraints.hardRules.push(`当前格式可用池不包含：${constraints.unavailablePokemon.map((item) => item.name).join("、")}；不能用相近宝可梦替代。`);
+  }
+  if (/接棒|强化接棒|baton pass|pass chain|boost pass|传递强化/i.test(goalText)) {
+    constraints.themes.push("pass-chain");
+    constraints.passChain = {
+      namedCorePasser: constraints.requiredPokemon.length === 1 ? constraints.requiredPokemon[0] : null,
+    };
+    constraints.requiredMoves.push({ name: "接棒", category: "pass-chain", reason: "强化接棒队必须有成员实际携带接棒。" });
+    constraints.requiredRoles.push(
+      { id: "pass-chain-setter", name: "强化接棒者", reason: "必须有同一成员实际携带接棒和至少一个强化招式。" },
+      { id: "pass-chain-receiver", name: "强化接收者", reason: "必须有独立成员把接棒强化转为终盘胜点。" },
+      { id: "pass-chain-safety", name: "安全上场/保护位", reason: "必须有守住、掩护、击掌、转场或其他方式保护接棒回合。" },
+    );
+    constraints.hardRules.push("强化接棒硬规则：最终队伍必须包含实际接棒+强化传递者、独立接收者和安全上场/保护位；缺任一环都不得返回普通攻队。 ");
   }
   if (/顺风|tailwind|おいかぜ/i.test(goalText)) {
     constraints.requiredMoves.push({ name: "顺风", category: "speed-control", reason: "用户明确要求顺风队，至少一名成员必须携带顺风。" });
@@ -2215,6 +2316,10 @@ function goalSupportCandidatesForContext(source = [], constraints = {}, format =
     if (/喷火龙|charizard/i.test(String(constraints.requiredPokemon?.map((item) => `${item.name || ""} ${item.slug || ""}`).join(" ") || "") || "")) {
       addMatching([/喷火龙|charizard/i], 2);
     }
+  }
+  if (themes.has("pass-chain")) {
+    addByConfig([/接棒|baton[-\s]?pass|boost[-\s]?pass|传递强化/i], 6);
+    addByConfig([/剑舞|龙之舞|健美|诡计|冥想|蝶舞|破壳|腹鼓|swords[-\s]?dance|dragon[-\s]?dance|bulk[-\s]?up|nasty[-\s]?plot|calm[-\s]?mind|quiver[-\s]?dance|shell[-\s]?smash|belly[-\s]?drum/i], 6);
   }
   return wanted;
 }
@@ -4747,8 +4852,8 @@ function aiContext(mode) {
   const rebuildFromGoal = buildIntent === "new-team" || (buildIntent === "auto" && shouldRebuildFromGoal(userGoal));
   const forceCurrentTeam = buildIntent === "current-team" || buildIntent === "moveset-only";
   const counterTargetMode = buildIntent === "counter-target" || goalIsCounterTarget(userGoal);
-  const requiredCorePokemon = requiredCorePokemonFromGoal(userGoal, activeData?.pokemon || []);
-  const goalConstraints = goalConstraintsFromGoal(userGoal, requiredCorePokemon);
+  const requiredCorePokemon = requiredCorePokemonFromGoal(userGoal, activeData?.pokemon || [], activeFormat);
+  const goalConstraints = goalConstraintsFromGoal(userGoal, requiredCorePokemon, activeData?.pokemon || [], activeFormat);
   const targetPokemon = counterTargetMode ? targetPokemonFromGoal(userGoal) : [];
   const targetProfiles = targetPokemon.map(targetMatchupProfile).filter(Boolean);
   const structureRequirements = {
@@ -5780,6 +5885,7 @@ function adviceSatisfiesRequiredMove(team = [], block = {}, required = {}) {
   const name = String(required.name || required.id || "").trim();
   if (!name) return true;
   if (/顺风|tailwind|おいかぜ/i.test(name)) return team.some(adviceMemberActuallySetsTailwind);
+  if (/接棒|baton[-_\s]?pass|boost[-_\s]?pass/i.test(name)) return team.some((item) => /接棒|バトンタッチ|baton[-\s]?pass|boost[-\s]?pass/i.test(adviceMemberConfigText(item)));
   if (/戏法空间|trick room/i.test(name)) return team.some((item) => adviceMemberActuallySetsTheme(item, "trick-room"));
   const pattern = /顺风|tailwind|おいかぜ/i.test(name)
     ? /顺风|tailwind|おいかぜ/i
@@ -5791,6 +5897,12 @@ function adviceSatisfiesRequiredRole(team = [], block = {}, role = {}) {
   const label = String(role.name || role.id || role.label || "").trim();
   if (!label) return true;
   const normalized = `${label} ${localizeAdviceText(label)}`;
+  const passPattern = /接棒|バトンタッチ|baton[-\s]?pass|boost[-\s]?pass/i;
+  const setupPattern = /剑舞|龙之舞|健美|诡计|冥想|蝶舞|破壳|腹鼓|聚气|swords[-\s]?dance|dragon[-\s]?dance|bulk[-\s]?up|nasty[-\s]?plot|calm[-\s]?mind|quiver[-\s]?dance|shell[-\s]?smash|belly[-\s]?drum|focus[-\s]?energy/i;
+  const safetyPattern = /守住|看穿|击掌奇袭|看我嘛|愤怒粉|广域防守|急速折返|伏特替换|抛下狠话|protect|detect|fake[-\s]?out|follow[-\s]?me|rage[-\s]?powder|wide[-\s]?guard|u-turn|volt[-\s]?switch|parting[-\s]?shot/i;
+  if (/pass[-_\s]?chain[-_\s]?setter|强化接棒者|接棒传递者/i.test(normalized)) return team.some((item) => passPattern.test(adviceMemberConfigText(item)) && setupPattern.test(adviceMemberConfigText(item)));
+  if (/pass[-_\s]?chain[-_\s]?receiver|强化接收者|接收强化/i.test(normalized)) return team.some((item) => !passPattern.test(adviceMemberConfigText(item)) && /终盘|收割|清场|破盾|主轴|核心|剑舞|龙舞|健美|诡计|冥想|蝶舞|破壳|腹鼓|cleaner|wincon|wallbreaker/i.test(adviceMemberText(item)));
+  if (/pass[-_\s]?chain[-_\s]?safety|安全上场\/保护位/i.test(normalized)) return team.some((item) => safetyPattern.test(adviceMemberConfigText(item)));
   if (/rain[-_\s]?source|rain[-_\s]?setter|雨天来源|雨天启动|降雨|求雨/i.test(normalized)) {
     return team.some((item) => adviceMemberActuallySetsTheme(item, "rain"));
   }
@@ -7149,7 +7261,12 @@ async function generateAIAdvice(mode) {
       }).finally(() => window.clearTimeout(timeout));
       progress.setStage("parse", "AI 已返回，正在解析配置与校验结构...");
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `AI 服务错误：${res.status}`);
+      if (!res.ok) {
+        const error = new Error(data.error || `AI 服务错误：${res.status}`);
+        error.code = data.code || "";
+        error.violations = Array.isArray(data.violations) ? data.violations : [];
+        throw error;
+      }
       return data;
     };
 
@@ -7174,7 +7291,9 @@ async function generateAIAdvice(mode) {
     output.className = "ai-output is-error";
     const timeoutSeconds = Math.round(aiRequestTimeoutMs(state.aiLastContext?.promptMode || "quick") / 1000);
     const message = err.name === "AbortError" ? `AI 请求超过 ${timeoutSeconds} 秒未返回，已自动停止。可以切换“快速”、减少目标描述，或换用响应更快的模型。` : err.message;
-    output.textContent = `${message}\n\n点击“配置 API”检查密钥、模型、余额或 OpenAI 兼容接口。`;
+    output.textContent = err.code === "HARD_CONSTRAINT_UNSATISFIED"
+      ? `${message}\n\n请切换到目标宝可梦可用的格式，或调整为当前格式中确实存在的合法构筑要求。系统不会用近似宝可梦或泛用队替代。`
+      : `${message}\n\n点击“配置 API”检查密钥、模型、余额或 OpenAI 兼容接口。`;
   } finally {
     progress.stop();
     state.aiBusy = false;

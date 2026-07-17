@@ -633,7 +633,7 @@ ${pocketAgCoach}
 31. 双打里携带地震时，必须有足够队友能守住、飞行/漂浮免疫或不在场配合；否则改成单体地面招式或换成员。
 32. 受队/消耗队至少要有多项闭环工具：回复、状态、撒场、除钉/清场、转场、抗性换入、残局消耗。只有几个耐久道具或守住不算受队。
 33. 输出前必须按固定顺序自检：intent/teamStyle → legality/Mega 位合理性 → selectedPokemon/movesetOnly/rebuild → 对应格式 threatMatrix 高风险威胁 → 对应格式 branchModel 对局分支 → 对应格式 phaseModel 阶段路线 → 对应格式 archetypeModel 原型组件 → 对应格式 slotModel 缺槽 → battleKnowledge.needs → compositionReport.buildPriorities → targetPokemon → roleCoverage/typeProfile → 队友联动 → 辅助手/恶作剧之心权重 → 道具不重复 → moves/ability/item 数据来源。若发生冲突，按上述顺序取高优先级。
-34. 如果硬约束无法完全满足，不能编造可用宝可梦、招式、道具或特性。必须输出最接近的合法队伍，并在 watch 或 note 中明确写：“该缺口因 Champions 当前可用数据不足，只能用 X 临时缓解”。
+34. 硬约束必须按最终 6 只和实际招式校验。不能编造可用宝可梦、招式、道具或特性；也不能用相近宝可梦、普通转场或泛用攻队替代缺失的核心机制。接棒、天气、空间、顺风等目标必须有对应的真实启动者和收益链，否则该结果会被服务端拒绝。
 35. 最终输出必须是严格 JSON，不要在 JSON 外添加解释。顶层结构固定为 summary、single、double；single 和 double 都必须包含 team、plan、watch。
 36. 每个成员必须包含 note 字段。note 只写它在本队承担的具体职责，不要写泛泛强度评价。
 37. 每个分区 plan 必须写清完整行动链：开局如何取得节奏 → 中盘如何安全轮换/消耗 → 终盘由谁收割。单打还必须写撒钉/除钉或替代节奏；双打还必须给出至少 2 组合理首发组合，并说明谁控速、谁输出、谁保护队友、遇到反首发时如何切换。
@@ -2168,6 +2168,7 @@ function advicePokemon(mon = {}, index, format = "single", payload = {}) {
                             : "负责破盾、压血或终盘路线。";
   return {
     id: String(mon.id || mon.slug || mon.name || ""),
+    slug: String(mon.slug || ""),
     name: String(mon.name || mon.slug || `成员 ${index + 1}`),
     role: format === "double" && role === "补位" ? "双打协作位" : role,
     item: plainText(teamConfig.item || librarySet.item || "") || firstName(firstNonEmptyArray(mon.commonItems, mon.items)) || fallbackAdviceItemFor(mon, format),
@@ -2364,6 +2365,222 @@ function goalRequiresPassChain(payload = {}) {
   );
 }
 
+const PASS_CHAIN_PATTERNS = {
+  baton: /接棒|バトンタッチ|baton[-\s]?pass|boost[-\s]?pass|传递强化/i,
+  setup: /剑舞|龙之舞|健美|诡计|冥想|蝶舞|破壳|腹鼓|聚气|つるぎのまい|りゅうのまい|ビルドアップ|わるだくみ|めいそう|ちょうのまい|からをやぶる|はらだいこ|きあいだめ|swords[-\s]?dance|dragon[-\s]?dance|bulk[-\s]?up|nasty[-\s]?plot|calm[-\s]?mind|quiver[-\s]?dance|shell[-\s]?smash|belly[-\s]?drum|focus[-\s]?energy/i,
+  safety: /守住|看穿|击掌奇袭|看我嘛|愤怒粉|广域防守|急速折返|伏特替换|抛下狠话|protect|detect|fake[-\s]?out|follow[-\s]?me|rage[-\s]?powder|wide[-\s]?guard|u-turn|volt[-\s]?switch|parting[-\s]?shot/i,
+  receiver: /剑舞|龙之舞|健美|诡计|冥想|蝶舞|破壳|腹鼓|终盘|收割|清场|破盾|主轴|核心|swords[-\s]?dance|dragon[-\s]?dance|bulk[-\s]?up|nasty[-\s]?plot|calm[-\s]?mind|quiver[-\s]?dance|shell[-\s]?smash|belly[-\s]?drum|endgame|cleaner|wincon|wallbreaker/i,
+};
+
+function memberActuallyBatonPass(member = {}) {
+  return PASS_CHAIN_PATTERNS.baton.test(pocketAgMemberConfigText(member));
+}
+
+function memberActuallySetsUpForPass(member = {}) {
+  return PASS_CHAIN_PATTERNS.setup.test(pocketAgMemberConfigText(member));
+}
+
+function memberProvidesPassChainSafety(member = {}) {
+  return PASS_CHAIN_PATTERNS.safety.test(pocketAgMemberConfigText(member));
+}
+
+function memberCanReceivePass(member = {}) {
+  return PASS_CHAIN_PATTERNS.receiver.test(pocketAgMemberText(member));
+}
+
+function candidateActuallyBatonPass(mon = {}) {
+  return PASS_CHAIN_PATTERNS.baton.test(candidateVerifiedMoveText(mon));
+}
+
+function candidateActuallySetsUpForPass(mon = {}) {
+  return PASS_CHAIN_PATTERNS.setup.test(candidateVerifiedMoveText(mon));
+}
+
+function candidateProvidesPassChainSafety(mon = {}) {
+  return PASS_CHAIN_PATTERNS.safety.test(candidateVerifiedSupportText(mon));
+}
+
+function candidateCanReceivePass(mon = {}) {
+  return !candidateActuallyBatonPass(mon) && (PASS_CHAIN_PATTERNS.receiver.test(candidateText(mon)) || PASS_CHAIN_PATTERNS.receiver.test(candidateVerifiedMoveText(mon)) || Boolean(mon.formatFit?.single?.score || mon.formatFit?.double?.score));
+}
+
+function preferredPassSetupMove(mon = {}) {
+  const text = candidateVerifiedMoveText(mon);
+  const options = [
+    [/(剑舞|つるぎのまい|swords[-\s]?dance)/i, "剑舞"],
+    [/(龙之舞|りゅうのまい|dragon[-\s]?dance)/i, "龙之舞"],
+    [/(健美|ビルドアップ|bulk[-\s]?up)/i, "健美"],
+    [/(诡计|わるだくみ|nasty[-\s]?plot)/i, "诡计"],
+    [/(冥想|めいそう|calm[-\s]?mind)/i, "冥想"],
+    [/(蝶舞|ちょうのまい|quiver[-\s]?dance)/i, "蝶舞"],
+    [/(破壳|からをやぶる|shell[-\s]?smash)/i, "破壳"],
+    [/(腹鼓|はらだいこ|belly[-\s]?drum)/i, "腹鼓"],
+    [/(聚气|きあいだめ|focus[-\s]?energy)/i, "聚气"],
+  ];
+  return options.find(([pattern]) => pattern.test(text))?.[1] || "";
+}
+
+function preferredPassSafetyMove(mon = {}) {
+  const text = candidateVerifiedSupportText(mon);
+  const options = [
+    [/(守住|まもる|protect)/i, "守住"],
+    [/(击掌奇袭|ねこだまし|fake[-\s]?out)/i, "击掌奇袭"],
+    [/(看我嘛|このゆびとまれ|follow[-\s]?me)/i, "看我嘛"],
+    [/(愤怒粉|いかりのこな|rage[-\s]?powder)/i, "愤怒粉"],
+    [/(广域防守|ワイドガード|wide[-\s]?guard)/i, "广域防守"],
+    [/(急速折返|とんぼがえり|u-turn)/i, "急速折返"],
+    [/(伏特替换|ボルトチェンジ|volt[-\s]?switch)/i, "伏特替换"],
+    [/(抛下狠话|すてゼリフ|parting[-\s]?shot)/i, "抛下狠话"],
+  ];
+  return options.find(([pattern]) => pattern.test(text))?.[1] || "";
+}
+
+function ensurePassChainMoves(member = {}, setupMove = "") {
+  const required = ["接棒", setupMove].filter(Boolean);
+  const current = Array.isArray(member.moves) ? member.moves.filter(Boolean) : [];
+  const remaining = current.filter((move) => !required.some((requiredMove) => pocketAgTextKey(move) === pocketAgTextKey(requiredMove)));
+  member.moves = [...required, ...remaining].slice(0, 4);
+  return member;
+}
+
+function passChainCapability(payload = {}) {
+  const candidates = Array.isArray(payload.metaCandidates) ? payload.metaCandidates : [];
+  const passers = candidates.filter(candidateActuallyBatonPass);
+  const setupPassers = passers.filter(candidateActuallySetsUpForPass);
+  const receivers = candidates.filter((mon) => !candidateActuallyBatonPass(mon) && candidateCanReceivePass(mon));
+  const safety = candidates.filter(candidateProvidesPassChainSafety);
+  const required = requiredGoalPokemon(payload);
+  const namedCore = required.length === 1 ? required[0] : null;
+  const namedCorePasser = namedCore ? setupPassers.find((mon) => pocketAgMemberMatches(mon, namedCore)) : null;
+  const violations = [];
+  if (!setupPassers.length) violations.push("当前格式候选池没有可验证的“接棒 + 强化招式”传递者。");
+  if (namedCore && !namedCorePasser) violations.push(`${namedCore.name || namedCore.slug} 没有在当前格式中验证到可用的“接棒 + 强化”配置。`);
+  if (!receivers.length) violations.push("当前格式候选池没有可验证的独立强化接收者。");
+  if (!safety.length) violations.push("当前格式候选池没有可验证的安全上场/保护位。");
+  return { passers, setupPassers, receivers, safety, namedCore, namedCorePasser, violations };
+}
+
+function enforcePassChainTeamStructure(team = [], payload = {}, format = "single") {
+  const capability = passChainCapability(payload);
+  if (capability.violations.length) return team.slice(0, 6);
+  const formatKey = format === "double" ? "double" : "single";
+  const candidateKey = (candidate = {}) => pocketAgTextKey(candidate.slug || candidate.name || candidate.id || "");
+  const conflictingAxis = (candidate = {}) => /戏法空间|trick[-\s]?room|顺风|tailwind|日照|大晴天|降雨|求雨|扬沙|沙暴|降雪|雪景|drought|drizzle|sunny[-\s]?day|rain[-\s]?dance|sandstorm|snowscape|weather[-\s]?ball/i.test(candidateVerifiedMoveText(candidate));
+  const receiverScore = (candidate = {}) => {
+    const text = `${candidateText(candidate)} ${candidateConfigText(candidate)}`;
+    let score = Number(candidate.formatFit?.[formatKey]?.score || 0);
+    if (candidateActuallySetsUpForPass(candidate)) score += 80;
+    if (/终盘|收割|清场|破盾|主轴|核心|wallbreaker|cleaner|wincon/i.test(text)) score += 42;
+    if (/先制|priority|神速|突袭|子弹拳|影子偷袭/i.test(text)) score += 18;
+    if (conflictingAxis(candidate)) score -= 180;
+    if (candidateActuallyBatonPass(candidate)) score -= 400;
+    return score;
+  };
+  const safetyScore = (candidate = {}) => {
+    const text = `${candidateText(candidate)} ${candidateConfigText(candidate)}`;
+    let score = Number(candidate.formatFit?.[formatKey]?.score || 0);
+    if (/击掌奇袭|看我嘛|愤怒粉|广域防守|威吓|fake[-\s]?out|follow[-\s]?me|rage[-\s]?powder|wide[-\s]?guard|intimidate/i.test(text)) score += 95;
+    if (/守住|protect|急速折返|伏特替换|抛下狠话|protect|u-turn|volt[-\s]?switch|parting[-\s]?shot/i.test(text)) score += 30;
+    if (conflictingAxis(candidate)) score -= 120;
+    if (candidateActuallyBatonPass(candidate)) score -= 260;
+    return score;
+  };
+  const fillerScore = (candidate = {}) => {
+    const text = `${candidateText(candidate)} ${candidateConfigText(candidate)}`;
+    let score = Number(candidate.formatFit?.[formatKey]?.score || 0) + Number(candidate.understandingScore || 0) * 0.25;
+    if (candidateActuallySetsUpForPass(candidate)) score += 36;
+    if (candidateProvidesPassChainSafety(candidate)) score += 28;
+    if (/终盘|收割|清场|破盾|wallbreaker|cleaner|wincon/i.test(text)) score += 24;
+    if (conflictingAxis(candidate)) score -= 140;
+    if (candidateActuallyBatonPass(candidate)) score -= 220;
+    return score;
+  };
+  const next = [];
+  const add = (candidate, role, note, configure) => {
+    if (!candidate || next.length >= 6) return null;
+    const key = candidateKey(candidate);
+    if (!key || next.some((item) => candidateKey(item) === key)) return null;
+    const member = advicePokemon(candidate, next.length, format, payload);
+    member.role = role;
+    member.note = note;
+    configure?.(member);
+    next.push(member);
+    return member;
+  };
+  const passerCandidate = capability.namedCorePasser || capability.setupPassers[0];
+  const passer = add(
+    passerCandidate,
+    "强化接棒者 / 主轴核心",
+    "实际携带强化招式与接棒，负责先强化，再把能力变化交给接收者；不能按普通输出位使用。",
+    (member) => ensurePassChainMoves(member, preferredPassSetupMove(passerCandidate)),
+  );
+  const receiverCandidate = capability.receivers
+    .filter((candidate) => candidateKey(candidate) !== candidateKey(passerCandidate))
+    .sort((a, b) => receiverScore(b) - receiverScore(a))[0];
+  add(
+    receiverCandidate,
+    "接收强化终盘",
+    `负责接收${passer?.name || "接棒者"}的强化，并把优势转成终盘收割。`,
+  );
+  const safetyCandidate = capability.safety
+    .filter((candidate) => ![candidateKey(passerCandidate), candidateKey(receiverCandidate)].includes(candidateKey(candidate)))
+    .sort((a, b) => safetyScore(b) - safetyScore(a))[0];
+  add(
+    safetyCandidate,
+    "安全上场/保护位",
+    "负责用守住、击掌、掩护或转场保护强化与接棒回合，不能只算普通补位。",
+    (member) => ensureMove(member, preferredPassSafetyMove(safetyCandidate)),
+  );
+  const candidates = Array.isArray(payload.metaCandidates) ? payload.metaCandidates : [];
+  for (const candidate of candidates.slice().sort((a, b) => fillerScore(b) - fillerScore(a))) {
+    if (next.length >= 6) break;
+    if (conflictingAxis(candidate)) continue;
+    const text = `${candidateText(candidate)} ${candidateConfigText(candidate)}`;
+    const role = candidateActuallySetsUpForPass(candidate)
+      ? "副轴强化收割"
+      : candidateProvidesPassChainSafety(candidate)
+        ? "接棒保护/干扰"
+        : /终盘|收割|清场|破盾|wallbreaker|cleaner|wincon/i.test(text)
+          ? "副轴破盾/终盘"
+          : "协作补位";
+    add(candidate, role, "围绕接棒主轴补足二次突破、保护或残局火力，不引入无关天气、空间或重复控速。 ");
+  }
+  return next;
+}
+
+function primaryAdviceFormat(payload = {}) {
+  if (payload.intent?.requestedFormat === "double") return "double";
+  if (payload.intent?.requestedFormat === "single") return "single";
+  return payload.format === "double" ? "double" : "single";
+}
+
+function hardGoalPreflightViolations(payload = {}) {
+  const constraints = goalConstraints(payload);
+  const unavailable = Array.isArray(constraints.unavailablePokemon) ? constraints.unavailablePokemon : [];
+  const violations = unavailable.map((item) => `${item.name || item.slug || item.id} 不在当前${payload.formatLabel || primaryAdviceFormat(payload)}可用池，不能用相近宝可梦替代。`);
+  if (goalRequiresPassChain(payload) && !violations.length) violations.push(...passChainCapability(payload).violations);
+  return [...new Set(violations)];
+}
+
+function hardGoalAdviceViolations(advice = {}, payload = {}) {
+  const violations = hardGoalPreflightViolations(payload);
+  if (violations.length) return violations;
+  const format = primaryAdviceFormat(payload);
+  const team = Array.isArray(advice?.[format]?.team) ? advice[format].team : [];
+  for (const ref of requiredGoalPokemon(payload)) {
+    if (!team.some((member) => pocketAgMemberMatches(member, ref))) violations.push(`最终${format === "double" ? "双打" : "单打"}队伍缺少指定核心 ${ref.name || ref.slug || ref.id}。`);
+  }
+  if (goalRequiresPassChain(payload)) {
+    const passer = team.find((member) => memberActuallyBatonPass(member) && memberActuallySetsUpForPass(member));
+    const receiver = team.find((member) => member !== passer && /接收强化终盘/i.test(String(member.role || "")) && memberCanReceivePass(member));
+    const safety = team.find((member) => member !== passer && /安全上场\/保护位/i.test(String(member.role || "")) && memberProvidesPassChainSafety(member));
+    if (!passer) violations.push("最终队伍没有同一成员实际携带接棒和强化招式。");
+    if (!receiver) violations.push("最终队伍没有独立的强化接收者。");
+    if (!safety) violations.push("最终队伍没有独立的安全上场/保护位。");
+  }
+  return [...new Set(violations)];
+}
+
 function requestedThemeIds(payload = {}) {
   return THEME_IDS.filter((theme) => goalRequiresTheme(payload, theme));
 }
@@ -2400,14 +2617,7 @@ function candidateConflictsWithGoalTheme(mon = {}, payload = {}) {
 }
 
 function candidateHasMove(mon = {}, patterns = []) {
-  const text = pocketAgTextBlob([
-    mon.commonMoves,
-    mon.moves,
-    mon.teamLibrarySets?.map((set) => set.moves),
-    mon.roleProfile,
-    mon.supportProfile,
-    mon.understandingReasons,
-  ]);
+  const text = candidateVerifiedMoveText(mon);
   return patterns.some((pattern) => pattern.test(text));
 }
 
@@ -2430,7 +2640,29 @@ function candidateConfigText(mon = {}) {
     mon.abilities,
     mon.commonMoves,
     mon.moves,
+    mon.roleProfile,
+    mon.supportProfile,
     mon.teamLibrarySets?.map((set) => [set.ability, set.moves]),
+    teamLibraryConfigsFor(mon).map((set) => [set.ability, set.moves]),
+  ]);
+}
+
+function candidateVerifiedMoveText(mon = {}) {
+  return pocketAgTextBlob([
+    mon.commonMoves,
+    mon.moves,
+    mon.roleProfile?.common?.moves,
+    mon.teamLibrarySets?.map((set) => set.moves),
+    teamLibraryConfigsFor(mon).map((set) => set.moves),
+  ]);
+}
+
+function candidateVerifiedSupportText(mon = {}) {
+  return pocketAgTextBlob([
+    candidateVerifiedMoveText(mon),
+    mon.commonAbilities,
+    mon.abilities,
+    mon.roleProfile?.common?.abilities,
     teamLibraryConfigsFor(mon).map((set) => [set.ability, set.moves]),
   ]);
 }
@@ -3095,6 +3327,9 @@ function enforceGoalConstraintsOnTeam(team = [], payload = {}, format = "single"
   const priorityScore = (item = {}) => {
     let score = 0;
     if (required.some((ref) => pocketAgMemberMatches(item, ref))) score += 900;
+    if (goalRequiresPassChain(payload) && memberActuallyBatonPass(item) && memberActuallySetsUpForPass(item)) score += 700;
+    if (goalRequiresPassChain(payload) && /接收强化终盘/i.test(String(item.role || ""))) score += 520;
+    if (goalRequiresPassChain(payload) && /安全上场\/保护位/i.test(String(item.role || ""))) score += 460;
     if (goalRequiresTailwind(payload) && memberActuallySetsTailwind(item)) score += 240;
     for (const theme of requestedThemeIds(payload)) {
       if (memberActuallySetsTheme(item, theme)) score += 220;
@@ -3486,10 +3721,6 @@ function pocketAgRepairAdvice(advice, payload = {}, text = "") {
   const result = advice && typeof advice === "object" ? JSON.parse(JSON.stringify(advice)) : {};
   const formatSummary = [];
   const passChainGoal = goalRequiresPassChain(payload);
-  const repairPool = Array.isArray(payload.metaCandidates) ? payload.metaCandidates : [];
-  const passChainPoolHint = goalRequiresPassChain(payload) && !Array.isArray(payload.metaCandidates)
-    ? false
-    : repairPool.some((mon) => /接棒|baton pass|boost pass|强化接棒|传递强化/i.test(pocketAgTextBlob([mon.name, mon.slug, mon.commonMoves, mon.moves, mon.roleProfile, mon.supportProfile, mon.understandingReasons])));
   for (const format of ["single", "double"]) {
     const block = result[format] || {};
     const fallbackTeam = pocketAgSelectTeam(payload, format);
@@ -3584,45 +3815,6 @@ function pocketAgRepairAdvice(advice, payload = {}, text = "") {
         team.unshift(inserted);
       }
     }
-    if (passChainGoal) {
-      const hasPasser = team.some((item) => /接棒|baton pass|boost pass|强化接棒|传递强化/i.test(pocketAgMemberText(item)));
-      const hasReceiver = team.some((item) => /终盘|收割|清场|wincon|cleaner|主轴|核心|破盾/i.test(pocketAgMemberText(item)));
-      const hasProtector = team.some((item) => /保护|守住|安全上场|转场|轮转|pivot|u-turn|volt switch|parting shot|fake out|follow me|rage powder/i.test(pocketAgMemberText(item)));
-      if (!hasPasser) {
-        const candidate = repairPool.find((mon) => /接棒|baton pass|boost pass|强化接棒|传递强化/i.test(pocketAgMemberText(advicePokemon(mon, 0, format, payload)))) || fallbackTeam.find((mon) => /接棒|baton pass|boost pass|强化接棒|传递强化/i.test(`${mon.name || ""} ${mon.slug || ""}`));
-        if (candidate) {
-          const inserted = advicePokemon(candidate, 0, format, payload);
-          inserted.role = "接棒传递者";
-          inserted.note = "负责传递强化并把加成送给接收者，不承担泛用输出职责。";
-          team.unshift(inserted);
-        }
-      }
-      if (!hasProtector) {
-        const protector = fallbackTeam.find((mon) => /保护|守住|安全上场|转场|轮转|pivot|u-turn|volt switch|parting shot|fake out|follow me|rage powder/i.test(pocketAgMemberText(advicePokemon(mon, 0, format, payload)))) || repairPool.find((mon) => /保护|守住|安全上场|转场|轮转|pivot|u-turn|volt switch|parting shot|fake out|follow me|rage powder/i.test(pocketAgMemberText(advicePokemon(mon, 0, format, payload))));
-        if (protector) {
-          const inserted = advicePokemon(protector, 0, format, payload);
-          inserted.role = "安全上场位";
-          inserted.note = "负责给接棒/强化链争取安全回合，不能只写成普通补位。";
-          team.splice(Math.min(1, team.length), 0, inserted);
-        }
-      }
-      if (!hasReceiver) {
-        const receiver = fallbackTeam.find((mon) => /终盘|收割|清场|wincon|cleaner|主轴|核心|破盾/i.test(pocketAgMemberText(advicePokemon(mon, 0, format, payload)))) || repairPool.find((mon) => /终盘|收割|清场|wincon|cleaner|主轴|核心|破盾/i.test(pocketAgMemberText(advicePokemon(mon, 0, format, payload))));
-        if (receiver) {
-          const inserted = advicePokemon(receiver, 0, format, payload);
-          inserted.role = "接收强化终盘";
-          inserted.note = "负责吃接棒后的强化并转成终盘胜点。";
-          team.push(inserted);
-        }
-      }
-      if (!passChainPoolHint) {
-        block.watch = [
-          `当前 Champions 候选池里几乎没有明确的接棒/强化传递成员，已改为最接近的合法链条替代。`,
-          `这不是普通攻队思路；${team[0]?.name || "首发位"} 负责起手，${team[team.length - 1]?.name || "终盘位"} 负责吃强化并收尾。`,
-          `若要更像真正接棒队，需要补入能传递强化的候选，而不是继续加泛用强单体。`,
-        ];
-      }
-    }
     if (needsSun && !hasRealSun) {
       const setter = findThemeCandidate(fallbackTeam, "sun", format);
       if (setter) {
@@ -3678,6 +3870,7 @@ function pocketAgRepairAdvice(advice, payload = {}, text = "") {
         .slice(0, 6);
     }
     team = enforceGoalConstraintsOnTeam(team, payload, format);
+    if (passChainGoal) team = enforcePassChainTeamStructure(team, payload, format);
     block.team = team;
     const plan = String(block.plan || "");
     const watch = Array.isArray(block.watch) ? block.watch.filter(Boolean) : [];
@@ -3877,6 +4070,15 @@ async function requestAI(aiConfig, payload, useJsonSchema) {
 
 async function handleAI(req, res) {
   const payload = await readJson(req);
+  const preflightViolations = hardGoalPreflightViolations(payload);
+  if (preflightViolations.length) {
+    sendJson(res, 422, {
+      code: "HARD_CONSTRAINT_UNSATISFIED",
+      error: `无法按硬性要求构筑：${preflightViolations.join("；")}`,
+      violations: preflightViolations,
+    });
+    return;
+  }
   const aiConfig = resolveRequestAIConfig(payload);
   if (!aiConfig) {
     sendJson(res, 501, {
@@ -3916,6 +4118,15 @@ async function handleAI(req, res) {
   const advice = parsedAdvice
     ? pocketAgRepairAdvice(normalizeAdviceItems(parsedAdvice), payload, text)
     : fallbackAdvice(payload, text);
+  const hardViolations = hardGoalAdviceViolations(advice, payload);
+  if (hardViolations.length) {
+    sendJson(res, 422, {
+      code: "HARD_CONSTRAINT_UNSATISFIED",
+      error: `AI 返回的队伍没有满足硬性要求：${hardViolations.join("；")}`,
+      violations: hardViolations,
+    });
+    return;
+  }
   sendJson(res, 200, {
     model: aiConfig.model,
     provider: aiConfig.source,
@@ -4157,6 +4368,9 @@ export {
   goalHasCharizardTailwind,
   goalHasFireSunCore,
   goalRequiresTailwind,
+  hardGoalAdviceViolations,
+  hardGoalPreflightViolations,
+  passChainCapability,
   pocketAgFormatPlan,
   pocketAgFormatWatch,
   pocketAgRepairAdvice,
