@@ -1639,6 +1639,94 @@ body.has-ai-advice .team-library-preview {
   line-height: 1.6;
 }
 
+.ai-beginner-team {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(37, 99, 235, 0.2);
+  border-radius: var(--radius-md);
+  background: rgba(239, 246, 255, 0.58);
+}
+
+.ai-beginner-team-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ai-beginner-team-head strong {
+  color: var(--text-main);
+  font-size: 15px;
+}
+
+.ai-beginner-team-head .compact {
+  flex: 0 0 auto;
+  width: auto;
+  min-height: 36px;
+  padding: 0 10px;
+}
+
+.ai-beginner-team-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.ai-beginner-member {
+  display: flex;
+  min-width: 0;
+  gap: 8px;
+  align-items: center;
+  min-height: 58px;
+  padding: 8px;
+  border: 1px solid rgba(219, 227, 238, 0.9);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.ai-beginner-member img,
+.ai-beginner-member-index {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  object-fit: contain;
+}
+
+.ai-beginner-member-index {
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--bg-info);
+  color: var(--color-info);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.ai-beginner-member > span:last-child {
+  flex: 1 1 auto;
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.ai-beginner-member strong,
+.ai-beginner-member small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-beginner-member strong {
+  color: var(--text-main);
+  font-size: 13px;
+}
+
+.ai-beginner-member small {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
 .ai-progress-panel {
   display: grid;
   gap: 10px;
@@ -3479,6 +3567,21 @@ body[data-font-scale="large"] select {
 }
 
 @media (max-width: 520px) {
+  .ai-beginner-team-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ai-beginner-member {
+    min-height: 54px;
+    padding: 7px;
+  }
+
+  .ai-beginner-member img,
+  .ai-beginner-member-index {
+    width: 32px;
+    height: 32px;
+  }
+
   .team-slots {
     grid-template-columns: repeat(2, 1fr);
   }

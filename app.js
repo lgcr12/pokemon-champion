@@ -1839,6 +1839,15 @@ function goalText() {
   return $("#ai-user-goal")?.value?.trim() || "";
 }
 
+function requestedBattleFormat(goal = "") {
+  const text = `${goal} ${String(goal || "").toLowerCase()}`;
+  const asksSingle = /单打|单人对战|1v1|singles?/.test(text);
+  const asksDouble = /双打|双人对战|2v2|doubles?/.test(text);
+  if (asksSingle && !asksDouble) return "single";
+  if (asksDouble && !asksSingle) return "double";
+  return "";
+}
+
 function goalMatchesPokemon(goal = "", mon) {
   const names = [
     mon.name,
@@ -1969,9 +1978,10 @@ function shouldRebuildFromGoal(goal = "") {
   const cn = cnKey(goal);
   const text = String(goal || "").toLowerCase();
   const asksForNewTeam = /配置|组|组建|构筑|来个|来一个|想一个|配一个|做一个/.test(cn) || /\b(build|make|create|new)\b/.test(text);
+  const asksToSweep = /灭队|横扫|清场/.test(cn) || /\bsweep\b/.test(text);
   const mentionsTeam = /队伍|阵容|队|team/.test(`${goal} ${text}`);
   const preserveCurrent = /当前|已选|这几只|现有|保留|补全|改配置|配招|moveset/.test(`${cn} ${text}`);
-  return asksForNewTeam && mentionsTeam && !preserveCurrent;
+  return !preserveCurrent && (asksToSweep || (asksForNewTeam && mentionsTeam));
 }
 
 function goalIsCounterTarget(goal = "") {
@@ -2026,9 +2036,9 @@ function requestedTeamTemplate(goal = "", style = null) {
   return null;
 }
 
-function requiredCorePokemonFromGoal(goal = "") {
+function requiredCorePokemonFromGoal(goal = "", source = state.data?.pokemon || []) {
   if (!goal || goalIsCounterTarget(goal)) return [];
-  const data = state.data?.pokemon || [];
+  const data = Array.isArray(source) ? source : [];
   const wantsMega = /mega|超级/i.test(goal);
   const familyKey = (mon = {}) =>
     idKey(mon.slug || mon.name || mon.id)
@@ -4728,13 +4738,16 @@ function aiContext(mode) {
   const knowledge = battleKnowledge();
   const compositionReport = getTeamCompositionReport();
   const userGoal = goalText();
+  const requestedFormat = requestedBattleFormat(userGoal);
+  const activeFormat = requestedFormat || state.format;
+  const activeData = state.rawData.formats?.[activeFormat] || state.data;
   const buildIntent = mode === "new-team" ? "new-team" : selectedBuildIntent();
   const teamStyle = requestedTeamStyle(userGoal);
   const teamTemplate = requestedTeamTemplate(userGoal, teamStyle);
   const rebuildFromGoal = buildIntent === "new-team" || (buildIntent === "auto" && shouldRebuildFromGoal(userGoal));
   const forceCurrentTeam = buildIntent === "current-team" || buildIntent === "moveset-only";
   const counterTargetMode = buildIntent === "counter-target" || goalIsCounterTarget(userGoal);
-  const requiredCorePokemon = requiredCorePokemonFromGoal(userGoal);
+  const requiredCorePokemon = requiredCorePokemonFromGoal(userGoal, activeData?.pokemon || []);
   const goalConstraints = goalConstraintsFromGoal(userGoal, requiredCorePokemon);
   const targetPokemon = counterTargetMode ? targetPokemonFromGoal(userGoal) : [];
   const targetProfiles = targetPokemon.map(targetMatchupProfile).filter(Boolean);
@@ -4772,7 +4785,7 @@ function aiContext(mode) {
     if (!item.slug) continue;
     targetAnswerScores.set(item.slug, Math.max(targetAnswerScores.get(item.slug) || 0, Number(item.score || 0)));
   }
-  const candidateSourceAll = state.data.pokemon.filter((mon) => rebuildFromGoal || !selectedIds.has(mon.id));
+  const candidateSourceAll = (activeData?.pokemon || []).filter((mon) => rebuildFromGoal || !selectedIds.has(mon.id));
   const candidateLimitAll = compactContext ? 160 : 320;
   const requiredIds = new Set(requiredCorePokemon.map((mon) => String(mon.id)));
   const candidateSource = [
@@ -4791,13 +4804,13 @@ function aiContext(mode) {
   };
   const understanding = buildTeamUnderstanding(rebuildFromGoal ? [] : state.team, ["single", "double"], { megaPlan, teamStyle, userGoal, compositionReport, compactContext, fixedOpponentTeams });
   const formatModels = understanding.formatModels;
-  const slotModel = formatModels[state.format]?.slotModel || formatModels.single?.slotModel;
-  const archetypeModel = formatModels[state.format]?.archetypeModel || formatModels.single?.archetypeModel;
-  const threatMatrix = formatModels[state.format]?.threatMatrix || formatModels.single?.threatMatrix;
-  const chainModel = formatModels[state.format]?.chainModel || formatModels.single?.chainModel;
-  const resourceModel = formatModels[state.format]?.resourceModel || formatModels.single?.resourceModel;
-  const phaseModel = formatModels[state.format]?.phaseModel || formatModels.single?.phaseModel;
-  const branchModel = formatModels[state.format]?.branchModel || formatModels.single?.branchModel;
+  const slotModel = formatModels[activeFormat]?.slotModel || formatModels.single?.slotModel;
+  const archetypeModel = formatModels[activeFormat]?.archetypeModel || formatModels.single?.archetypeModel;
+  const threatMatrix = formatModels[activeFormat]?.threatMatrix || formatModels.single?.threatMatrix;
+  const chainModel = formatModels[activeFormat]?.chainModel || formatModels.single?.chainModel;
+  const resourceModel = formatModels[activeFormat]?.resourceModel || formatModels.single?.resourceModel;
+  const phaseModel = formatModels[activeFormat]?.phaseModel || formatModels.single?.phaseModel;
+  const branchModel = formatModels[activeFormat]?.branchModel || formatModels.single?.branchModel;
   const scoreOptions = { targetAnswerScores, styleScores, synergyReports, supportScores, megaScores };
   const scoreCache = new Map();
   const candidateScoreFor = (mon, format) => {
@@ -4814,7 +4827,7 @@ function aiContext(mode) {
       },
     ]),
   );
-  const candidateScores = new Map(candidateSource.map((mon) => [mon.id, candidateScoreFor(mon, state.format)]));
+  const candidateScores = new Map(candidateSource.map((mon) => [mon.id, candidateScoreFor(mon, activeFormat)]));
   const styleFiltered = teamStyle?.id === "stall" ? candidateSource.filter((mon) => (styleScores.get(mon.id) || 0) >= 0) : candidateSource;
   const sortedCandidatePool = [
     ...requiredCorePokemon,
@@ -4825,7 +4838,7 @@ function aiContext(mode) {
       const currentScore = (candidateScores.get(b.id)?.total || 0) - (candidateScores.get(a.id)?.total || 0);
       const targetScore = (targetAnswerScores.get(b.slug) || 0) - (targetAnswerScores.get(a.slug) || 0);
       const styleScore = (styleScores.get(b.id) || 0) - (styleScores.get(a.id) || 0);
-      const currentFormat = state.format === "double" ? "double" : "single";
+      const currentFormat = activeFormat === "double" ? "double" : "single";
       const otherFormat = currentFormat === "double" ? "single" : "double";
       const formatScore = ((formatFits.get(b.id)?.[currentFormat]?.score || 0) + (formatFits.get(b.id)?.[otherFormat]?.score || 0) * 0.35) - ((formatFits.get(a.id)?.[currentFormat]?.score || 0) + (formatFits.get(a.id)?.[otherFormat]?.score || 0) * 0.35);
       const threatScore = (formatFits.get(b.id)?.[currentFormat]?.threatFit?.score || 0) - (formatFits.get(a.id)?.[currentFormat]?.threatFit?.score || 0);
@@ -4840,13 +4853,13 @@ function aiContext(mode) {
       const megaScore = (megaScores.get(b.id) || 0) - (megaScores.get(a.id) || 0);
       return requiredScore || currentScore || targetScore || styleScore || formatScore || threatScore || branchScore || phaseScore || chainScore || resourceScore || archetypeScore || slotScore || synergyScore || megaScore || supportScore || Number(a.rank || 9999) - Number(b.rank || 9999);
     });
-  const forcedGoalCandidates = goalSupportCandidatesForContext([...requiredCorePokemon, ...candidateSourceAll], goalConstraints, state.format);
+  const forcedGoalCandidates = goalSupportCandidatesForContext([...requiredCorePokemon, ...candidateSourceAll], goalConstraints, activeFormat);
   const candidatePool = [...forcedGoalCandidates, ...sortedCandidatePool]
     .filter((mon, index, list) => list.findIndex((item) => String(item.id || item.slug || item.name) === String(mon.id || mon.slug || mon.name)) === index)
     .slice(0, candidateLimit);
   const memoryContext = {
     buildIntent,
-    format: state.format,
+    format: activeFormat,
     userGoal,
     intent: {
       teamStyle,
@@ -4867,8 +4880,8 @@ function aiContext(mode) {
       instruction: uiLevelInstruction(),
     },
     buildIntent,
-    format: state.format,
-    formatLabel: formatLabel(state.format),
+    format: activeFormat,
+    formatLabel: formatLabel(activeFormat),
     sourcePriority: [
       "Pokemon Champions 当前格式数据为主规则和主可用池",
       "Showdown 只做参考校验和英文规则参考",
@@ -4881,6 +4894,11 @@ function aiContext(mode) {
       forceCurrentTeam,
       movesetOnly: buildIntent === "moveset-only",
       counterTargetMode,
+      requestedFormat: activeFormat,
+      formatExplicit: Boolean(requestedFormat),
+      formatConstraint: requestedFormat
+        ? `用户明确要求${formatLabel(activeFormat)}；summary、默认展示和主要对局计划必须围绕${formatLabel(activeFormat)}，不能用另一种格式代替。`
+        : "",
       teamStyle,
       teamTemplate,
       goalConstraints,
@@ -5518,7 +5536,9 @@ function normalizeAdvice(data) {
 }
 
 function normalizeAdviceDefaults(advice) {
-  advice.summary = localizeAdviceText(advice.summary || "");
+  const rawSummary = localizeAdviceText(advice.summary || "").trim();
+  const summaryFragment = rawSummary.match(/^\s*["']?summary["']?\s*:\s*["']?([\s\S]*?)["']?\s*,?\s*$/i);
+  advice.summary = summaryFragment ? summaryFragment[1].trim() : rawSummary;
   for (const format of ["single", "double"]) {
     if (advice?.[format]) {
       advice[format].plan = localizeAdviceText(advice[format].plan || "");
@@ -5611,6 +5631,32 @@ function renderFormatAdvice(title, format, block = {}) {
       ${watch.length && !compact ? `<div class="ai-tags">${watch.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
       ${isUiAtLeast("advanced") ? renderBattleEvalBlock(format) : ""}
       <div class="ai-team-grid ${compact ? "is-compact" : ""}">${team.map((item, index) => renderAdviceCard(item, index, format)).join("")}</div>
+    </section>`;
+}
+
+function renderBeginnerAdviceTeam(format, team = []) {
+  const members = Array.isArray(team) ? team.slice(0, 6) : [];
+  if (!members.length) return "";
+  return `
+    <section class="ai-beginner-team" aria-label="推荐${escapeHtml(formatLabel(format))}队伍">
+      <div class="ai-beginner-team-head">
+        <strong>推荐${escapeHtml(formatLabel(format))}队伍</strong>
+        <button class="btn-primary compact" type="button" data-ai-apply="${escapeHtml(format)}">使用这支队伍</button>
+      </div>
+      <div class="ai-beginner-team-grid">
+        ${members
+          .map((item, index) => {
+            const mon = adviceLookupPokemon(item, format);
+            const name = item.name || item.id || `成员 ${index + 1}`;
+            const sprite = mon?.sprite || "";
+            return `
+              <article class="ai-beginner-member">
+                ${sprite ? `<img src="${escapeHtml(sprite)}" alt="" aria-hidden="true">` : `<span class="ai-beginner-member-index">${index + 1}</span>`}
+                <span><strong>${escapeHtml(name)}</strong><small>${escapeHtml(item.role || "队伍成员")}</small></span>
+              </article>`;
+          })
+          .join("")}
+      </div>
     </section>`;
 }
 
@@ -6664,6 +6710,7 @@ function renderAIAdvice(data) {
   if (isUiLevel("beginner")) {
     const block = advice?.[state.aiAdviceView] || advice?.[state.format] || advice.single || {};
     const watch = Array.isArray(block.watch) ? block.watch.filter(Boolean).slice(0, 1) : [];
+    const team = Array.isArray(block.team) ? block.team : [];
     return `
       <div class="ai-result ai-result-compact">
         <div class="ai-result-head">
@@ -6676,6 +6723,7 @@ function renderAIAdvice(data) {
           <strong>下一步</strong>
           <p>${escapeHtml(block.plan || "先用当前队伍或热门样本跑一版。")}</p>
         </div>
+        ${renderBeginnerAdviceTeam(state.aiAdviceView, team)}
         ${watch.length ? `<div class="ai-tags">${watch.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
       </div>`;
   }
@@ -7118,7 +7166,7 @@ async function generateAIAdvice(mode) {
     rememberAdviceFailure(advice, structure, context);
     progress.stop();
     output.className = "ai-output has-structured-result";
-    state.aiAdviceView = state.format;
+    state.aiAdviceView = context.format;
     output.innerHTML = renderAIAdvice({ advice });
     updateDocumentState();
     void runAutomaticBattleEvaluations();

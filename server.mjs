@@ -474,6 +474,9 @@ function buildPrompt(payload) {
   const emptyTeamRequest = Boolean(payload.intent?.emptyTeamRequest);
   const rebuildFromGoal = Boolean(payload.intent?.rebuildFromGoal);
   const buildIntent = payload.buildIntent || payload.intent?.buildIntent || "auto";
+  const requestedFormat = payload.intent?.requestedFormat === "double" ? "double" : "single";
+  const formatSource = payload.intent?.formatExplicit ? "用户明确要求" : "当前工作台选择";
+  const formatFocus = `\n格式硬约束：${formatSource} ${requestedFormat === "double" ? "双打" : "单打"}。summary 和 ${requestedFormat} 分区是主答案，必须只使用该格式的术语和对局计划；另一个分区只能作为附带参考，不能替代主答案。`;
   const movesetOnly = Boolean(payload.intent?.movesetOnly);
   const counterTargetMode = Boolean(payload.intent?.counterTargetMode);
   const requestedStyle = payload.intent?.teamStyle?.name ? `\n用户指定队伍类型：${payload.intent.teamStyle.name}\n队伍类型硬规则：${(payload.intent.teamStyle.hardRules || []).join("；")}` : "";
@@ -551,6 +554,7 @@ function buildPrompt(payload) {
 当前规则：${payload.formatLabel || payload.format}
 用户目标：${payload.userGoal || "未填写"}
 ${uiLevelText}
+${formatFocus}
 ${requestedStyle}
 ${requestedTemplate}
 ${hardGoalConstraints}
@@ -3687,7 +3691,8 @@ function pocketAgRepairAdvice(advice, payload = {}, text = "") {
     formatSummary.push(block.plan);
   }
   if (!result.summary || /围绕当前核心补齐抗性|按当前队伍微调|建议队伍如下|当前队伍/.test(String(result.summary || ""))) {
-    result.summary = formatSummary.find(Boolean) || "本次优先补齐结构闭环与对局说明。";
+    const focus = payload.intent?.requestedFormat === "double" ? "double" : "single";
+    result.summary = result[focus]?.plan || formatSummary.find(Boolean) || "本次优先补齐结构闭环与对局说明。";
   }
   return result;
 }
