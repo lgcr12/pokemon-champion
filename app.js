@@ -7378,14 +7378,14 @@ function renderTeamLibrary() {
   preview.innerHTML = `
     <div class="team-preview-meta">
       <strong>${escapeHtml(team.title)}</strong>
-      <span>${escapeHtml(team.season)}</span>
-      <span>${escapeHtml(team.formatLabel)}</span>
-      <span>${escapeHtml(teamSourceLabel(teamSourceKind(team)))}</span>
-      <span>${team.rate ? `Rate ${team.rate}` : "No rate"}</span>
-      <span>${escapeHtml(team.source || "Unknown source")}</span>
-      ${team.rentalCode ? `<span>租借码 ${escapeHtml(team.rentalCode)}</span>` : ""}
-      <span>可导入 ${matched}/${team.members.length}</span>
-      ${fullData < team.members.length ? `<span>完整数据 ${fullData}/${team.members.length}</span>` : ""}
+      <span class="team-preview-chip">${escapeHtml(team.season)}</span>
+      <span class="team-preview-chip">${escapeHtml(team.formatLabel)}</span>
+      <span class="team-preview-chip team-preview-source">${escapeHtml(teamSourceLabel(teamSourceKind(team)))}</span>
+      <span class="team-preview-chip team-preview-rate">${team.rate ? `Rate ${team.rate}` : "No rate"}</span>
+      <span class="team-preview-chip team-preview-source-name">${escapeHtml(team.source || "Unknown source")}</span>
+      ${team.rentalCode ? `<span class="team-preview-chip team-preview-rental">租借码 ${escapeHtml(team.rentalCode)}</span>` : ""}
+      <span class="team-preview-chip team-preview-importable">可导入 ${matched}/${team.members.length}</span>
+      ${fullData < team.members.length ? `<span class="team-preview-chip team-preview-full-data">完整数据 ${fullData}/${team.members.length}</span>` : ""}
       ${team.articleUrl ? `<a class="team-source-link" href="${team.articleUrl}" target="_blank" rel="noopener noreferrer">打开文章</a>` : ""}
       ${team.href ? `<a class="team-source-link secondary" href="${team.href}" target="_blank" rel="noopener noreferrer">打开来源</a>` : ""}
       ${(team.sourceLinks || [])

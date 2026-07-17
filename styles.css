@@ -398,6 +398,10 @@ body[data-ui-level="beginner"] .analysis-dashboard .bento-primary .game-plan-lis
   display: block;
 }
 
+body:not(.has-team) .analysis-dashboard {
+  display: none !important;
+}
+
 body[data-ui-level="beginner"] .team-library .library-header,
 body[data-ui-level="beginner"] .ai-builder .library-header,
 body[data-ui-level="beginner"] .data-health .library-header {
@@ -2882,6 +2886,344 @@ body:not(.palette-open) .palette-backdrop {
   color: #991b1b;
 }
 
+/* UI density layout polish */
+.premium-layout {
+  display: flex;
+  flex-direction: column;
+}
+
+.top-nav {
+  order: 1;
+}
+
+.hero-panel {
+  order: 2;
+}
+
+.quickstart-strip {
+  order: 3;
+}
+
+.main-content {
+  order: 4;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.speedline-board {
+  order: 5;
+}
+
+.team-builder,
+.analysis-dashboard,
+.data-health {
+  grid-column: 1 / -1;
+}
+
+.team-library {
+  grid-column: span 5;
+}
+
+.ai-builder {
+  grid-column: span 7;
+}
+
+.team-builder {
+  order: 1;
+}
+
+.team-library {
+  order: 3;
+}
+
+.ai-builder {
+  order: 4;
+}
+
+.data-health {
+  order: 5;
+}
+
+.analysis-dashboard {
+  order: 2;
+}
+
+button,
+select,
+.btn-primary,
+.btn-outline {
+  min-height: 44px;
+}
+
+.control-panel {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(112px, 1fr));
+  align-items: end;
+}
+
+.control-panel select,
+.library-actions select,
+.ai-mode-select {
+  min-height: 44px;
+}
+
+.ai-builder .ai-actions {
+  grid-template-columns: minmax(220px, 0.9fr) minmax(260px, 1fr) auto;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.ai-actions-main,
+.ai-actions-workbench,
+.ai-actions-advanced {
+  min-width: 0;
+}
+
+.ai-actions-main .btn-primary,
+.ai-actions-main .btn-outline,
+.ai-actions-advanced .btn-outline {
+  flex: 1 1 150px;
+}
+
+.ai-actions-workbench .ai-mode-select {
+  flex: 1 1 160px;
+}
+
+.team-preview-meta {
+  min-width: 0;
+}
+
+.team-preview-chip {
+  align-items: center;
+  min-height: 24px;
+  margin-bottom: 4px;
+  padding: 3px 7px;
+  border: 1px solid rgba(219, 227, 238, 0.9);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.team-preview-rate,
+.team-preview-rental,
+.team-preview-importable {
+  color: var(--text-main);
+  font-weight: 900;
+}
+
+body[data-ui-level="beginner"] .main-content {
+  order: 4;
+  grid-template-columns: 1fr;
+  gap: 14px;
+}
+
+body[data-ui-level="beginner"] .speedline-board {
+  order: 5;
+}
+
+body[data-ui-level="beginner"] .team-library {
+  order: 1;
+  grid-column: 1 / -1;
+}
+
+body[data-ui-level="beginner"] .team-builder {
+  order: 2;
+  grid-column: 1 / -1;
+}
+
+body[data-ui-level="beginner"] .ai-builder {
+  order: 3;
+  grid-column: 1 / -1;
+}
+
+body[data-ui-level="beginner"] .analysis-dashboard {
+  order: 4;
+  grid-column: 1 / -1;
+}
+
+body[data-ui-level="beginner"] .hero-panel {
+  padding: 18px;
+}
+
+body[data-ui-level="beginner"] .hero-panel h2 {
+  font-size: clamp(32px, 6vw, 44px);
+}
+
+body[data-ui-level="beginner"] .quickstart-strip {
+  margin-bottom: 14px;
+}
+
+body[data-ui-level="beginner"] .quickstart-action {
+  min-height: 72px;
+}
+
+body[data-ui-level="beginner"] .team-library .library-header {
+  padding-bottom: 12px;
+}
+
+body[data-ui-level="beginner"] .team-library-preview {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+}
+
+body[data-ui-level="beginner"] .team-preview-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+body[data-ui-level="beginner"] .team-preview-meta strong {
+  flex: 1 0 100%;
+  margin-bottom: 2px;
+}
+
+body[data-ui-level="beginner"] .team-preview-source-name,
+body[data-ui-level="beginner"] .team-preview-full-data,
+body[data-ui-level="beginner"] .team-source-link {
+  display: none !important;
+}
+
+body[data-ui-level="beginner"] .team-preview-mons {
+  width: 100%;
+  grid-template-columns: repeat(6, minmax(34px, 1fr));
+}
+
+body[data-ui-level="beginner"] .team-preview-mons img {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+}
+
+body[data-ui-level="beginner"] .team-builder,
+body[data-ui-level="beginner"] .ai-builder,
+body[data-ui-level="beginner"] .speedline-board,
+body[data-ui-level="beginner"] .analysis-dashboard .bento-card {
+  padding: 16px;
+}
+
+body[data-ui-level="beginner"] .team-slots {
+  gap: 8px;
+  padding: 8px;
+}
+
+body[data-ui-level="beginner"] .slot {
+  min-height: 112px;
+}
+
+body[data-ui-level="beginner"] .speedline-summary {
+  padding: 10px 0 0;
+}
+
+body[data-ui-level="beginner"] .speedline-summary-text {
+  padding: 12px;
+  border: 1px solid rgba(219, 227, 238, 0.9);
+  border-radius: var(--radius-md);
+  background: rgba(248, 250, 252, 0.9);
+}
+
+body[data-ui-level="intermediate"] .main-content {
+  order: 4;
+}
+
+body[data-ui-level="intermediate"] .speedline-board {
+  order: 5;
+}
+
+body[data-ui-level="intermediate"] .team-builder {
+  order: 1;
+}
+
+body[data-ui-level="intermediate"] .analysis-dashboard {
+  order: 2;
+}
+
+body[data-ui-level="intermediate"] .team-library {
+  order: 3;
+  grid-column: span 5;
+}
+
+body[data-ui-level="intermediate"] .ai-builder {
+  order: 4;
+  grid-column: span 7;
+}
+
+body[data-ui-level="intermediate"] .data-health {
+  order: 5;
+}
+
+body[data-ui-level="intermediate"] .speedline-board {
+  padding: 16px;
+}
+
+body[data-ui-level="intermediate"] .speedline-table {
+  max-height: 340px;
+}
+
+body[data-ui-level="intermediate"] .speedline-row {
+  grid-template-columns: 74px minmax(0, 1fr);
+  padding: 9px 12px;
+}
+
+body[data-ui-level="intermediate"] .speedline-note {
+  display: none;
+}
+
+body[data-ui-level="intermediate"] .metric-card {
+  padding: 14px;
+}
+
+body[data-ui-level="intermediate"]:not(.has-team) .export-panel {
+  display: none !important;
+}
+
+body[data-ui-level="advanced"] .quickstart-strip {
+  display: none;
+}
+
+body[data-ui-level="advanced"] .speedline-board {
+  order: 4;
+}
+
+body[data-ui-level="advanced"] .main-content {
+  order: 5;
+  gap: 18px;
+}
+
+body[data-ui-level="advanced"] .hero-panel {
+  padding: 16px 18px;
+}
+
+body[data-ui-level="advanced"] .hero-panel h2 {
+  font-size: clamp(32px, 4vw, 42px);
+}
+
+body[data-ui-level="advanced"] .hero-subtitle {
+  max-width: 680px;
+}
+
+body[data-ui-level="advanced"] .speedline-table {
+  max-height: 640px;
+}
+
+body[data-ui-level="advanced"] .data-health {
+  margin: 0;
+}
+
+body[data-font-scale="large"] .main-content,
+body[data-font-scale="large"] .quickstart-strip {
+  gap: 14px;
+}
+
+body[data-font-scale="large"] .team-preview-chip,
+body[data-font-scale="large"] .export-hints span {
+  border-radius: 8px;
+}
+
+body[data-font-scale="large"] .btn-primary,
+body[data-font-scale="large"] .btn-outline,
+body[data-font-scale="large"] select {
+  white-space: normal;
+}
+
 @media (max-width: 900px) {
   .decor-pokemon {
     display: none;
@@ -3004,6 +3346,43 @@ body:not(.palette-open) .palette-backdrop {
   }
 }
 
+@media (max-width: 1100px) {
+  .main-content {
+    grid-template-columns: 1fr;
+  }
+
+  .team-builder,
+  .analysis-dashboard,
+  .data-health,
+  .team-library,
+  .ai-builder {
+    grid-column: 1 / -1;
+  }
+
+  body[data-ui-level="beginner"] .team-library,
+  body[data-ui-level="beginner"] .team-builder,
+  body[data-ui-level="beginner"] .ai-builder,
+  body[data-ui-level="beginner"] .analysis-dashboard,
+  body[data-ui-level="intermediate"] .team-library,
+  body[data-ui-level="intermediate"] .team-builder,
+  body[data-ui-level="intermediate"] .ai-builder,
+  body[data-ui-level="intermediate"] .analysis-dashboard,
+  body[data-ui-level="advanced"] .team-library,
+  body[data-ui-level="advanced"] .team-builder,
+  body[data-ui-level="advanced"] .ai-builder,
+  body[data-ui-level="advanced"] .analysis-dashboard {
+    grid-column: 1 / -1;
+  }
+
+  .ai-builder .ai-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .ai-actions-advanced {
+    justify-content: flex-start;
+  }
+}
+
 @media (max-width: 768px) {
   .premium-layout {
     padding: 0 16px 48px;
@@ -3050,11 +3429,63 @@ body:not(.palette-open) .palette-backdrop {
   .set-matrix {
     grid-template-columns: 1fr;
   }
+
+  .control-panel {
+    grid-template-columns: 1fr;
+    width: 100%;
+  }
+
+  .quickstart-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .team-library .library-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .team-preview-meta a.team-source-link {
+    width: 100%;
+    justify-content: center;
+  }
 }
 
 @media (max-width: 520px) {
   .team-slots {
     grid-template-columns: repeat(2, 1fr);
+  }
+
+  body[data-ui-level="beginner"] .team-preview-mons,
+  .team-preview-mons {
+    grid-template-columns: repeat(3, minmax(42px, 1fr));
+  }
+
+  .team-builder,
+  .team-library,
+  .ai-builder,
+  .speedline-board,
+  .data-health {
+    padding: 14px;
+  }
+
+  .hero-panel {
+    padding: 16px;
+  }
+
+  .hero-panel h2,
+  body[data-ui-level="beginner"] .hero-panel h2,
+  body[data-ui-level="advanced"] .hero-panel h2 {
+    font-size: 32px;
+    line-height: 1.08;
+  }
+
+  .builder-header h2,
+  .library-header h2 {
+    font-size: 21px;
+  }
+
+  .speedline-row {
+    grid-template-columns: 56px minmax(0, 1fr);
+    gap: 10px;
   }
 
   .type-matrix {
