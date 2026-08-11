@@ -12,6 +12,7 @@ import {
   CircleStop,
   CloudRain,
   Database,
+  ExternalLink,
   Gauge,
   GitBranch,
   History,
@@ -274,12 +275,53 @@ function AccountWizard({ onClose }) {
     setBusy(true);
     setError("");
     try { setAccount(await apiRequest(path, options)); }
-    catch (requestError) { setError(requestError.message); if (requestError.data?.candidates) setAccount((value) => ({ ...value, candidates: requestError.data.candidates })); }
-    finally { setBusy(false); }
+    catch (requestError) {
+      setError(requestError.message);
+      if (requestError.data?.candidates) setAccount((value) => ({ ...value, candidates: requestError.data.candidates }));
+    } finally {
+      setBusy(false);
+    }
   };
   const statusIndex = { UNCONFIGURED: 1, CHECKING_NAME: 1, REGISTERING: 3, WAITING_FOR_HUMAN_VERIFICATION: 4, VERIFYING_ACCOUNT: 4, READY: 5, LOCKED: 5, FAILED: 3 }[account.status] || 1;
   const steps = ["Identity", "Encryption", "Register", "Verification", "Auth"];
-  return <div className="modal-backdrop" role="presentation"><div className="modal account-modal" role="dialog" aria-modal="true" aria-labelledby="account-title"><button className="modal-close icon-button" onClick={onClose} aria-label="关闭"><X size={18} /></button><span className="eyebrow">SHOWDOWN ACCOUNT</span><h2 id="account-title">连接专用竞技账号</h2><p className="modal-intro">单工作区只配置一个账号；验证码必须在 Showdown 官方页面由你本人完成。</p><div className="wizard-steps">{steps.map((item, index) => <div className={`wizard-step ${index + 1 <= statusIndex ? "is-done" : ""}`} key={item}><span>{index + 1 < statusIndex ? <Check size={13} /> : index + 1}</span><small>{item}</small></div>)}</div><div className="wizard-body">{account.status === "UNCONFIGURED" ? <><label>用户名偏好<input value={prefix} onChange={(event) => setPrefix(event.target.value)} maxLength={12} placeholder="例如 ChampionForge" /></label><div className="security-state"><Lock size={22} /><strong>Windows DPAPI 加密保存</strong><p>明文密码不会返回前端、写入日志或进入 Git 文件。</p></div></> : <div className={`security-state ${account.status === "READY" ? "success" : ""}`}>{account.status === "READY" ? <Check size={22} /> : ["WAITING_FOR_HUMAN_VERIFICATION", "LOCKED", "FAILED"].includes(account.status) ? <AlertTriangle size={22} /> : <Bot size={22} />}<strong>{account.username || account.status}</strong><p>{account.message}</p><StatusPill tone={account.status === "READY" ? "green" : ["FAILED", "LOCKED"].includes(account.status) ? "yellow" : "blue"}>{account.status}</StatusPill></div>}{error && <div className="boundary-note"><AlertTriangle size={15} />{error}</div>}</div><div className="modal-actions"><button className="ghost-button" onClick={onClose}>关闭</button>{account.status === "UNCONFIGURED" && <button className="primary-button" disabled={busy} onClick={() => perform("/api/agent/account/bootstrap", { method: "POST", body: JSON.stringify({ prefix }) })}><Bot size={15} />{busy ? "准备中" : "自动注册"}</button>}{["WAITING_FOR_HUMAN_VERIFICATION", "FAILED"].includes(account.status) && <button className="primary-button" disabled={busy} onClick={() => perform("/api/agent/account/continue", { method: "POST", body: "{}" })}><RefreshCw size={15} />验证并继续</button>}{account.status !== "UNCONFIGURED" && <button className="danger-button" disabled={busy} onClick={() => perform("/api/agent/account", { method: "DELETE" })}><X size={15} />删除本地凭据</button>}</div></div></div>;
+  const waitingForHuman = account.status === "WAITING_FOR_HUMAN_VERIFICATION";
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <div className="modal account-modal" role="dialog" aria-modal="true" aria-labelledby="account-title">
+        <button className="modal-close icon-button" onClick={onClose} aria-label="关闭"><X size={18} /></button>
+        <span className="eyebrow">SHOWDOWN ACCOUNT</span>
+        <h2 id="account-title">连接专用竞技账号</h2>
+        <p className="modal-intro">单工作区只配置一个账号；官方验证必须在 Showdown 页面由你本人完成。</p>
+        <div className="wizard-steps">
+          {steps.map((item, index) => <div className={`wizard-step ${index + 1 <= statusIndex ? "is-done" : ""}`} key={item}><span>{index + 1 < statusIndex ? <Check size={13} /> : index + 1}</span><small>{item}</small></div>)}
+        </div>
+        <div className="wizard-body">
+          {account.status === "UNCONFIGURED" ? (
+            <>
+              <label>用户名偏好<input value={prefix} onChange={(event) => setPrefix(event.target.value)} maxLength={12} placeholder="例如 ChampionForge" /></label>
+              <div className="security-state"><Lock size={22} /><strong>Windows DPAPI 加密保存</strong><p>明文密码不会返回前端、写入日志或进入 Git 文件。</p></div>
+            </>
+          ) : (
+            <div className={`security-state ${account.status === "READY" ? "success" : ""}`}>
+              {account.status === "READY" ? <Check size={22} /> : ["WAITING_FOR_HUMAN_VERIFICATION", "LOCKED", "FAILED"].includes(account.status) ? <AlertTriangle size={22} /> : <Bot size={22} />}
+              <strong>{account.username || account.status}</strong>
+              <p>{account.message}</p>
+              {waitingForHuman && <div className="verification-hint"><span>1</span><p>在 Showdown 窗口完成当前宝可梦识别题</p><span>2</span><p>回到这里点击“已完成，验证并继续”</p></div>}
+              <StatusPill tone={account.status === "READY" ? "green" : ["FAILED", "LOCKED"].includes(account.status) ? "yellow" : "blue"}>{account.status}</StatusPill>
+            </div>
+          )}
+          {error && <div className="boundary-note"><AlertTriangle size={15} />{error}</div>}
+        </div>
+        <div className="modal-actions">
+          <button className="ghost-button" onClick={onClose}>关闭</button>
+          {account.status === "UNCONFIGURED" && <button className="primary-button" disabled={busy} onClick={() => perform("/api/agent/account/bootstrap", { method: "POST", body: JSON.stringify({ prefix }) })}><Bot size={15} />{busy ? "准备中" : "自动注册"}</button>}
+          {waitingForHuman && <button className="secondary-button" disabled={busy} onClick={() => perform("/api/agent/account/focus", { method: "POST", body: "{}" })}><ExternalLink size={15} />打开验证窗口</button>}
+          {["WAITING_FOR_HUMAN_VERIFICATION", "FAILED"].includes(account.status) && <button className="primary-button" disabled={busy} onClick={() => perform("/api/agent/account/continue", { method: "POST", body: "{}" })}><RefreshCw size={15} />已完成，验证并继续</button>}
+          {account.status !== "UNCONFIGURED" && <button className="danger-button" disabled={busy} onClick={() => perform("/api/agent/account", { method: "DELETE" })}><X size={15} />删除本地凭据</button>}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function App() {

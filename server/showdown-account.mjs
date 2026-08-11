@@ -39,15 +39,41 @@ async function registered(username) {
   }
 }
 
+export function classifyRegistrationIssue(text = "") {
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  if (!normalized) return null;
+  if (/IP .*locked|locked due to being a proxy|disable any proxies|proxy or vpn/i.test(normalized)) {
+    return { code: "SHOWDOWN_IP_LOCKED", status: "LOCKED", message: "Showdown 已拒绝当前代理或 VPN 网络。请切换到正常网络后删除本地配置并重试。" };
+  }
+  if (/too many (?:accounts|registrations)|register(?:ing)? too (?:many|quickly)|try again later|rate.?limit/i.test(normalized)) {
+    return { code: "SHOWDOWN_RATE_LIMITED", status: "LOCKED", message: "Showdown 暂时限制了当前网络的注册请求。请稍后再试，不要重复创建账号。" };
+  }
+  if (/captcha|what is this pokemon|pok[eé]mon.*(?:incorrect|wrong)|incorrect.*pok[eé]mon/i.test(normalized)) {
+    return { code: "CAPTCHA_INVALID", status: "WAITING_FOR_HUMAN_VERIFICATION", message: "宝可梦识别答案未通过。请在 Showdown 官方窗口更正答案后再继续。" };
+  }
+  if (/already registered|username.*(?:taken|exists|registered)|name.*(?:taken|registered)/i.test(normalized)) {
+    return { code: "USERNAME_TAKEN", status: "FAILED", message: "该用户名已被其他账号注册。请删除本地配置并重新生成用户名。" };
+  }
+  if (/passwords? do not match|confirm.*password/i.test(normalized)) {
+    return { code: "PASSWORD_MISMATCH", status: "WAITING_FOR_HUMAN_VERIFICATION", message: "官方页面报告密码确认不一致。系统已安全重填密码，请再次提交。" };
+  }
+  if (/password.*(?:short|weak|invalid|must|require)/i.test(normalized)) {
+    return { code: "PASSWORD_REJECTED", status: "FAILED", message: "Showdown 未接受生成的密码。请删除本地配置后重新注册。" };
+  }
+  return { code: "SHOWDOWN_REJECTED", status: "WAITING_FOR_HUMAN_VERIFICATION", message: "Showdown 未接受本次注册。请在官方窗口检查红色错误提示，修正后再继续。" };
+}
+
 export class ShowdownAccountManager {
   constructor() {
     this.vault = new CredentialVault({ root: ACCOUNT_ROOT });
     this.context = null;
     this.workflow = null;
+    this.lastRejectedCaptcha = "";
     this.state = {
       status: "UNCONFIGURED",
       username: "",
       message: "尚未配置专用账号。",
+      verificationCode: "",
       candidates: [],
       updatedAt: null,
     };
@@ -61,6 +87,12 @@ export class ShowdownAccountManager {
       if (this.state.status === "READY" && !(await this.vault.exists())) {
         await this.update({ status: "FAILED", message: "账号凭据缺失，请删除本地配置后重新注册。" });
       }
+      if (this.state.status === "WAITING_FOR_HUMAN_VERIFICATION" && !this.state.verificationCode) {
+        await this.update({
+          verificationCode: "BROWSER_ACTION_REQUIRED",
+          message: "请重新打开 Showdown 验证窗口，完成官方宝可梦识别后继续。",
+        });
+      }
     } catch {}
     return this.publicState();
   }
@@ -70,10 +102,11 @@ export class ShowdownAccountManager {
       status: this.state.status,
       username: this.state.username,
       message: this.state.message,
+      verificationCode: this.state.verificationCode || "",
       candidates: this.state.candidates || [],
       updatedAt: this.state.updatedAt,
       browserOpen: Boolean(this.context),
-      credentialStored: this.state.status === "READY" || this.state.status === "WAITING_FOR_HUMAN_VERIFICATION" || this.state.status === "REGISTERING" || this.state.status === "VERIFYING_ACCOUNT",
+      credentialStored: this.state.status === "READY" || this.state.status === "WAITING_FOR_HUMAN_VERIFICATION" || this.state.status === "REGISTERING" || this.state.status === "VERIFYING_ACCOUNT" || this.state.status === "FAILED",
     };
   }
 
@@ -105,7 +138,7 @@ export class ShowdownAccountManager {
     if (!toUserid(selected) || selected.length > 18) throw Object.assign(new Error("用户名必须包含字母或数字，且不超过 18 个字符。"), { status: 400, code: "INVALID_USERNAME" });
     if (await registered(selected)) throw Object.assign(new Error("该 Showdown 用户名已被注册。"), { status: 409, code: "USERNAME_TAKEN", candidates: options });
     await this.vault.save(generatePassword());
-    await this.update({ status: "REGISTERING", username: selected, candidates: options, message: "正在打开 Showdown 官方注册页面。" });
+    await this.update({ status: "REGISTERING", username: selected, candidates: options, verificationCode: "", message: "正在打开 Showdown 官方注册页面。" });
     this.workflow = this.runRegistration().finally(() => { this.workflow = null; });
     return this.publicState();
   }
@@ -121,56 +154,160 @@ export class ShowdownAccountManager {
     return this.context;
   }
 
+  async registrationPage() {
+    if (!this.context) return null;
+    return this.context.pages().at(-1) || null;
+  }
+
+  async bringToFront(page) {
+    await page.bringToFront().catch(() => {});
+    await page.evaluate(() => window.focus()).catch(() => {});
+  }
+
+  async inspectRegistrationPage(page) {
+    const popup = page.locator(".ps-popup").last();
+    const popupVisible = await popup.isVisible().catch(() => false);
+    if (!popupVisible) return { popupVisible: false, errorText: "", captchaVisible: false, captchaValue: "", submitVisible: false };
+    const captcha = popup.locator('input[name="captcha"]').first();
+    const submit = popup.locator('button[type="submit"], button[name="register"], button:has-text("Register")').last();
+    return {
+      popupVisible: true,
+      errorText: await popup.locator(".error").first().innerText().catch(() => ""),
+      captchaVisible: await captcha.isVisible().catch(() => false),
+      captchaValue: await captcha.inputValue().catch(() => ""),
+      submitVisible: await submit.isVisible().catch(() => false),
+    };
+  }
+
+  async fillRegistrationPasswords(page) {
+    const popup = page.locator(".ps-popup").last();
+    const passwordInput = popup.locator('input[name="password"], input[type="password"]').first();
+    if (!(await passwordInput.isVisible().catch(() => false))) return false;
+    const password = await this.vault.load();
+    await passwordInput.fill(password);
+    const confirm = popup.locator('input[name="cpassword"], input[name="password2"], input[type="password"]').nth(1);
+    if (await confirm.isVisible().catch(() => false)) await confirm.fill(password);
+    return true;
+  }
+
+  async waitForHumanVerification(page, code = "CAPTCHA_REQUIRED", message = "请在 Showdown 官方窗口完成宝可梦识别，完成后回到这里继续。") {
+    await this.bringToFront(page);
+    return this.update({ status: "WAITING_FOR_HUMAN_VERIFICATION", verificationCode: code, message });
+  }
+
+  async handlePageIssue(page, text) {
+    const issue = classifyRegistrationIssue(text);
+    if (!issue) return null;
+    if (["CAPTCHA_INVALID", "PASSWORD_MISMATCH"].includes(issue.code)) {
+      const state = await this.inspectRegistrationPage(page);
+      if (issue.code === "CAPTCHA_INVALID") this.lastRejectedCaptcha = state.captchaValue.trim();
+      await this.fillRegistrationPasswords(page).catch(() => false);
+      await this.bringToFront(page);
+    }
+    await this.update({ status: issue.status, verificationCode: issue.code, message: issue.message });
+    return this.publicState();
+  }
+
+  async submitRegistration(page) {
+    await this.fillRegistrationPasswords(page);
+    const before = await this.inspectRegistrationPage(page);
+    const captchaValue = before.captchaValue.trim();
+    if (before.captchaVisible && !captchaValue) {
+      return this.waitForHumanVerification(page);
+    }
+    if (before.errorText) {
+      const issue = classifyRegistrationIssue(before.errorText);
+      if (issue?.code === "CAPTCHA_INVALID" && captchaValue === this.lastRejectedCaptcha) {
+        return this.waitForHumanVerification(page, issue.code, issue.message);
+      }
+      if (issue && !["CAPTCHA_INVALID", "PASSWORD_MISMATCH"].includes(issue.code)) {
+        return this.handlePageIssue(page, before.errorText);
+      }
+    }
+    if (!before.submitVisible) {
+      return this.waitForHumanVerification(page, "FORM_NOT_READY", "Showdown 注册表单尚未就绪。请检查官方窗口后再继续。");
+    }
+    const submit = page.locator(".ps-popup").last().locator('button[type="submit"], button[name="register"], button:has-text("Register")').last();
+    await submit.click();
+    await page.waitForTimeout(1800);
+    if (await registered(this.state.username)) return this.verify();
+    const after = await this.inspectRegistrationPage(page);
+    if (after.errorText) return this.handlePageIssue(page, after.errorText);
+    return this.waitForHumanVerification(page, "OFFICIAL_CONFIRMATION_PENDING", "注册请求已提交，但官方尚未确认。请检查 Showdown 窗口中的状态后重试。");
+  }
+
+  async chooseUsername(page) {
+    const accountButton = page.locator('button[name="login"], button.username, .header-username').first();
+    await accountButton.waitFor({ state: "visible", timeout: 30000 });
+    await accountButton.click();
+    const popup = page.locator(".ps-popup").last();
+    const usernameInput = popup.locator('input[name="username"], input[name="user"]').first();
+    if (!(await usernameInput.isVisible().catch(() => false))) {
+      const chooseName = popup.locator('button[name="login"], button:has-text("Choose name"), button:has-text("选择用户名")').last();
+      await chooseName.waitFor({ state: "visible", timeout: 15000 });
+      await chooseName.click();
+    }
+    const loginPopup = page.locator(".ps-popup").last();
+    const loginInput = loginPopup.locator('input[name="username"], input[name="user"]').first();
+    await loginInput.waitFor({ state: "visible", timeout: 15000 });
+    await loginInput.fill(this.state.username);
+    await loginInput.press("Enter");
+    await page.waitForTimeout(1200);
+  }
+
+  async openRegistrationForm(page) {
+    const existingPassword = page.locator(".ps-popup").last().locator('input[name="password"], input[type="password"]').first();
+    if (await existingPassword.isVisible().catch(() => false)) return;
+    const accountButton = page.locator('button[name="login"], button.username, .header-username').first();
+    await accountButton.waitFor({ state: "visible", timeout: 15000 });
+    await accountButton.click();
+    const popup = page.locator(".ps-popup").last();
+    const registerButton = popup.locator('button[name="register"], button:has-text("Register"), button:has-text("注册")').first();
+    await registerButton.waitFor({ state: "visible", timeout: 15000 });
+    await registerButton.click();
+  }
+
   async runRegistration() {
     try {
       const context = await this.ensureBrowser();
       const page = context.pages()[0] || await context.newPage();
       await page.goto(PLAY_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
-      const password = await this.vault.load();
-      const chooseName = page.locator('button[name="login"], button:has-text("Choose name"), button:has-text("选择用户名")').first();
-      await chooseName.waitFor({ state: "visible", timeout: 30000 });
-      await chooseName.click();
-      const usernameInput = page.locator('input[name="username"], input[name="user"], input[placeholder*="name" i]').first();
-      await usernameInput.fill(this.state.username);
-      await usernameInput.press("Enter");
-      await page.waitForTimeout(1200);
+      await this.chooseUsername(page);
 
       const popupText = await page.locator(".ps-popup").last().innerText().catch(() => "");
-      if (/IP .*locked|locked due to being a proxy|disable any proxies/i.test(popupText)) {
-        await this.update({ status: "LOCKED", message: "Showdown 已拒绝当前代理 IP。请关闭代理或切换到正常家庭网络后删除本地配置并重试。" });
-        return;
-      }
+      const initialIssue = classifyRegistrationIssue(popupText);
+      if (["LOCKED", "FAILED"].includes(initialIssue?.status)) return this.handlePageIssue(page, popupText);
 
-      const registerButton = page.locator('button[name="register"], button:has-text("Register"), button:has-text("注册")').first();
-      if (await registerButton.isVisible().catch(() => false)) await registerButton.click();
-      const passwordInput = page.locator('input[name="password"], input[type="password"]').first();
+      await this.openRegistrationForm(page);
+      const passwordInput = page.locator(".ps-popup").last().locator('input[name="password"], input[type="password"]').first();
       await passwordInput.waitFor({ state: "visible", timeout: 15000 });
-      await passwordInput.fill(password);
-      const confirm = page.locator('input[name="cpassword"], input[name="password2"], input[type="password"]').nth(1);
-      if (await confirm.isVisible().catch(() => false)) await confirm.fill(password);
+      await this.fillRegistrationPasswords(page);
 
-      const captcha = page.locator('iframe[src*="captcha" i], .g-recaptcha, [data-sitekey], input[name*="captcha" i]').first();
+      const captcha = page.locator(".ps-popup").last().locator('iframe[src*="captcha" i], .g-recaptcha, [data-sitekey], input[name*="captcha" i]').first();
       if (await captcha.isVisible().catch(() => false)) {
-        await this.update({ status: "WAITING_FOR_HUMAN_VERIFICATION", message: "请在已打开的 Showdown 官方页面完成人机验证，然后点击继续。" });
-        return;
+        return this.waitForHumanVerification(page);
       }
-      const submit = page.locator('button[type="submit"], button[name="register"], button:has-text("Register")').last();
-      if (await submit.isVisible().catch(() => false)) await submit.click();
-      await page.waitForTimeout(2500);
-      await this.verify();
+      return this.submitRegistration(page);
     } catch (error) {
-      await this.update({ status: "FAILED", message: `注册流程失败：${error.message}` });
+      await this.update({ status: "FAILED", verificationCode: "BROWSER_WORKFLOW_FAILED", message: `注册流程失败：${error.message}` });
     }
   }
 
   async verify() {
     await this.update({ status: "VERIFYING_ACCOUNT", message: "正在验证账号注册状态。" });
     if (await registered(this.state.username)) {
-      await this.update({ status: "READY", message: "专用 Showdown 账号已连接。" });
+      this.lastRejectedCaptcha = "";
+      await this.update({ status: "READY", verificationCode: "", message: "专用 Showdown 账号已连接。" });
       if (this.context) await this.context.close().catch(() => {});
       return this.publicState();
     }
-    await this.update({ status: "WAITING_FOR_HUMAN_VERIFICATION", message: "官方尚未确认注册，请在浏览器完成验证后重试。" });
+    const page = await this.registrationPage();
+    if (page) {
+      const pageState = await this.inspectRegistrationPage(page);
+      if (pageState.errorText) return this.handlePageIssue(page, pageState.errorText);
+      if (pageState.captchaVisible && !pageState.captchaValue.trim()) return this.waitForHumanVerification(page);
+    }
+    await this.update({ status: "WAITING_FOR_HUMAN_VERIFICATION", verificationCode: "OFFICIAL_CONFIRMATION_PENDING", message: "官方尚未确认注册，请检查 Showdown 验证窗口后重试。" });
     return this.publicState();
   }
 
@@ -178,16 +315,27 @@ export class ShowdownAccountManager {
     if (!this.state.username) throw Object.assign(new Error("尚未开始账号注册。"), { status: 409, code: "ACCOUNT_UNCONFIGURED" });
     if (await registered(this.state.username)) return this.verify();
     if (this.state.status === "LOCKED") throw Object.assign(new Error("Showdown 已锁定当前代理 IP。请切换到正常网络后删除本地配置并重试。"), { status: 423, code: "SHOWDOWN_IP_LOCKED" });
-    if (this.context) {
-      const page = this.context.pages().at(-1);
-      if (page) {
-        const submit = page.locator('button[type="submit"], button[name="register"], button:has-text("Register")').last();
-        if (await submit.isVisible().catch(() => false)) await submit.click().catch(() => {});
-        await page.waitForTimeout(2500);
-        return this.verify();
-      }
+    if (this.state.status === "FAILED") {
+      await this.focus();
+      return this.publicState();
     }
-    if (!this.workflow) this.workflow = this.runRegistration().finally(() => { this.workflow = null; });
+    const page = await this.registrationPage();
+    if (page) return this.submitRegistration(page);
+    await this.focus();
+    return this.publicState();
+  }
+
+  async focus() {
+    if (!this.state.username) throw Object.assign(new Error("尚未开始账号注册。"), { status: 409, code: "ACCOUNT_UNCONFIGURED" });
+    const page = await this.registrationPage();
+    if (page && this.state.status !== "FAILED") {
+      await this.bringToFront(page);
+      return this.publicState();
+    }
+    if (!this.workflow) {
+      await this.update({ status: "REGISTERING", verificationCode: "", message: "正在重新打开 Showdown 官方验证窗口。" });
+      this.workflow = this.runRegistration().finally(() => { this.workflow = null; });
+    }
     return this.publicState();
   }
 
@@ -202,7 +350,8 @@ export class ShowdownAccountManager {
     await this.vault.clear();
     await rm(PROFILE_PATH, { recursive: true, force: true });
     await rm(STATE_PATH, { force: true });
-    this.state = { status: "UNCONFIGURED", username: "", message: "尚未配置专用账号。", candidates: [], updatedAt: new Date().toISOString() };
+    this.lastRejectedCaptcha = "";
+    this.state = { status: "UNCONFIGURED", username: "", message: "尚未配置专用账号。", verificationCode: "", candidates: [], updatedAt: new Date().toISOString() };
     return this.publicState();
   }
 }

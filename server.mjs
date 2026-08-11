@@ -528,6 +528,10 @@ async function handleAccountApi(req, res) {
     sendJson(res, 200, { ok: true, ...(await showdownAccount.continue()) });
     return;
   }
+  if (req.url === "/api/agent/account/focus") {
+    sendJson(res, 200, { ok: true, ...(await showdownAccount.focus()) });
+    return;
+  }
   sendJson(res, 404, { ok: false, error: "Unknown account endpoint." });
 }
 
@@ -6625,7 +6629,7 @@ async function startServer() {
         await handleRulesApi(req, res);
         return;
       }
-      if ((req.method === "GET" && req.url === "/api/agent/account/status") || (req.method === "POST" && (req.url === "/api/agent/account/bootstrap" || req.url === "/api/agent/account/continue")) || (req.method === "DELETE" && req.url === "/api/agent/account")) {
+      if ((req.method === "GET" && req.url === "/api/agent/account/status") || (req.method === "POST" && (req.url === "/api/agent/account/bootstrap" || req.url === "/api/agent/account/continue" || req.url === "/api/agent/account/focus")) || (req.method === "DELETE" && req.url === "/api/agent/account")) {
         await handleAccountApi(req, res);
         return;
       }

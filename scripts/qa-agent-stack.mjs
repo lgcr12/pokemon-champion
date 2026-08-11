@@ -6,8 +6,12 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { AgentController } from "../server/agent-controller.mjs";
 import { CredentialVault } from "../server/credential-vault.mjs";
+import { classifyRegistrationIssue } from "../server/showdown-account.mjs";
 
 const ROOT = resolve(".");
+assert.equal(classifyRegistrationIssue("The Pokémon you entered is incorrect.").code, "CAPTCHA_INVALID");
+assert.equal(classifyRegistrationIssue("Your IP is locked due to being a proxy.").status, "LOCKED");
+assert.equal(classifyRegistrationIssue("This username is already registered.").code, "USERNAME_TAKEN");
 const python = resolve(".venv", "Scripts", "python.exe");
 const policyQa = spawnSync(python, [resolve("scripts", "qa-agent-policy.py")], { cwd: ROOT, encoding: "utf8" });
 assert.equal(policyQa.status, 0, policyQa.stderr || policyQa.stdout);
