@@ -40,6 +40,7 @@ const SHOWDOWN_SPECIES_BY_NUM = new Map(SHOWDOWN_SPECIES_LIST.filter((species) =
 let refreshTask = null;
 const showdownImportBridge = new Map();
 const strictCandidateLegalityCache = new Map();
+const rulesCandidatePoolCache = new Map();
 const SHOWDOWN_BRIDGE_PROFILE_PATH = join(ROOT, ".cache", "showdown-bridge-browser");
 let showdownBridgeContext = null;
 let showdownBridgePage = null;
@@ -908,6 +909,123 @@ function readChampionDataFile() {
   } catch {
     return { formats: {} };
   }
+}
+
+const CANDIDATE_CATEGORY_LABELS = {
+  weather: "天气",
+  speed: "控速",
+  trickroom: "空间",
+  support: "辅助",
+  offense: "输出",
+  endgame: "终盘",
+};
+
+function candidateCategories(configurations = [], species = {}) {
+  const text = configurations.flatMap((item) => [item.ability, item.item, ...(item.moves || [])]).join(" ").toLowerCase();
+  const categories = new Set();
+  if (/drizzle|drought|sand stream|snow warning|rain dance|sunny day|sandstorm|snowscape/.test(text)) categories.add("weather");
+  if (/tailwind|icy wind|electroweb|thunder wave|rock tomb|scary face|bulldoze/.test(text)) categories.add("speed");
+  if (/trick room/.test(text)) categories.add("trickroom");
+  if (/fake out|follow me|rage powder|helping hand|wide guard|quick guard|parting shot|encore|taunt|spore|reflect|light screen|ally switch|life dew/.test(text)) categories.add("support");
+  if (/sucker punch|extreme speed|aqua jet|grassy glide|dragon dance|swords dance|nasty plot|quiver dance|bulk up|calm mind|shell smash/.test(text)) categories.add("endgame");
+  const offensiveStats = Number(species.baseStats?.atk || 0) + Number(species.baseStats?.spa || 0) + Number(species.baseStats?.spe || 0);
+  if (offensiveStats >= 260 || !categories.size) categories.add("offense");
+  return [...categories];
+}
+
+function candidateIsLegal(species, snapshot) {
+  const cacheKey = `${snapshot.rulesetId}|${species.id}`;
+  if (rulesCandidatePoolCache.has(cacheKey)) return rulesCandidatePoolCache.get(cacheKey);
+  let legal = false;
+  try {
+    const learnset = Dex.species.getLearnsetData(species.id)?.learnset || {};
+    const move = Object.entries(learnset).find(([, sources]) => (sources || []).some((source) => String(source).startsWith("9")))?.[0];
+    const set = {
+      name: species.name,
+      species: species.name,
+      ability: Object.values(species.abilities || {})[0],
+      moves: move ? [move] : [],
+      level: 50,
+      nature: "Serious",
+    };
+    const problems = TeamValidator.get(snapshot.showdownFormatId).validateSet(set) || [];
+    legal = !problems.some((problem) => !/exactly 0 Stat Points/i.test(problem));
+  } catch {}
+  rulesCandidatePoolCache.set(cacheKey, legal);
+  return legal;
+}
+
+function rulesCandidatePool(snapshot) {
+  const cacheKey = `pool|${snapshot.rulesetId}`;
+  if (rulesCandidatePoolCache.has(cacheKey)) return rulesCandidatePoolCache.get(cacheKey);
+  const format = snapshot.battleType === "double" ? "double" : "single";
+  const ranked = readChampionDataFile()?.formats?.[format]?.pokemon || [];
+  const configurations = readTeamDataFile()
+    .filter((team) => team.format === format)
+    .flatMap((team) => team.configurations || []);
+  const configurationsBySpecies = new Map();
+  for (const config of configurations) {
+    const speciesName = legalShowdownSpeciesName(config.slug || config.name, config);
+    const key = Dex.species.get(speciesName).id;
+    if (!key) continue;
+    if (!configurationsBySpecies.has(key)) configurationsBySpecies.set(key, []);
+    configurationsBySpecies.get(key).push(config);
+  }
+  const seen = new Set();
+  const pool = ranked.flatMap((entry) => {
+    const speciesName = legalShowdownSpeciesName(entry.slug || entry.id || entry.name, entry);
+    const species = Dex.species.get(speciesName);
+    if (!species?.exists || seen.has(species.id) || !candidateIsLegal(species, snapshot)) return [];
+    seen.add(species.id);
+    const configs = configurationsBySpecies.get(species.id) || [];
+    const preferred = configs[0] || {};
+    const categories = candidateCategories(configs, species);
+    const role = categories.map((category) => CANDIDATE_CATEGORY_LABELS[category]).slice(0, 2).join(" / ");
+    return [{
+      id: species.id,
+      name: species.name,
+      localizedName: entry.name || species.name,
+      dex: String(species.num || entry.id || ""),
+      sprite: species.num > 0 ? species.num : Number(entry.id || 0),
+      spriteUrl: entry.sprite || "",
+      types: species.types || [],
+      role: role || "输出",
+      categories,
+      rank: Number(entry.rank || 0),
+      meta: entry.rank ? `环境 #${entry.rank}` : "当前规则可用",
+      item: showdownLegalValue(preferred.item, "", "items") || "Leftovers",
+      ability: showdownLegalValue(preferred.ability, "", "abilities") || Object.values(species.abilities || {})[0] || "",
+      moves: (preferred.moves || []).map((move) => showdownLegalValue(move, "", "moves")).filter(Boolean).slice(0, 4),
+      legal: true,
+    }];
+  });
+  rulesCandidatePoolCache.set(cacheKey, pool);
+  return pool;
+}
+
+async function handleRulesCandidatesApi(req, res) {
+  const url = new URL(req.url || "/api/rules/candidates", "http://127.0.0.1");
+  const format = url.searchParams.get("format") === "single" ? "single" : "double";
+  const snapshot = ruleRegistry.operational({ format, rulesetId: String(url.searchParams.get("rulesetId") || "") });
+  const query = String(url.searchParams.get("query") || "").trim().toLowerCase();
+  const category = String(url.searchParams.get("category") || "all");
+  const offset = Math.max(0, Number(url.searchParams.get("offset") || 0));
+  const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit") || 36)));
+  const filtered = rulesCandidatePool(snapshot).filter((item) => {
+    const matchesCategory = category === "all" || item.categories.includes(category);
+    const haystack = [item.name, item.localizedName, item.role, item.meta, ...(item.types || []), ...(item.categories || [])].join(" ").toLowerCase();
+    return matchesCategory && (!query || haystack.includes(query));
+  });
+  sendJson(res, 200, {
+    ok: true,
+    ...rulesetMetadata(snapshot),
+    items: filtered.slice(offset, offset + limit),
+    total: filtered.length,
+    poolTotal: rulesCandidatePool(snapshot).length,
+    offset,
+    limit,
+    hasMore: offset + limit < filtered.length,
+  });
 }
 
 function strictKey(value = "") {
@@ -6631,6 +6749,10 @@ async function startServer() {
       }
       if (req.method === "GET" && (req.url === "/api/rules/active" || req.url === "/api/rules/history")) {
         await handleRulesApi(req, res);
+        return;
+      }
+      if (req.method === "GET" && req.url?.startsWith("/api/rules/candidates")) {
+        await handleRulesCandidatesApi(req, res);
         return;
       }
       if (req.method === "POST" && req.url === "/api/rules/sync") {

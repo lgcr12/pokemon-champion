@@ -269,3 +269,29 @@ kbd { padding: 2px 4px; background: rgb(127 29 29 / .75); border-radius: 3px; fo
   .decision-row strong { font-size: 11px; }
   .decision-row span { font-size: 10px; }
 }
+
+/* Rules-aware candidate library */
+.forge-layout { grid-template-columns: 292px minmax(0, 1fr) 280px; }
+.candidate-panel .search-field { height: 42px; }
+.candidate-panel .search-field:focus-within { box-shadow: 0 0 0 3px #dbeafe; }
+.candidate-panel .filter-row { padding-bottom: 10px; }
+.candidate-panel .filter-chip { padding: 7px 9px; font-size: 11px; }
+.candidate-summary { display: flex; justify-content: space-between; gap: 8px; padding: 0 16px 10px; color: var(--muted); font-size: 11px; }
+.candidate-summary b { color: var(--ink); }
+.candidate-summary small { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 9px 'JetBrains Mono', monospace; }
+.candidate-list { max-height: 560px; overflow-y: auto; scrollbar-width: thin; }
+.candidate-row { min-height: 62px; grid-template-columns: 44px minmax(0, 1fr) auto 15px; padding: 8px 12px; }
+.candidate-avatar { width: 44px; height: 44px; }
+.candidate-avatar .sprite-sm { width: 42px; height: 42px; }
+.candidate-row strong { min-width: 0; font-size: 13px; line-height: 1.2; }
+.candidate-row strong small { display: block; margin-top: 2px; overflow: hidden; color: #64748b; font-size: 9px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.candidate-row span { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.candidate-row > small { white-space: nowrap; }
+.candidate-state { padding: 28px 16px; color: var(--muted); font-size: 12px; text-align: center; }
+.candidate-state.is-error { color: #b91c1c; }
+.candidate-load-more { width: 100%; min-height: 42px; display: flex; justify-content: center; align-items: center; gap: 8px; color: var(--blue); background: #f8fbff; border-top: 1px solid var(--line); font-size: 12px; font-weight: 700; }
+.candidate-load-more:hover { background: #eff6ff; }
+.candidate-load-more span { color: var(--muted); font: 10px 'JetBrains Mono', monospace; }
+
+@media (max-width: 1180px) { .forge-layout { grid-template-columns: 250px minmax(0, 1fr); } }
+@media (max-width: 820px) { .forge-layout { grid-template-columns: 1fr; }.candidate-list { max-height: 480px; } }

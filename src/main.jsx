@@ -46,17 +46,6 @@ const initialTeam = [
   { id: "rillaboom", name: "Rillaboom", dex: "812", role: "备用路线", item: "Miracle Seed", ability: "Grassy Surge", types: ["草"], sprite: 812, locked: false, tone: "grass", moves: ["Fake Out", "Grassy Glide", "Wood Hammer", "Protect"] },
 ];
 
-const candidates = [
-  { id: "pelipper", name: "Pelipper", role: "天气启动", meta: "高使用率", sprite: 279, tone: "water" },
-  { id: "archaludon", name: "Archaludon", role: "电光炮台", meta: "体系收益", sprite: 1018, tone: "steel" },
-  { id: "flutter-mane", name: "Flutter Mane", role: "高速特攻", meta: "速度线", sprite: 987, tone: "ghost" },
-  { id: "incineroar", name: "Incineroar", role: "击掌 / 威吓", meta: "安全回合", sprite: 727, tone: "fire" },
-  { id: "amoonguss", name: "Amoonguss", role: "掩护辅助", meta: "空间收益", sprite: 591, tone: "grass" },
-  { id: "dragonite", name: "Dragonite", role: "先制终盘", meta: "备用胜点", sprite: 149, tone: "dragon" },
-  { id: "sneasler", name: "Sneasler", role: "高速压制", meta: "首发威胁", sprite: 903, tone: "poison" },
-  { id: "kingambit", name: "Kingambit", role: "残局收割", meta: "终盘价值", sprite: 983, tone: "dark" },
-];
-
 const navItems = [
   ["dashboard", "总览", LayoutDashboard],
   ["forge", "配队工坊", Swords],
@@ -158,17 +147,42 @@ function BatchRow({ item }) { const won = Number(item.wins || 0) >= Number(item.
 
 function Forge({ team, setTeam, onNavigate }) {
   const [query, setQuery] = useState("");
+  const [category, setCategory] = useState("all");
+  const [candidateState, setCandidateState] = useState({ items: [], total: 0, poolTotal: 0, hasMore: false, rulesetId: "", loading: true, error: "" });
   const [selected, setSelected] = useState(team[0]?.id);
   const [saveState, setSaveState] = useState("idle");
   const [validationMessage, setValidationMessage] = useState("");
   const searchRef = useRef(null);
-  const shown = candidates.filter((item) => `${item.name} ${item.role} ${item.meta}`.toLowerCase().includes(query.toLowerCase()));
+  const loadCandidates = async ({ append = false } = {}) => {
+    const offset = append ? candidateState.items.length : 0;
+    if (!append) setCandidateState((current) => ({ ...current, items: [], loading: true, error: "" }));
+    else setCandidateState((current) => ({ ...current, loading: true, error: "" }));
+    try {
+      const params = new URLSearchParams({ format: "double", query, category, offset: String(offset), limit: "36" });
+      const data = await apiRequest(`/api/rules/candidates?${params}`);
+      setCandidateState((current) => ({
+        items: append ? [...current.items, ...(data.items || [])] : data.items || [],
+        total: data.total || 0,
+        poolTotal: data.poolTotal || 0,
+        hasMore: Boolean(data.hasMore),
+        rulesetId: data.rulesetId || "",
+        loading: false,
+        error: "",
+      }));
+    } catch (error) {
+      setCandidateState((current) => ({ ...current, loading: false, error: error.message }));
+    }
+  };
+  useEffect(() => {
+    const timer = window.setTimeout(() => loadCandidates(), 180);
+    return () => window.clearTimeout(timer);
+  }, [query, category]);
   const toggleLock = (id) => setTeam((current) => current.map((member) => member.id === id ? { ...member, locked: !member.locked } : member));
   const validateAndSave = async () => {
     setSaveState("validating");
     setValidationMessage("");
     try {
-      const validation = await apiRequest("/api/validate-team", { method: "POST", body: JSON.stringify({ format: "double", text: teamToShowdown(team) }) });
+      const validation = await apiRequest("/api/validate-team", { method: "POST", body: JSON.stringify({ format: "double", rulesetId: candidateState.rulesetId, text: teamToShowdown(team) }) });
       if (!validation.ok) throw new Error((validation.problems || []).join("；") || "队伍未通过当前规则校验。");
       setSaveState("saved");
       setValidationMessage(`已通过 ${validation.showdownFormatId} 校验，rulesetId: ${validation.rulesetId}`);
@@ -193,7 +207,8 @@ function Forge({ team, setTeam, onNavigate }) {
     return () => window.removeEventListener("keydown", handler);
   }, [team]);
   const addCandidate = (candidate) => {
-    const next = { ...candidate, item: "待配置", ability: "待验证", types: [], locked: false, moves: ["待配置", "待配置", "待配置", "待配置"] };
+    const commonMoves = candidate.moves?.length ? candidate.moves : ["Protect"];
+    const next = { ...candidate, tone: candidate.types?.[0]?.toLowerCase() || "steel", item: candidate.item || "Leftovers", ability: candidate.ability || "待配置", locked: false, moves: commonMoves };
     setTeam((current) => {
       if (current.some((item) => item.id === candidate.id)) return current;
       const selectedIndex = current.findIndex((item) => item.id === selected && !item.locked);
@@ -205,7 +220,7 @@ function Forge({ team, setTeam, onNavigate }) {
     setSelected(candidate.id);
   };
   return <div className="page forge-page"><div className="page-title-row"><div><span className="eyebrow">TEAM FORGE</span><h1>配队工坊</h1><p>从体系和职责开始构筑，而不是从六个单体开始拼接。</p></div><div className="toolbar-actions"><button className="secondary-button"><RefreshCw size={16} />重新分析</button><button className="primary-button" onClick={validateAndSave} disabled={saveState === "validating"}><Check size={16} />{saveState === "validating" ? "校验中" : saveState === "saved" ? "已通过" : saveState === "invalid" ? "校验失败" : "校验并保存"}</button></div></div><div className="sr-only" role="status" aria-live="polite">{validationMessage}</div>{validationMessage && <div className={`boundary-note ${saveState === "invalid" ? "is-error" : ""}`}>{saveState === "invalid" ? <AlertTriangle size={15} /> : <ShieldCheck size={15} />}{validationMessage}</div>}<div className="forge-layout">
-    <aside className="panel candidate-panel"><SectionHeader eyebrow="CANDIDATE POOL" title="候选库" action={<StatusPill tone="blue">227 available</StatusPill>} /><label className="search-field"><Search size={16} /><input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索宝可梦、职责或体系" /></label><div className="filter-row"><button className="filter-chip is-active">全部</button><button className="filter-chip">天气</button><button className="filter-chip">控速</button><button className="filter-chip">终盘</button></div><div className="candidate-list">{shown.map((candidate) => <button className="candidate-row" key={candidate.id} onClick={() => addCandidate(candidate)}><div className={`candidate-avatar tone-${candidate.tone}`}><Sprite id={candidate.sprite} size="sm" /></div><div><strong>{candidate.name}</strong><span>{candidate.role}</span></div><small>{candidate.meta}</small><Plus size={15} /></button>)}</div></aside>
+    <aside className="panel candidate-panel"><SectionHeader eyebrow="CANDIDATE POOL" title="候选库" action={<StatusPill tone="blue">{candidateState.poolTotal || "--"} available</StatusPill>} /><label className="search-field"><Search size={16} /><input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索中英文名、属性或职责" /></label><div className="filter-row">{[["all", "全部"], ["weather", "天气"], ["speed", "控速"], ["trickroom", "空间"], ["support", "辅助"], ["offense", "输出"], ["endgame", "终盘"]].map(([value, label]) => <button key={value} className={`filter-chip ${category === value ? "is-active" : ""}`} onClick={() => setCategory(value)}>{label}</button>)}</div><div className="candidate-summary"><span>找到 <b>{candidateState.total}</b> 只</span><small>{candidateState.rulesetId || "正在读取当前规则"}</small></div><div className="candidate-list">{candidateState.items.map((candidate) => <button className="candidate-row" key={candidate.id} onClick={() => addCandidate(candidate)}><div className={`candidate-avatar tone-${candidate.types?.[0]?.toLowerCase() || "steel"}`}><Sprite id={candidate.sprite} size="sm" /></div><div><strong>{candidate.localizedName}<small>{candidate.name}</small></strong><span>{candidate.role} · {candidate.types?.join(" / ")}</span></div><small>{candidate.meta}</small><Plus size={15} /></button>)}{candidateState.loading && <div className="candidate-state">正在读取当前规则候选...</div>}{!candidateState.loading && candidateState.error && <div className="candidate-state is-error">{candidateState.error}</div>}{!candidateState.loading && !candidateState.error && !candidateState.items.length && <div className="candidate-state">没有匹配的宝可梦</div>}</div>{candidateState.hasMore && <button className="candidate-load-more" onClick={() => loadCandidates({ append: true })} disabled={candidateState.loading}>加载更多 <span>{candidateState.items.length} / {candidateState.total}</span></button>}</aside>
     <main className="forge-main"><section className="panel workspace-panel"><SectionHeader eyebrow="TEAM WORKSPACE" title="Rain Electro Burst" action={<div className="team-health"><span className="dot dot-green" />结构健康 <b>86</b></div>} /><div className="slot-grid">{team.map((member, index) => <button key={`${member.id}-${index}`} className={`team-slot ${selected === member.id ? "is-selected" : ""}`} onClick={() => setSelected(member.id)} onKeyDown={(event) => { if (event.key === " " || event.key === "Enter") { event.preventDefault(); setSelected(member.id); toggleLock(member.id); } }} aria-pressed={member.locked} aria-label={`${member.name}，槽位 ${index + 1}，${member.locked ? "已锁定" : "未锁定"}`}><div className="slot-top"><span>SLOT {String(index + 1).padStart(2, "0")}</span>{member.locked ? <Lock size={13} /> : <span className="ai-badge">AI</span>}</div><div className={`slot-art tone-${member.tone}`}><Sprite id={member.sprite} /></div><div className="slot-body"><strong>{member.name}</strong><span>{member.role}</span><small>{member.ability} · {member.item}</small></div><div className="move-pills">{member.moves.map((move, moveIndex) => <span key={`${move}-${moveIndex}`}>{move}</span>)}</div></button>)}</div></section><TacticalFlow team={team} /></main>
     <aside className="panel analysis-panel"><SectionHeader eyebrow="STRUCTURAL ENGINE" title="实时分析" action={<Activity size={17} className="text-green" />} /><div className="analysis-block"><span className="analysis-label">主胜利路线</span><strong>天气启动 → 电光炮台</strong><p>Pelipper 创造雨天，Archaludon 用 Electro Shot 把天气回合转成输出压力。</p></div><div className="analysis-block"><span className="analysis-label">速度阶梯</span><div className="speed-ladder"><span><b>277</b> Flutter Mane</span><span><b>205</b> Archaludon</span><span><b>136</b> Pelipper</span></div></div><div className="analysis-block"><span className="analysis-label">防守覆盖</span><div className="coverage-grid">{["火", "水", "草", "电", "地面", "冰", "格斗", "妖精"].map((type, index) => <div key={type}><span>{type}</span><i className={index % 3 === 0 ? "weak" : index % 2 === 0 ? "resist" : "neutral"} /></div>)}</div></div><div className="warning-note"><AlertTriangle size={15} /><span>对手控速时保留 Whimsicott，不要过早暴露 Flutter Mane。</span></div></aside>
   </div></div>;
