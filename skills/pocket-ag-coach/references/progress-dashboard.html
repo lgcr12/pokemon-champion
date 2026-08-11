@@ -1,0 +1,569 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="5">
+  <title>Pocket AG Skill 进度面板</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8fb;
+      --panel: #ffffff;
+      --text: #18202f;
+      --muted: #667085;
+      --line: #d9e0ea;
+      --good: #16875d;
+      --warn: #c47a13;
+      --low: #bd3440;
+      --accent: #2764d8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.55 "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+    }
+    main {
+      width: min(1180px, calc(100vw - 40px));
+      margin: 28px auto 48px;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      align-items: flex-end;
+      margin-bottom: 18px;
+    }
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: 28px; letter-spacing: 0; }
+    h2 { font-size: 17px; margin-bottom: 12px; }
+    h3 { font-size: 14px; margin-bottom: 10px; }
+    .muted { color: var(--muted); }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 14px;
+    }
+    .card, .mini-card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .span-8 { grid-column: span 8; }
+    .span-6 { grid-column: span 6; }
+    .span-4 { grid-column: span 4; }
+    .span-12 { grid-column: span 12; }
+    .metric {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .metric div {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fbfcfe;
+    }
+    .metric strong {
+      display: block;
+      font-size: 22px;
+      line-height: 1.1;
+    }
+    .bar-row { margin: 10px 0; }
+    .bar-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 6px;
+      color: var(--muted);
+    }
+    .bar-head span:empty { display: none; }
+    .bar-row p { margin-top: 6px; color: var(--muted); font-size: 12px; }
+    .track {
+      width: 100%;
+      height: 12px;
+      background: #e8edf5;
+      border: 1px solid #d8e0eb;
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .fill {
+      height: 100%;
+      min-width: 2px;
+      border-radius: inherit;
+      background: var(--accent);
+    }
+    .fill.good { background: var(--good); }
+    .fill.warn { background: var(--warn); }
+    .fill.low { background: var(--low); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      text-align: left;
+      border-bottom: 1px solid var(--line);
+      padding: 9px 8px;
+      vertical-align: middle;
+    }
+    th { color: var(--muted); font-weight: 600; }
+    td .bar-row { margin: 0; min-width: 160px; }
+    td .bar-head { display: none; }
+    .tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .tags span {
+      border: 1px solid var(--line);
+      background: #fbfcfe;
+      border-radius: 999px;
+      padding: 5px 9px;
+      color: var(--muted);
+    }
+    ul { margin: 8px 0 0; padding-left: 20px; }
+    li { margin: 5px 0; }
+    @media (max-width: 860px) {
+      main { width: min(100vw - 24px, 1180px); margin-top: 18px; }
+      header { display: block; }
+      .span-8, .span-6, .span-4 { grid-column: span 12; }
+      .metric { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      table { display: block; overflow-x: auto; white-space: nowrap; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Pocket AG Skill 进度面板</h1>
+        <p class="muted">生成时间：2026-06-21T16:36:44</p>
+      </div>
+      <p class="muted">主目标：宝可梦冠军环境；VGC 仅作通用对战理论参考。</p>
+    </header>
+
+    <div class="grid">
+      <section class="card span-8">
+        <h2>总进度</h2>
+        
+      <div class="bar-row">
+        <div class="bar-head">
+          <span>Pocket AG Skill 成熟度</span>
+          <strong>78.1%</strong>
+        </div>
+        <div class="track" aria-label="Pocket AG Skill 成熟度 78.1%">
+          <div class="fill warn" style="width: 78.1%"></div>
+        </div>
+        <p>关键个体视频已完成转写，个体卡片库已生成，教练规则层已产品化并接入服务端提示。</p>
+      </div>
+    
+        <div class="metric">
+          <div><strong>208</strong><span class="muted">视频已索引</span></div>
+          <div><strong>3/3</strong><span class="muted">关键源登记</span></div>
+          <div><strong>21</strong><span class="muted">可用转写</span></div>
+          <div><strong>1520</strong><span class="muted">证据片段</span></div>
+        </div>
+      </section>
+
+      <section class="card span-4">
+        <h2>关键个体源 BV1ufDwBEEnM</h2>
+        
+      <div class="bar-row">
+        <div class="bar-head">
+          <span>分段转写</span>
+          <strong>100.0%</strong>
+        </div>
+        <div class="track" aria-label="分段转写 100.0%">
+          <div class="fill good" style="width: 100.0%"></div>
+        </div>
+        <p>34/34 个片段，685 行，518 条抽取</p>
+      </div>
+    
+        <p class="muted">音频状态：ok</p>
+        <div class="tags"><span>individual-role <strong>66</strong></span>
+<span>item-ability <strong>102</strong></span>
+<span>matchup-warning <strong>64</strong></span>
+<span>mega-slot <strong>6</strong></span>
+<span>move-template <strong>101</strong></span>
+<span>recommendation <strong>83</strong></span>
+<span>speed-control <strong>84</strong></span>
+<span>team-fit <strong>12</strong></span></div>
+      </section>
+
+      <section class="card span-6">
+        <h2>结构化个体卡片</h2>
+        
+      <div class="bar-row">
+        <div class="bar-head">
+          <span>卡片库完成度</span>
+          <strong>70.4%</strong>
+        </div>
+        <div class="track" aria-label="卡片库完成度 70.4%">
+          <div class="fill warn" style="width: 70.4%"></div>
+        </div>
+        <p>105 张卡片，11 张有 AG 证据，7 张已精修摘要，11 张高置信</p>
+      </div>
+    
+        <div class="metric">
+          <div><strong>105</strong><span class="muted">卡片</span></div>
+          <div><strong>11</strong><span class="muted">含 AG 证据</span></div>
+          <div><strong>7</strong><span class="muted">已精修摘要</span></div>
+          <div><strong>62</strong><span class="muted">待归属证据簇</span></div>
+        </div>
+      </section>
+
+      <section class="card span-6">
+        <h2>产品化教练规则</h2>
+        
+      <div class="bar-row">
+        <div class="bar-head">
+          <span>规则层接入度</span>
+          <strong>98.8%</strong>
+        </div>
+        <div class="track" aria-label="规则层接入度 98.8%">
+          <div class="fill good" style="width: 98.8%"></div>
+        </div>
+        <p>规则文件：True；服务端接入：True；全局规则 10 条；个体规则 11 条</p>
+      </div>
+    
+        <div class="metric">
+          <div><strong>10</strong><span class="muted">全局规则</span></div>
+          <div><strong>11</strong><span class="muted">个体规则</span></div>
+          <div><strong>6</strong><span class="muted">产品自检</span></div>
+          <div><strong>是</strong><span class="muted">服务端接入</span></div>
+        </div>
+      </section>
+
+      <section class="card span-6">
+        <h2>证据抽取</h2>
+        <table>
+          <thead><tr><th>标签</th><th>已抽取</th><th>目标</th><th>进度</th></tr></thead>
+          <tbody>
+        <tr>
+          <td>team-axis</td>
+          <td>83</td>
+          <td>100</td>
+          <td>
+      <div class="bar-row">
+        <div class="bar-head">
+          <span></span>
+          <strong>83.0%</strong>
+        </div>
+        <div class="track" aria-label=" 83.0%">
+          <div class="fill good" style="width: 83.0%"></div>
+        </div>
+        
+      </div>
+    </td>
+        </tr>
+        
+
+        <tr>
+          <td>mega-slot</td>
+          <td>9</td>
+          <td>40</td>
+          <td>
+      <div class="bar-row">
+        <div class="bar-head">
+          <span></span>
+          <strong>22.5%</strong>
+        </div>
+        <div class="track" aria-label=" 22.5%">
+          <div class="fill low" style="width: 22.5%"></div>
+        </div>
+        
+      </div>
+    </td>
+        </tr>
+        
+
+        <tr>
+          <td>speed-control</td>
+          <td>452</td>
+          <td>500</td>
+          <td>
+      <div class="bar-row">
+        <div class="bar-head">
+          <span></span>
+          <strong>90.4%</strong>
+        </div>
+        <div class="track" aria-label=" 90.4%">
+          <div class="fill good" style="width: 90.4%"></div>
+        </div>
+        
+      </div>
+    </td>
+        </tr>
+        
+
+        <tr>
+          <td>support</td>
+          <td>300</td>
+          <td>300</td>
+          <td>
+      <div class="bar-row">
+        <div class="bar-head">
+          <span></span>
+          <strong>100.0%</strong>
+        </div>
+        <div class="track" aria-label=" 100.0%">
+          <div class="fill good" style="width: 100.0%"></div>
+        </div>
+        
+      </div>
+    </td>
+        </tr>
+        
+
+        <tr>
+          <td>protect</td>
+          <td>277</td>
+          <td>250</td>
+          <td>
+      <div class="bar-row">
+        <div class="bar-head">
+          <span></span>
+          <strong>100.0%</strong>
+        </div>
+        <div class="track" aria-label=" 100.0%">
+          <div class="fill good" style="width: 100.0%"></div>
+        </div>
+        
+      </div>
+    </td>
+        </tr>
+        
+
+        <tr>
+          <td>switching</td>
+          <td>121</td>
+          <td>150</td>
+          <td>
+      <div class="bar-row">
+        <div class="bar-head">
+          <span></span>
+          <strong>80.7%</strong>
+        </div>
+        <div class="track" aria-label=" 80.7%">
+          <div class="fill good" style="width: 80.7%"></div>
+        </div>
+        
+      </div>
+    </td>
+        </tr>
+        
+
+        <tr>
+          <td>lead-choice</td>
+          <td>54</td>
+          <td>80</td>
+          <td>
+      <div class="bar-row">
+        <div class="bar-head">
+          <span></span>
+          <strong>67.5%</strong>
+        </div>
+        <div class="track" aria-label=" 67.5%">
+          <div class="fill warn" style="width: 67.5%"></div>
+        </div>
+        
+      </div>
+    </td>
+        </tr>
+        
+
+        <tr>
+          <td>focus-fire</td>
+          <td>55</td>
+          <td>80</td>
+          <td>
+      <div class="bar-row">
+        <div class="bar-head">
+          <span></span>
+          <strong>68.8%</strong>
+        </div>
+        <div class="track" aria-label=" 68.8%">
+          <div class="fill warn" style="width: 68.8%"></div>
+        </div>
+        
+      </div>
+    </td>
+        </tr>
+        
+
+        <tr>
+          <td>endgame</td>
+          <td>169</td>
+          <td>180</td>
+          <td>
+      <div class="bar-row">
+        <div class="bar-head">
+          <span></span>
+          <strong>93.9%</strong>
+        </div>
+        <div class="track" aria-label=" 93.9%">
+          <div class="fill good" style="width: 93.9%"></div>
+        </div>
+        
+      </div>
+    </td>
+        </tr>
+        </tbody>
+        </table>
+      </section>
+
+      <section class="card span-12">
+        <h2>合集索引</h2>
+        <div class="grid">
+        <section class="mini-card">
+          <h3>朱紫精灵用法分析（历史参考）</h3>
+          
+      <div class="bar-row">
+        <div class="bar-head">
+          <span>索引完成度</span>
+          <strong>100.0%</strong>
+        </div>
+        <div class="track" aria-label="索引完成度 100.0%">
+          <div class="fill good" style="width: 100.0%"></div>
+        </div>
+        <p>90 个视频已登记</p>
+      </div>
+    
+        </section>
+        
+
+        <section class="mini-card">
+          <h3>2026 官方比赛大全（通用理论参考）</h3>
+          
+      <div class="bar-row">
+        <div class="bar-head">
+          <span>索引完成度</span>
+          <strong>100.0%</strong>
+        </div>
+        <div class="track" aria-label="索引完成度 100.0%">
+          <div class="fill good" style="width: 100.0%"></div>
+        </div>
+        <p>87 个视频已登记</p>
+      </div>
+    
+        </section>
+        
+
+        <section class="mini-card">
+          <h3>宝可梦冠军（主环境 / 规则语料）</h3>
+          
+      <div class="bar-row">
+        <div class="bar-head">
+          <span>索引完成度</span>
+          <strong>100.0%</strong>
+        </div>
+        <div class="track" aria-label="索引完成度 100.0%">
+          <div class="fill good" style="width: 100.0%"></div>
+        </div>
+        <p>21 个视频已登记</p>
+      </div>
+    
+        </section>
+        
+
+        <section class="mini-card">
+          <h3>宝可梦冠军热门分析（环境补强）</h3>
+          
+      <div class="bar-row">
+        <div class="bar-head">
+          <span>索引完成度</span>
+          <strong>100.0%</strong>
+        </div>
+        <div class="track" aria-label="索引完成度 100.0%">
+          <div class="fill good" style="width: 100.0%"></div>
+        </div>
+        <p>10 个视频已登记</p>
+      </div>
+    
+        </section>
+        </div>
+      </section>
+
+      <section class="card span-6">
+        <h2>转写状态</h2>
+        <table>
+          <thead><tr><th>语料框</th><th>可用</th><th>记录</th><th>行数</th><th>无字幕</th><th>错误</th></tr></thead>
+          <tbody>
+        <tr>
+          <td>个体宝可梦推荐</td>
+          <td>0</td>
+          <td>1</td>
+          <td>0</td>
+          <td>1</td>
+          <td>0</td>
+        </tr>
+        
+
+        <tr>
+          <td>宝可梦冠军主环境</td>
+          <td>4</td>
+          <td>9</td>
+          <td>14214</td>
+          <td>3</td>
+          <td>2</td>
+        </tr>
+        
+
+        <tr>
+          <td>Mega 与冠军热门分析</td>
+          <td>5</td>
+          <td>8</td>
+          <td>4288</td>
+          <td>2</td>
+          <td>1</td>
+        </tr>
+        
+
+        <tr>
+          <td>历史用法分析</td>
+          <td>6</td>
+          <td>8</td>
+          <td>2466</td>
+          <td>0</td>
+          <td>2</td>
+        </tr>
+        
+
+        <tr>
+          <td>VGC 通用对战理论</td>
+          <td>6</td>
+          <td>8</td>
+          <td>6591</td>
+          <td>1</td>
+          <td>1</td>
+        </tr>
+        </tbody>
+        </table>
+      </section>
+
+      <section class="card span-6">
+        <h2>下一步</h2>
+        <ul><li>继续人工复核未归属证据簇，把高价值片段绑定到具体宝可梦。</li>
+<li>继续补宝可梦冠军主环境与热门分析视频；VGC 只作为通用对战理论参考。</li>
+<li>在产品侧继续观察 AI 输出，按失败案例补充 coach-rules 的规则和个体卡片。</li></ul>
+      </section>
+
+      <section class="card span-12">
+        <h2>当前限制</h2>
+        <ul><li>faster-whisper tiny is fast but noisy for Pokemon names, so medium/low individual cards need manual curation</li>
+<li>Only 11 cards currently have direct matched AG evidence and 7 have curated AG summaries; 62 evidence clusters still need manual Pokemon assignment</li>
+<li>Many strong decision snippets still come from VGC commentary; these are reference-only for Pokemon Champions unless corroborated</li>
+<li>Automatic evidence extraction has keyword noise from off-topic openings and analogies; manually accepted snippets should be curated before v1.0</li>
+<li>Champion rank/usage and team configurations in individual cards are environment data, not direct AG claims</li>
+<li>Cookie was not stored; future Bilibili downloads may need env var BILIBILI_COOKIE for restricted videos</li></ul>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

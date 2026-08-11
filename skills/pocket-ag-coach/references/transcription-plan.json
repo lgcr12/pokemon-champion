@@ -1,0 +1,34 @@
+{
+  "version": "0.1",
+  "updated_at": "2026-06-21",
+  "plans": [
+    {
+      "bvid": "BV1ufDwBEEnM",
+      "title": "《宝可梦冠军》给大家推荐一些好用的宝可梦",
+      "bucket": "champions_individual_analysis",
+      "priority": "critical",
+      "duration_seconds": 20213,
+      "audio_path": "audio/BV1ufDwBEEnM.m4a",
+      "recommended_strategy": "segment-first",
+      "segment_seconds": 600,
+      "reason": "Long 5h36m individual Pokemon recommendation analysis. Transcribe in 10-minute chunks, then curate by Pokemon name / role / recommended set / team fit.",
+      "target_labels": [
+        "individual-role",
+        "move-template",
+        "item-ability",
+        "mega-slot",
+        "team-fit",
+        "speed-control",
+        "matchup-warning"
+      ],
+      "status": "partial-started",
+      "completed_partial": {
+        "chunk_count": 1,
+        "line_count": 383,
+        "source": "audio-transcripts/BV1ufDwBEEnM.partial.txt"
+      },
+      "next_chunk_start_seconds": 600,
+      "next_strategy": "continue after intro/opening; use smaller chunk batches and curate recommendations by Pokemon"
+    }
+  ]
+}

@@ -1,0 +1,797 @@
+{
+  "version": "0.1",
+  "generated_at": "2026-06-21T16:35:48",
+  "source": {
+    "distillation": "references/distillation.md",
+    "individual_cards": "references/individual-pokemon-cards.json",
+    "critical_individual_video": "BV1ufDwBEEnM",
+    "distillation_rule_sections": 20
+  },
+  "status": {
+    "productized": true,
+    "confidence": "v0 usable coaching layer; still not a perfect imitation of Pocket AG",
+    "cards_summary": {
+      "cards": 105,
+      "high_confidence": 11,
+      "needs_manual_review": 94,
+      "with_ag_evidence": 11,
+      "with_curated_ag_summary": 7,
+      "with_mega_forms": 39,
+      "unassigned_evidence_clusters": 62
+    },
+    "pokemon_rules_included": 11
+  },
+  "global_rules": [
+    {
+      "id": "pc-default-format",
+      "title": "默认以宝可梦冠军为主环境",
+      "when": "用户没有明确指定其他规则时",
+      "do": "按宝可梦冠军环境、Mega 机制、登场率、常见配置和当前候选池构筑",
+      "why": "VGC 解说只作为可迁移对战理论，不能直接覆盖宝可梦冠军规则",
+      "priority": "hard",
+      "tags": [
+        "pokemon-champions",
+        "format-boundary"
+      ]
+    },
+    {
+      "id": "team-axis-before-power",
+      "title": "先定队伍轴，再评价单体强度",
+      "when": "选择核心、补位或评价候选宝可梦时",
+      "do": "先说明主胜利路线、副轴、开局、中盘和终盘，再解释每只宝可梦服务哪条链",
+      "why": "强单体如果不连接队友、速度和安全上场，就会变成六个散件",
+      "priority": "hard",
+      "tags": [
+        "team-axis",
+        "synergy",
+        "phase-plan"
+      ]
+    },
+    {
+      "id": "mega-slot-resource",
+      "title": "Mega 位是胜利路线资源",
+      "when": "规则允许 Mega 且候选池存在可用 Mega 时",
+      "do": "通常至少规划一个 Mega 候选；两个 Mega 只作为不同对局分支或真实备选路线",
+      "why": "Mega 要占用核心资源，必须有安全进场、速度支持、弱点覆盖和终盘价值",
+      "priority": "hard",
+      "tags": [
+        "mega-slot",
+        "resource"
+      ]
+    },
+    {
+      "id": "do-not-force-mega",
+      "title": "不能为了凑 Mega 打断联动",
+      "when": "Mega 候选会破坏主轴、抢道具资源、造成天气/速度/弱点冲突时",
+      "do": "允许不选 Mega，或把 Mega 写成 matchup branch，并明确不硬凑原因",
+      "why": "配队合理性高于形式指标",
+      "priority": "hard",
+      "tags": [
+        "mega-slot",
+        "synergy",
+        "exception"
+      ]
+    },
+    {
+      "id": "support-enables-damage",
+      "title": "辅助价值取决于它创造的回合",
+      "when": "选择击掌、威吓、双墙、掩护、状态、顺风、空间或干扰位时",
+      "do": "写清它让谁安全上场、谁获得输出窗口、谁完成收割",
+      "why": "辅助过多但没有伤害转换，会让队伍站场空转",
+      "priority": "hard",
+      "tags": [
+        "support",
+        "safe-entry",
+        "damage-conversion"
+      ]
+    },
+    {
+      "id": "prankster-small-boost",
+      "title": "恶作剧之心只给轻微加权",
+      "when": "候选拥有恶作剧之心且正在补辅助位",
+      "do": "只有当它补 speed-control、anti-setup、status-pressure、screens、core-support 或 protection 缺口时才提高权重",
+      "why": "恶作剧之心是手段，不是独立选人理由",
+      "priority": "medium",
+      "tags": [
+        "support-priority",
+        "prankster",
+        "disruption"
+      ]
+    },
+    {
+      "id": "speed-is-board-plan",
+      "title": "速度控制是整队计划",
+      "when": "队伍速度层级不完整、核心偏慢或被高速压制时",
+      "do": "说明原速线、控速手、保护控速回合的人、控速后的收益者和先制/围巾/耐久中转备选",
+      "why": "顺风或空间如果不能转成输出和站位优势，就只是浪费回合",
+      "priority": "hard",
+      "tags": [
+        "speed-control",
+        "tempo"
+      ]
+    },
+    {
+      "id": "protect-and-switching-are-tempo",
+      "title": "守住和轮换是节奏工具",
+      "when": "双打配置、面对集火、或核心需要安全上场时",
+      "do": "把守住、换入、击掌、掩护、转场和耐久中转写成具体回合序列",
+      "why": "宝可梦冠军双打需要把站位转换成伤害或信息优势",
+      "priority": "hard",
+      "tags": [
+        "protect",
+        "switching",
+        "safe-entry"
+      ]
+    },
+    {
+      "id": "singles-doubles-split",
+      "title": "单双打分开决策",
+      "when": "同时输出 single 和 double 配队建议时",
+      "do": "单打看撒场/清场/换血/强化/终盘；双打看首发组合/守住/控速/集火/范围压力/反首发",
+      "why": "同一宝可梦在两个格式里的资源价值和行动链不同",
+      "priority": "hard",
+      "tags": [
+        "singles",
+        "doubles",
+        "format-split"
+      ]
+    },
+    {
+      "id": "usage-is-evidence-not-proof",
+      "title": "使用率是证据，不是答案",
+      "when": "热门队伍、登场率或 rank 与队伍缺口冲突时",
+      "do": "先用使用率判断关注对象，再按队伍联动、机会成本、环境威胁和配置完整度决定是否选用",
+      "why": "高登场率不等于适合当前队伍",
+      "priority": "medium",
+      "tags": [
+        "usage",
+        "opportunity-cost"
+      ]
+    }
+  ],
+  "format_rules": {
+    "single": [
+      "先明确主轴和副轴，避免只有六个热门单体。",
+      "必须检查进场答案、撒场/清场或替代节奏、状态/回复/轮换资源、终盘收割点。",
+      "速度计划要包含高速压制、控速、先制、围巾或耐久中转中的至少两类。",
+      "Mega 核心要说明谁帮它上场、谁覆盖岩石/电/冰/妖等关键弱点，谁负责主轴被挡后的副轴。"
+    ],
+    "double": [
+      "必须给出至少两组首发组合，并说明谁控速、谁输出、谁保护队友、遇到反首发如何切换。",
+      "守住、击掌、威吓、掩护、广域防守、顺风/空间要服务明确输出窗口。",
+      "携带地震、热风、浊流等范围压力时，要检查队友免疫、守住或站位路线。",
+      "双 Mega 只能是分支选择，不能写成同局同时 Mega 的双核心。"
+    ]
+  },
+  "pokemon_rules": [
+    {
+      "slug": "dondozo",
+      "name": "Dondozo",
+      "english": "Dondozo",
+      "confidence": "high",
+      "needs_manual_review": false,
+      "summary": "吃吼霸可以作为高压输出或耐久消耗路线；它不怕一部分常规干扰，适合准备两种配置以覆盖不同对局。",
+      "claims": [
+        "不要命输出型可以直接施压，逼迫对手处理。",
+        "耐久型更适合拖回合、消耗和等待后排打手收割。",
+        "可以准备两只不同吃吼霸，应按对局选择输出型或耐久型。",
+        "开不开顺风不是第一问题，关键是它能不能吃住并转换压力。"
+      ],
+      "ag_evidence_count": 17,
+      "ag_tags": [
+        "item-ability",
+        "matchup-warning",
+        "mega-slot",
+        "moveset",
+        "not-recommended",
+        "recommendation",
+        "role",
+        "speed",
+        "team-fit"
+      ],
+      "mega_forms": [],
+      "champions_context": {
+        "single_rank": null,
+        "double_rank": null,
+        "common_items": [],
+        "common_moves": [],
+        "common_partners": []
+      },
+      "coach_notes": [
+        "AG 片段里出现不推荐/谨慎表述，必须结合上下文复核。",
+        "片段涉及速度线或控速，应纳入单双打速度计划。",
+        "片段涉及队友/体系适配，优先作为联动证据使用。",
+        "涉及速度线，应在配队输出中说明要过谁或由谁控速。",
+        "涉及队友适配，应优先作为联动链证据使用。",
+        "存在谨慎或不推荐语境，必须结合队伍缺口复核。"
+      ]
+    },
+    {
+      "slug": "charizard",
+      "name": "喷火龙",
+      "english": "Charizard",
+      "confidence": "high",
+      "needs_manual_review": false,
+      "summary": "喷火龙是典型 Mega 位核心；Y 形态/晴天火力和天气价值明显，但要根据速度线和耐久选择极速输出或肉喷路线。",
+      "claims": [
+        "普通喷火龙常围绕火本输出与天气收益展开，Mega Y 的晴天与特攻提升是主要价值。",
+        "可考虑顺风、空气斩/飞本、大地之力、日光束、过热等技能位，但要确认宝可梦冠军内技能可用性。",
+        "肉喷不是装饰，目的是吃下岩崩等关键打击后继续转换输出。",
+        "速度投资要围绕 100 线、200 线、顺风后速度和队友控速共同判断。"
+      ],
+      "ag_evidence_count": 16,
+      "ag_tags": [
+        "item-ability",
+        "matchup-warning",
+        "mega-slot",
+        "moveset",
+        "not-recommended",
+        "recommendation",
+        "role",
+        "speed",
+        "team-fit"
+      ],
+      "mega_forms": [
+        "Charizard-Mega-X",
+        "Charizard-Mega-Y"
+      ],
+      "champions_context": {
+        "single_rank": 4,
+        "double_rank": 5,
+        "common_items": [
+          "charizardite-y",
+          "charizardite-x",
+          "choice-scarf",
+          "quick-claw"
+        ],
+        "common_moves": [
+          "protect",
+          "heat-wave",
+          "solar-beam",
+          "weather-ball",
+          "overheat",
+          "flare-blitz",
+          "dragon-claw",
+          "dragon-dance"
+        ],
+        "common_partners": [
+          "garchomp",
+          "kingambit",
+          "whimsicott",
+          "basculegion",
+          "incineroar",
+          "sneasler"
+        ]
+      },
+      "coach_notes": [
+        "存在 Mega 形态；配队时可作为 Mega 位候选，但仍需检查队伍联动。",
+        "AG 片段里出现不推荐/谨慎表述，必须结合上下文复核。",
+        "片段涉及速度线或控速，应纳入单双打速度计划。",
+        "片段涉及队友/体系适配，优先作为联动证据使用。",
+        "有 Mega 形态时先判断是否承担主胜利路线，不能只因有 Mega 就入队。",
+        "涉及速度线，应在配队输出中说明要过谁或由谁控速。",
+        "涉及队友适配，应优先作为联动链证据使用。",
+        "存在谨慎或不推荐语境，必须结合队伍缺口复核。"
+      ]
+    },
+    {
+      "slug": "manectric",
+      "name": "雷电兽",
+      "english": "Manectric",
+      "confidence": "high",
+      "needs_manual_review": false,
+      "summary": "雷电兽是偏高速辅助/骚扰型 Mega 候选，价值不只在火力，而在高速威吓、换位和干扰带来的队伍节奏。",
+      "claims": [
+        "Mega 后更像辅助手，能靠高速和威吓来回制造回合。",
+        "格子紧张，保护、帮助、同命、开墙/极光幕等选择要按队伍需要取舍。",
+        "它不是顶级纯输出，但推荐准备一只用于特定节奏和对局。"
+      ],
+      "ag_evidence_count": 3,
+      "ag_tags": [
+        "item-ability",
+        "matchup-warning",
+        "mega-slot",
+        "moveset",
+        "recommendation",
+        "role",
+        "speed",
+        "team-fit"
+      ],
+      "mega_forms": [
+        "Manectric-Mega"
+      ],
+      "champions_context": {
+        "single_rank": 128,
+        "double_rank": 92,
+        "common_items": [
+          "manectite",
+          "magnet"
+        ],
+        "common_moves": [
+          "volt-switch",
+          "snarl",
+          "overheat",
+          "protect",
+          "thunderbolt",
+          "charge",
+          "thunder"
+        ],
+        "common_partners": [
+          "milotic",
+          "sneasler",
+          "vanilluxe",
+          "volcarona",
+          "aegislash",
+          "corviknight"
+        ]
+      },
+      "coach_notes": [
+        "存在 Mega 形态；配队时可作为 Mega 位候选，但仍需检查队伍联动。",
+        "片段涉及速度线或控速，应纳入单双打速度计划。",
+        "片段涉及队友/体系适配，优先作为联动证据使用。",
+        "有 Mega 形态时先判断是否承担主胜利路线，不能只因有 Mega 就入队。",
+        "涉及速度线，应在配队输出中说明要过谁或由谁控速。",
+        "涉及队友适配，应优先作为联动链证据使用。"
+      ]
+    },
+    {
+      "slug": "grimmsnarl",
+      "name": "Grimmsnarl",
+      "english": "Grimmsnarl",
+      "confidence": "high",
+      "needs_manual_review": false,
+      "summary": "长毛巨魔是开墙与恶作剧之心支援的代表；它的价值在先手墙、反射壁/光墙、电磁波和灵魂冲击等干扰组合。",
+      "claims": [
+        "开墙体系基本绕不开长毛巨魔这一类恶作剧之心支援。",
+        "活下来很重要，因为一回合只能开一个墙，没死才能继续补另一面墙或电磁波。",
+        "可以有开墙型和不开墙干扰型两套思路，别只把它当固定双墙机器。"
+      ],
+      "ag_evidence_count": 3,
+      "ag_tags": [
+        "item-ability",
+        "matchup-warning",
+        "moveset",
+        "not-recommended",
+        "recommendation",
+        "role",
+        "speed",
+        "team-fit"
+      ],
+      "mega_forms": [],
+      "champions_context": {
+        "single_rank": null,
+        "double_rank": null,
+        "common_items": [
+          "light-clay",
+          "roseli-berry",
+          "mental-herb"
+        ],
+        "common_moves": [
+          "parting-shot",
+          "light-screen",
+          "spirit-break",
+          "reflect",
+          "fake-out",
+          "foul-play",
+          "scary-face"
+        ],
+        "common_partners": [
+          "sinistcha",
+          "staraptor",
+          "incineroar",
+          "swampert",
+          "pelipper",
+          "archaludon"
+        ]
+      },
+      "coach_notes": [
+        "AG 片段里出现不推荐/谨慎表述，必须结合上下文复核。",
+        "片段涉及速度线或控速，应纳入单双打速度计划。",
+        "片段涉及队友/体系适配，优先作为联动证据使用。",
+        "涉及速度线，应在配队输出中说明要过谁或由谁控速。",
+        "涉及队友适配，应优先作为联动链证据使用。",
+        "存在谨慎或不推荐语境，必须结合队伍缺口复核。"
+      ]
+    },
+    {
+      "slug": "amoonguss",
+      "name": "Amoonguss",
+      "english": "Amoonguss",
+      "confidence": "high",
+      "needs_manual_review": false,
+      "summary": "盾菇定义了空间低速线，45 速和再生力让它成为慢速支援/消耗核心；配招通常围绕愤怒粉、蘑菇孢子、花粉团和草本输出取舍。",
+      "claims": [
+        "45 速是空间相关的重要低速参考线。",
+        "再生力和耐久分配决定它能否反复进出制造安全回合。",
+        "如果草系目标多，草本输出位更值得保留；否则可按队伍需要换花粉团等支援技能。"
+      ],
+      "ag_evidence_count": 1,
+      "ag_tags": [
+        "item-ability",
+        "moveset",
+        "recommendation",
+        "role",
+        "speed",
+        "team-fit"
+      ],
+      "mega_forms": [],
+      "champions_context": {
+        "single_rank": null,
+        "double_rank": null,
+        "common_items": [],
+        "common_moves": [],
+        "common_partners": []
+      },
+      "coach_notes": [
+        "片段涉及速度线或控速，应纳入单双打速度计划。",
+        "片段涉及队友/体系适配，优先作为联动证据使用。",
+        "涉及速度线，应在配队输出中说明要过谁或由谁控速。",
+        "涉及队友适配，应优先作为联动链证据使用。"
+      ]
+    },
+    {
+      "slug": "gengar",
+      "name": "耿鬼",
+      "english": "Gengar",
+      "confidence": "high",
+      "needs_manual_review": false,
+      "summary": "耿鬼/ Mega 耿鬼更依赖精确速度线和配置分工；不要只看 Mega 后速度，技能、耐久和要过谁都要先定。",
+      "claims": [
+        "速度线应先决定要过谁，例如 100/120/130 相关线。",
+        "不同耿鬼配置努力值会差很多，不能套一个固定模板。",
+        "如果特性或技能收益不足，强行 Mega 可能浪费 Mega 位。"
+      ],
+      "ag_evidence_count": 0,
+      "ag_tags": [
+        "item-ability",
+        "matchup-warning",
+        "mega-slot",
+        "moveset",
+        "not-recommended",
+        "speed"
+      ],
+      "mega_forms": [
+        "Gengar-Mega"
+      ],
+      "champions_context": {
+        "single_rank": 10,
+        "double_rank": 25,
+        "common_items": [
+          "gengarite",
+          "focus-sash"
+        ],
+        "common_moves": [
+          "shadow-ball",
+          "protect",
+          "perish-song",
+          "sludge-bomb",
+          "disable",
+          "substitute",
+          "icy-wind",
+          "destiny-bond"
+        ],
+        "common_partners": [
+          "incineroar",
+          "kingambit",
+          "garchomp",
+          "sneasler",
+          "basculegion",
+          "politoed"
+        ]
+      },
+      "coach_notes": [
+        "存在 Mega 形态；配队时可作为 Mega 位候选，但仍需检查队伍联动。",
+        "AG 片段里出现不推荐/谨慎表述，必须结合上下文复核。",
+        "片段涉及速度线或控速，应纳入单双打速度计划。",
+        "有 Mega 形态时先判断是否承担主胜利路线，不能只因有 Mega 就入队。",
+        "涉及速度线，应在配队输出中说明要过谁或由谁控速。",
+        "存在谨慎或不推荐语境，必须结合队伍缺口复核。"
+      ]
+    },
+    {
+      "slug": "venusaur",
+      "name": "妙蛙花",
+      "english": "Venusaur",
+      "confidence": "high",
+      "needs_manual_review": false,
+      "summary": "Mega 妙蛙花更像耐久受向轴，不是单纯输出手；厚脂肪改善火/冰弱点，适合靠种子、回复和慢节奏消耗建立优势。",
+      "claims": [
+        "输出不高，推荐按耐久受向流理解。",
+        "Mega 后厚脂肪是核心价值，火/冰压力被显著缓和。",
+        "速度不快，睡眠粉/速度相关选择要看环境与具体配招。",
+        "如果普通妙蛙花更能配合体系，不应为了 Mega 而强行 Mega。"
+      ],
+      "ag_evidence_count": 0,
+      "ag_tags": [
+        "item-ability",
+        "mega-slot",
+        "moveset",
+        "recommendation",
+        "role",
+        "speed",
+        "team-fit"
+      ],
+      "mega_forms": [
+        "Venusaur-Mega"
+      ],
+      "champions_context": {
+        "single_rank": 28,
+        "double_rank": 19,
+        "common_items": [
+          "venusaurite",
+          "focus-sash",
+          "occa-berry"
+        ],
+        "common_moves": [
+          "sludge-bomb",
+          "protect",
+          "earth-power",
+          "sleep-powder",
+          "giga-drain",
+          "energy-ball",
+          "leech-seed",
+          "leaf-storm"
+        ],
+        "common_partners": [
+          "incineroar",
+          "charizard",
+          "garchomp",
+          "basculegion",
+          "sneasler",
+          "archaludon"
+        ]
+      },
+      "coach_notes": [
+        "存在 Mega 形态；配队时可作为 Mega 位候选，但仍需检查队伍联动。",
+        "片段涉及速度线或控速，应纳入单双打速度计划。",
+        "片段涉及队友/体系适配，优先作为联动证据使用。",
+        "有 Mega 形态时先判断是否承担主胜利路线，不能只因有 Mega 就入队。",
+        "涉及速度线，应在配队输出中说明要过谁或由谁控速。",
+        "涉及队友适配，应优先作为联动链证据使用。"
+      ]
+    },
+    {
+      "slug": "salamence",
+      "name": "Salamence",
+      "english": "Salamence",
+      "confidence": "high",
+      "needs_manual_review": false,
+      "summary": "",
+      "claims": [],
+      "ag_evidence_count": 14,
+      "ag_tags": [
+        "item-ability",
+        "matchup-warning",
+        "mega-slot",
+        "moveset",
+        "not-recommended",
+        "recommendation",
+        "role",
+        "speed",
+        "team-fit"
+      ],
+      "mega_forms": [
+        "Salamence-Mega"
+      ],
+      "champions_context": {
+        "single_rank": null,
+        "double_rank": null,
+        "common_items": [],
+        "common_moves": [],
+        "common_partners": []
+      },
+      "coach_notes": [
+        "存在 Mega 形态；配队时可作为 Mega 位候选，但仍需检查队伍联动。",
+        "AG 片段里出现不推荐/谨慎表述，必须结合上下文复核。",
+        "片段涉及速度线或控速，应纳入单双打速度计划。",
+        "片段涉及队友/体系适配，优先作为联动证据使用。",
+        "有 Mega 形态时先判断是否承担主胜利路线，不能只因有 Mega 就入队。",
+        "涉及速度线，应在配队输出中说明要过谁或由谁控速。",
+        "涉及队友适配，应优先作为联动链证据使用。",
+        "存在谨慎或不推荐语境，必须结合队伍缺口复核。"
+      ]
+    },
+    {
+      "slug": "garchomp",
+      "name": "烈咬陆鲨",
+      "english": "Garchomp",
+      "confidence": "high",
+      "needs_manual_review": false,
+      "summary": "",
+      "claims": [],
+      "ag_evidence_count": 12,
+      "ag_tags": [
+        "item-ability",
+        "matchup-warning",
+        "mega-slot",
+        "moveset",
+        "not-recommended",
+        "recommendation",
+        "role",
+        "speed",
+        "team-fit"
+      ],
+      "mega_forms": [
+        "Garchomp-Mega"
+      ],
+      "champions_context": {
+        "single_rank": 1,
+        "double_rank": 2,
+        "common_items": [
+          "sitrus-berry",
+          "choice-scarf",
+          "white-herb",
+          "soft-sand",
+          "roseli-berry"
+        ],
+        "common_moves": [
+          "earthquake",
+          "dragon-claw",
+          "protect",
+          "rock-slide",
+          "stomping-tantrum",
+          "rock-tomb",
+          "poison-jab",
+          "scale-shot"
+        ],
+        "common_partners": [
+          "kingambit",
+          "basculegion",
+          "charizard",
+          "sneasler",
+          "aerodactyl",
+          "floette"
+        ]
+      },
+      "coach_notes": [
+        "存在 Mega 形态；配队时可作为 Mega 位候选，但仍需检查队伍联动。",
+        "AG 片段里出现不推荐/谨慎表述，必须结合上下文复核。",
+        "片段涉及速度线或控速，应纳入单双打速度计划。",
+        "片段涉及队友/体系适配，优先作为联动证据使用。",
+        "有 Mega 形态时先判断是否承担主胜利路线，不能只因有 Mega 就入队。",
+        "涉及速度线，应在配队输出中说明要过谁或由谁控速。",
+        "涉及队友适配，应优先作为联动链证据使用。",
+        "存在谨慎或不推荐语境，必须结合队伍缺口复核。"
+      ]
+    },
+    {
+      "slug": "dragonite",
+      "name": "快龙",
+      "english": "Dragonite",
+      "confidence": "high",
+      "needs_manual_review": false,
+      "summary": "",
+      "claims": [],
+      "ag_evidence_count": 8,
+      "ag_tags": [
+        "item-ability",
+        "matchup-warning",
+        "mega-slot",
+        "moveset",
+        "not-recommended",
+        "recommendation",
+        "role",
+        "speed",
+        "team-fit"
+      ],
+      "mega_forms": [
+        "Dragonite-Mega"
+      ],
+      "champions_context": {
+        "single_rank": 15,
+        "double_rank": 16,
+        "common_items": [
+          "dragoninite",
+          "dragon-fang",
+          "lum-berry",
+          "white-herb",
+          "silk-scarf"
+        ],
+        "common_moves": [
+          "protect",
+          "extreme-speed",
+          "tailwind",
+          "draco-meteor",
+          "hurricane",
+          "dragon-claw",
+          "low-kick",
+          "dragon-pulse"
+        ],
+        "common_partners": [
+          "basculegion",
+          "sneasler",
+          "kingambit",
+          "incineroar",
+          "archaludon",
+          "pelipper"
+        ]
+      },
+      "coach_notes": [
+        "存在 Mega 形态；配队时可作为 Mega 位候选，但仍需检查队伍联动。",
+        "AG 片段里出现不推荐/谨慎表述，必须结合上下文复核。",
+        "片段涉及速度线或控速，应纳入单双打速度计划。",
+        "片段涉及队友/体系适配，优先作为联动证据使用。",
+        "有 Mega 形态时先判断是否承担主胜利路线，不能只因有 Mega 就入队。",
+        "涉及速度线，应在配队输出中说明要过谁或由谁控速。",
+        "涉及队友适配，应优先作为联动链证据使用。",
+        "存在谨慎或不推荐语境，必须结合队伍缺口复核。"
+      ]
+    },
+    {
+      "slug": "heracross",
+      "name": "赫拉克罗斯",
+      "english": "Heracross",
+      "confidence": "high",
+      "needs_manual_review": false,
+      "summary": "",
+      "claims": [],
+      "ag_evidence_count": 5,
+      "ag_tags": [
+        "item-ability",
+        "moveset",
+        "not-recommended",
+        "recommendation",
+        "role",
+        "speed"
+      ],
+      "mega_forms": [
+        "Heracross-Mega"
+      ],
+      "champions_context": {
+        "single_rank": 63,
+        "double_rank": 85,
+        "common_items": [
+          "heracronite"
+        ],
+        "common_moves": [
+          "close-combat",
+          "rock-blast",
+          "bullet-seed",
+          "pin-missile",
+          "protect",
+          "feint",
+          "detect"
+        ],
+        "common_partners": [
+          "incineroar",
+          "glimmora",
+          "aegislash",
+          "charizard",
+          "garchomp",
+          "maushold"
+        ]
+      },
+      "coach_notes": [
+        "存在 Mega 形态；配队时可作为 Mega 位候选，但仍需检查队伍联动。",
+        "AG 片段里出现不推荐/谨慎表述，必须结合上下文复核。",
+        "片段涉及速度线或控速，应纳入单双打速度计划。",
+        "有 Mega 形态时先判断是否承担主胜利路线，不能只因有 Mega 就入队。",
+        "涉及速度线，应在配队输出中说明要过谁或由谁控速。",
+        "存在谨慎或不推荐语境，必须结合队伍缺口复核。"
+      ]
+    }
+  ],
+  "prompt_injection": {
+    "title": "Pocket AG 宝可梦冠军理解层",
+    "lines": [
+      "默认按宝可梦冠军环境判断，VGC 只作通用理论参考。",
+      "先定主轴、副轴、开局、中盘、终盘，再选成员；不要只堆热门或高 rank 单体。",
+      "允许 Mega 时通常至少规划一个 Mega 候选，但必须解释安全进场、速度支持、弱点覆盖和终盘用途。",
+      "可以出现两个 Mega 候选，但只能作为不同 matchup 分支；不能把两个都写成同局核心，也不能为凑 Mega 打断联动。",
+      "选择辅助手时，恶作剧之心只在补控速、反展开、状态压力、双墙、保护核心等缺口时轻微加权。",
+      "速度控制必须写成回合计划：谁开控速，谁保护该回合，控速后谁输出或收割。",
+      "双打要把守住、换入、击掌、威吓、掩护和集火视作节奏资源；单打要补撒场/清场或替代节奏。",
+      "使用率和热门队伍是环境证据，不是直接答案；最终选择要服从队友联动和机会成本。"
+    ],
+    "max_pokemon_rules_in_prompt": 12,
+    "usage": "服务端会把这些规则作为配队提示的可执行约束；中低置信卡片只作参考，不能覆盖 Champions 合法性和当前数据。"
+  },
+  "product_checks": [
+    "输出前检查 Mega 位是否真的服务主轴。",
+    "输出前检查至少两组队友联动链。",
+    "输出前检查单双打是否分开使用对应 formatModels。",
+    "输出前检查恶作剧之心是否补了真实缺口。",
+    "输出前检查速度计划是否有设置者、保护者和收益者。",
+    "输出前检查热门度是否被队伍适配性复核。"
+  ]
+}

@@ -6,13 +6,19 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 
 const ROOT = resolve(".");
 const require = createRequire(import.meta.url);
 const { BattleStream, Dex, TeamValidator, Teams, getPlayerStreams } = require("pokemon-showdown");
 const PORT = Number(process.env.PORT || 4174);
+const CHAMPIONS_FORMAT_IDS = {
+  single: "gen9championsbssregmb",
+  double: "gen9championsvgc2026regmb",
+};
 const BATTLE_HISTORY_PATH = join(ROOT, "data", "battle-history.json");
 const TEAM_DATA_PATH = join(ROOT, "data", "team-data.json");
+const CHAMPION_DATA_PATH = join(ROOT, "data", "champion-data.json");
 const POCKET_AG_COACH_RULES_PATH = join(ROOT, "skills", "pocket-ag-coach", "references", "coach-rules.json");
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || "https://api.openai.com";
@@ -32,6 +38,11 @@ const SHOWDOWN_SPECIES_LIST = Array.isArray(Dex?.species?.all?.()) ? Dex.species
 const SHOWDOWN_SPECIES_BY_ID = new Map(SHOWDOWN_SPECIES_LIST.map((species) => [String(species.id || "").toLowerCase(), species]));
 const SHOWDOWN_SPECIES_BY_NUM = new Map(SHOWDOWN_SPECIES_LIST.filter((species) => Number.isFinite(Number(species.num))).map((species) => [Number(species.num), species]));
 let refreshTask = null;
+const showdownImportBridge = new Map();
+const strictCandidateLegalityCache = new Map();
+const SHOWDOWN_BRIDGE_PROFILE_PATH = join(ROOT, ".cache", "showdown-bridge-browser");
+let showdownBridgeContext = null;
+let showdownBridgePage = null;
 const DEFAULT_ITEM_POOL = ["生命宝珠", "气势披带", "讲究围巾", "讲究眼镜", "突击背心", "剩饭"];
 const ADVICE_POKEMON_SCHEMA = {
   type: "object",
@@ -677,9 +688,27 @@ JSON 结构：
 
 function showdownFormatFor(format = "single") {
   const value = String(format || "").toLowerCase();
-  if (value.includes("vgc")) return "gen9vgc2025regg";
-  if (value.includes("double")) return "gen9nationaldexdoubles";
-  return "gen9nationaldex";
+  return value.includes("double") || value.includes("vgc") ? CHAMPIONS_FORMAT_IDS.double : CHAMPIONS_FORMAT_IDS.single;
+}
+
+function championsRulesEngine(format = "single") {
+  const id = showdownFormatFor(format);
+  const rules = Dex.formats.get(id);
+  if (!rules?.exists) {
+    return {
+      ok: false,
+      id,
+      error: `本地 Pokemon Showdown 引擎未包含 ${format === "double" ? "Champions VGC 2026 M-B" : "Champions BSS M-B"} 规则，无法进行精确测试。请更新依赖后重试。`,
+    };
+  }
+  return {
+    ok: true,
+    id: rules.id,
+    name: rules.name,
+    mod: rules.mod,
+    gameType: rules.gameType,
+    exact: true,
+  };
 }
 
 function showdownLegalValue(value = "", fallback = "", category = "") {
@@ -724,6 +753,1136 @@ function readTeamDataFile() {
   }
 }
 
+function readChampionDataFile() {
+  try {
+    return JSON.parse(readFileSync(CHAMPION_DATA_PATH, "utf8"));
+  } catch {
+    return { formats: {} };
+  }
+}
+
+function strictKey(value = "") {
+  return String(value || "")
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/[^a-z0-9\u3400-\u9fff]+/g, "");
+}
+
+function strictFamilyKey(value = "") {
+  const raw = strictKey(value);
+  const species = SHOWDOWN_SPECIES_BY_ID.get(raw);
+  const baseSpecies = strictKey(species?.baseSpecies || "");
+  if (baseSpecies) return baseSpecies;
+  return raw
+    .replace(/mega[xy]?$/i, "")
+    .replace(/gmax$/i, "")
+    .replace(/(alola|alolan|galar|galarian|hisui|hisuian|paldea|paldean|female|male|midday|midnight|dusk)$/i, "");
+}
+
+function strictVariationScore(value = "", seed = "") {
+  if (!seed) return 0;
+  let hash = 2166136261;
+  for (const char of `${seed}:${value}`) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) % 47;
+}
+
+function strictText(member = {}) {
+  return [member.name, member.slug, member.item, member.ability, ...(member.moves || [])].join(" ").toLowerCase();
+}
+
+function strictTypesFor(slug = "") {
+  const species = SHOWDOWN_SPECIES_BY_ID.get(String(slug || "").replace(/[^a-z0-9]/gi, "").toLowerCase());
+  return Array.isArray(species?.types) ? species.types : [];
+}
+
+function strictBaseSpeedFor(slug = "") {
+  const species = SHOWDOWN_SPECIES_BY_ID.get(String(slug || "").replace(/[^a-z0-9]/gi, "").toLowerCase());
+  return Number(species?.baseStats?.spe || 0);
+}
+
+const STRICT_ATTACK_TYPES = Dex.types.all().map((type) => type.name).filter((type) => type && type !== "Stellar");
+const STRICT_TYPE_MULTIPLIER_CACHE = new Map();
+function strictTypeMultiplier(member = {}, attackType = "") {
+  const cacheKey = `${member.slug || ""}|${member.item || ""}|${member.ability || ""}|${attackType}`;
+  if (STRICT_TYPE_MULTIPLIER_CACHE.has(cacheKey)) return STRICT_TYPE_MULTIPLIER_CACHE.get(cacheKey);
+  const text = strictText(member);
+  if (attackType === "Ground" && /levitate|air-balloon/.test(text)) {
+    STRICT_TYPE_MULTIPLIER_CACHE.set(cacheKey, 0);
+    return 0;
+  }
+  let multiplier = 1;
+  for (const defenseType of member.types?.length ? member.types : strictTypesFor(member.slug)) {
+    const relation = Dex.types.get(defenseType)?.damageTaken?.[attackType] || 0;
+    if (relation === 3) {
+      STRICT_TYPE_MULTIPLIER_CACHE.set(cacheKey, 0);
+      return 0;
+    }
+    if (relation === 1) multiplier *= 2;
+    if (relation === 2) multiplier *= 0.5;
+  }
+  STRICT_TYPE_MULTIPLIER_CACHE.set(cacheKey, multiplier);
+  return multiplier;
+}
+
+function strictDefenseMultiplier(member = {}, attackType = "") {
+  return member.defense?.[attackType] ?? strictTypeMultiplier(member, attackType);
+}
+
+function strictIsMegaItem(item = "") {
+  const value = String(item || "").trim().toLowerCase();
+  return /进化石/.test(value) || (/[a-z0-9]+ite(?:-[xy])?$/.test(value) && value !== "eviolite");
+}
+
+function strictTags(member = {}, format = "single") {
+  const text = strictText(member);
+  const tags = new Set();
+  const add = (tag, pattern) => pattern.test(text) && tags.add(tag);
+  add("pivot", /u-turn|volt-switch|parting-shot|flip-turn|teleport|chilly-reception/);
+  // A Choice Scarf, priority move, or weather speed ability only improves that
+  // member's own speed. Keep it separate from moves that actually control the
+  // turn order for teammates, otherwise reports invent false team synergies.
+  add("speed-control", /tailwind|trick-room|thunder-wave|icy-wind|electroweb|sticky-web|scary-face/);
+  add("speed", /tailwind|trick-room|thunder-wave|icy-wind|electroweb|sticky-web|choice-scarf|swift-swim|chlorophyll|sand-rush|slush-rush|priority/);
+  add("protect", /protect|wide-guard|quick-guard|follow-me|rage-powder|fake-out/);
+  add("hazard", /stealth-rock|spikes|toxic-spikes|sticky-web/);
+  add("removal", /rapid-spin|mortal-spin|defog|tidy-up/);
+  add("status", /will-o-wisp|toxic|yawn|thunder-wave|encore|taunt|light-screen|reflect|aurora-veil/);
+  add("recovery", /recover|roost|slack-off|synthesis|moonlight|shore-up|drain-punch|leech-seed/);
+  add("setup", /swords-dance|nasty-plot|calm-mind|dragon-dance|bulk-up|iron-defense|belly-drum|focus-energy/);
+  add("priority", /extreme-speed|sucker-punch|aqua-jet|mach-punch|bullet-punch|shadow-sneak|ice-shard|jet-punch/);
+  add("intimidate", /intimidate/);
+  add("prankster", /prankster/);
+  add("wallbreaker", /choice-band|choice-specs|life-orb|booster-energy|dragon-dance|swords-dance|nasty-plot|belly-drum/);
+  const damagingMoves = (member.moves || []).map((move) => Dex.moves.get(move)).filter((move) => move?.exists && move.category !== "Status" && Number(move.basePower || 0) >= 70);
+  if (damagingMoves.length >= 2) tags.add("wallbreaker");
+  if (format === "double" && /heat-wave|rock-slide|dazzling-gleam|earthquake|surf|blizzard|hyper-voice|muddy-water/.test(text)) tags.add("spread");
+  if (/regenerator|intimidate|levitate|water-absorb|flash-fire|lightning-rod|thick-fat|unaware/.test(text) || tags.has("recovery")) tags.add("defensive");
+  if (tags.has("pivot") || tags.has("protect") || tags.has("intimidate") || tags.has("defensive")) tags.add("safe-entry");
+  if (tags.has("wallbreaker") || tags.has("setup") || tags.has("priority")) tags.add("wincon");
+  return tags;
+}
+
+const STRICT_THEMES = ["sun", "rain", "sand", "snow", "trick-room", "tailwind", "pass-chain"];
+const STRICT_THEME_LABELS = { sun: "晴天", rain: "雨天", sand: "沙暴", snow: "雪天", "trick-room": "戏法空间", tailwind: "顺风", "pass-chain": "强化接棒" };
+function strictThemeLabel(theme = "") {
+  return STRICT_THEME_LABELS[theme] || String(theme || "体系");
+}
+
+function strictGoalMatchesPokemon(goal = "", candidate = {}) {
+  if (strictGoalExplicitlyForbids(goal, candidate)) return false;
+  const rawGoal = String(goal || "");
+  const chineseGoal = rawGoal.replace(/[^\u3400-\u9fff]+/g, "");
+  const chineseName = String(candidate.name || "").replace(/[^\u3400-\u9fff]+/g, "");
+  const slug = String(candidate.slug || "").trim();
+  return (
+    (chineseName.length >= 2 && chineseGoal.includes(chineseName)) ||
+    (slug.length >= 4 && new RegExp(`(?:^|[^a-z0-9])${slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:$|[^a-z0-9])`, "i").test(rawGoal))
+  );
+}
+
+function strictUniquePokemonRefs(entries = []) {
+  const seen = new Set();
+  return entries.filter((entry) => {
+    const key = strictKey(entry?.slug || entry?.id || entry?.name);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function strictAvoidedTeamFamilies(value = []) {
+  const entries = Array.isArray(value) ? value : String(value || "").split(/[、,，/\n]+/);
+  return new Set(entries.map((item) => strictFamilyKey(typeof item === "object" ? item.slug || item.name || item.id : item)).filter(Boolean));
+}
+
+function strictAvoidedTeamFamilySets(value = [], fallback = []) {
+  const rawTeams = Array.isArray(value) && value.some((item) => Array.isArray(item))
+    ? value
+    : fallback?.length
+      ? [fallback]
+      : [];
+  return rawTeams
+    .map((team) => strictAvoidedTeamFamilies(team))
+    .filter((families) => families.size);
+}
+
+function strictIsDistinctFromAvoidedTeam(team = [], constraints = {}) {
+  const avoidedTeams = constraints.avoidTeamFamilySets?.length
+    ? constraints.avoidTeamFamilySets
+    : constraints.avoidTeamFamilies?.size
+      ? [constraints.avoidTeamFamilies]
+      : [];
+  // Every previous result must differ by at least two members. Comparing each
+  // team independently avoids the false failures caused by merging histories.
+  return avoidedTeams.every((avoided) => team.filter((member) => avoided.has(strictFamilyKey(member.slug))).length <= 4);
+}
+
+function strictThemeInfo(member = {}, theme = "") {
+  const text = strictText(member);
+  const has = (pattern) => pattern.test(text);
+  // A system exists only when the selected configuration can actually activate or
+  // exploit it. Species names are deliberately excluded: a Pelipper without
+  // Drizzle and Rain Dance is not a rain setter for this build.
+  if (theme === "sun") return { source: has(/drought|sunny-day/), abuser: has(/chlorophyll|solar-power|solar-beam|weather-ball|heat-wave|eruption/) };
+  if (theme === "rain") return { source: has(/drizzle|rain-dance/), abuser: has(/swift-swim|thunder|hurricane|electro-shot|weather-ball|hydro-pump|wave-crash/) };
+  if (theme === "sand") return { source: has(/sand-stream|sandstorm/), abuser: has(/sand-rush|sand-force/) };
+  if (theme === "snow") return { source: has(/snow-warning|snowscape/), abuser: has(/slush-rush|aurora-veil|blizzard/) };
+  if (theme === "trick-room") return { source: has(/trick-room/), abuser: Number(member.speed || 100) <= 65 };
+  if (theme === "tailwind") return { source: has(/tailwind/), abuser: Number(member.speed || 0) >= 70 || has(/choice-scarf|protosynthesis|quark-drive/) };
+  if (theme === "pass-chain") return {
+    source: has(/baton-pass/) && has(/swords-dance|nasty-plot|calm-mind|iron-defense|agility|focus-energy|bulk-up|belly-drum/),
+    abuser: !has(/baton-pass/) && ((member.tags || strictTags(member)).has("wincon") || has(/choice-band|choice-specs|life-orb|priority/)),
+  };
+  return { source: false, abuser: false };
+}
+
+function strictPassReceiverScore(member = {}) {
+  const tags = member.tags || strictTags(member);
+  const text = strictText(member);
+  let score = 0;
+  if (tags.has("wallbreaker")) score += 42;
+  if (tags.has("setup")) score += 26;
+  if (tags.has("priority")) score += 18;
+  if (member.mega) score += 12;
+  if (/choice-band|choice-specs|life-orb|booster-energy/.test(text)) score += 14;
+  if (/fake-out|parting-shot|will-o-wisp|light-screen|reflect/.test(text)) score -= 18;
+  if (tags.has("defensive") && !tags.has("setup")) score -= 8;
+  return score;
+}
+
+function strictPassReceiver(team = [], passer = null) {
+  return team
+    .filter((member) => member !== passer && strictThemeInfo(member, "pass-chain").abuser)
+    .sort((a, b) => strictPassReceiverScore(b) - strictPassReceiverScore(a))[0] || null;
+}
+
+function strictRequirementKey(value = "") {
+  if (typeof value !== "object" || !value) return strictKey(value);
+  return strictKey(value.name || value.slug || value.id || value.move || value.item || value.ability || value.value || "");
+}
+
+function strictRequirementLabel(value = "") {
+  if (typeof value !== "object" || !value) return String(value || "");
+  return String(value.name || value.slug || value.id || value.move || value.item || value.ability || value.value || "未命名要求");
+}
+
+function strictRequirementOwnerKey(value = "") {
+  if (typeof value !== "object" || !value) return "";
+  return strictKey(value.pokemonSlug || value.pokemon || value.memberSlug || value.owner || "");
+}
+
+function strictMemberMatchesRequirement(member = {}, category = "", value = "") {
+  const required = strictRequirementKey(value);
+  if (!required) return false;
+  const owner = strictRequirementOwnerKey(value);
+  if (owner && strictKey(member.slug) !== owner) return false;
+  if (category === "moves") return (member.moves || []).some((move) => strictKey(move) === required);
+  if (category === "items") return strictKey(member.item) === required;
+  if (category === "abilities") return strictKey(member.ability) === required;
+  return false;
+}
+
+function strictGoalExplicitlyForbids(goal = "", candidate = {}) {
+  const compactGoal = String(goal || "").toLowerCase().replace(/\s+/g, "");
+  return [candidate.name, candidate.slug]
+    .filter(Boolean)
+    .map((value) => String(value).toLowerCase().replace(/\s+/g, ""))
+    .some((value) => ["不要", "禁用", "不用"].some((prefix) => compactGoal.includes(`${prefix}${value}`)));
+}
+
+function strictFeedbackPriorities(history = []) {
+  const priorities = new Set();
+  const notes = [];
+  for (const item of Array.isArray(history) ? history : []) {
+    if (item?.eligibleForBuildFeedback === false) continue;
+    const text = [item.feedbackSignals, item.avoid, item.actionTags, item.badOpponents, ...(item.failureReasons || [])].filter(Boolean).join(" ").toLowerCase();
+    if (!text) continue;
+    if (/missing[-\s]?speed|控速|speed[-\s]?control|tailwind|trick[-\s]?room/.test(text)) priorities.add("speed");
+    if (/missing[-\s]?protect|保护|protect|集火/.test(text)) priorities.add("protect");
+    if (/missing[-\s]?(pivot|safe[-\s]?entry)|安全上场|换入|转场|pivot/.test(text)) priorities.add("safe-entry");
+    if (/missing[-\s]?spread|范围招|spread/.test(text)) priorities.add("spread");
+    if ((Number(item.winRate || 100) < 50 || /实战负|loss/.test(text)) && notes.length < 3) notes.push(String(item.avoid || item.feedbackSignals || "实战回放暴露结构压力。"));
+  }
+  return { priorities: [...priorities], notes: [...new Set(notes)] };
+}
+
+function strictGoalConstraints(payload = {}, available = []) {
+  const incoming = payload.goalConstraints || payload.intent?.goalConstraints || {};
+  const goal = String(payload.userGoal || payload.goal || "").toLowerCase();
+  const champion = readChampionDataFile();
+  const knownPokemon = Object.values(champion?.formats || {}).flatMap((format) => format?.pokemon || []);
+  const themes = new Set([...(incoming.themes || [])]);
+  const themePatterns = {
+    sun: /晴天|日照|大晴天|\bsun\b|drought/,
+    rain: /雨天|降雨|求雨|\brain\b|drizzle/,
+    sand: /沙暴|沙队|扬沙|\bsand\b/,
+    snow: /雪天|雪景|降雪|\bsnow\b|hail/,
+    "trick-room": /戏法空间|空间|trick\s*room/,
+    tailwind: /顺风|tailwind/,
+    "pass-chain": /接棒|强化接棒|baton\s*pass|pass\s*chain/,
+  };
+  for (const [theme, pattern] of Object.entries(themePatterns)) if (pattern.test(goal)) themes.add(theme);
+  const inferredMatches = knownPokemon.filter((candidate) => strictGoalMatchesPokemon(goal, candidate));
+  // Prefer a specific form explicitly named in the goal over a shorter base-name
+  // substring (for example, 清洗洛托姆 over 洛托姆).
+  const inferredPokemon = inferredMatches.filter((candidate) => {
+    const ownName = String(candidate.name || "").replace(/[^\u3400-\u9fff]+/g, "");
+    return !inferredMatches.some((other) => {
+      const otherName = String(other.name || "").replace(/[^\u3400-\u9fff]+/g, "");
+      return other !== candidate && otherName.length > ownName.length && otherName.includes(ownName);
+    });
+  });
+  const requiredPokemon = strictUniquePokemonRefs([...(Array.isArray(incoming.requiredPokemon) ? incoming.requiredPokemon : []), ...inferredPokemon]);
+  const availableSpecies = new Set(available.map((candidate) => strictKey(candidate.slug || candidate.id || candidate.name)));
+  const unavailable = strictUniquePokemonRefs([
+    ...(Array.isArray(incoming.unavailablePokemon) ? incoming.unavailablePokemon : []),
+    ...inferredPokemon.filter((candidate) => !availableSpecies.has(strictKey(candidate.slug || candidate.id || candidate.name))),
+  ]);
+  const requiresSetup = /强化队|强化|setups*(team|squad)?|boost(?:ing)?s*(team|squad)?/i.test(goal);
+  const forbidden = [
+    ...available
+      .filter((candidate) => strictGoalExplicitlyForbids(goal, candidate))
+      .map((candidate) => candidate.slug),
+    ...(incoming.forbiddenPokemon || []).map((item) => item.slug || item.name || item.id),
+  ].map(strictKey);
+  const feedback = strictFeedbackPriorities(payload.battleHistory || []);
+  return {
+    themes: [...themes].filter((theme) => STRICT_THEMES.includes(theme)),
+    requiredPokemon,
+    unavailable,
+    forbidden,
+    requiredMoves: Array.isArray(incoming.requiredMoves) ? incoming.requiredMoves : [],
+    requiredItems: Array.isArray(incoming.requiredItems) ? incoming.requiredItems : [],
+    requiredAbilities: Array.isArray(incoming.requiredAbilities) ? incoming.requiredAbilities : [],
+    requiresSetup,
+    aiPreferred: Array.isArray(payload.aiDraft?.pokemon)
+      ? payload.aiDraft.pokemon.map((item) => strictFamilyKey(item?.slug || item?.name || item)).filter(Boolean)
+      : [],
+    aiVariation: String(payload.aiDraft?.variationSeed || payload.variationSeed || ""),
+    avoidTeamFamilies: strictAvoidedTeamFamilies(payload.avoidTeam || payload.avoidPreviousTeam || []),
+    avoidTeamFamilySets: strictAvoidedTeamFamilySets(payload.avoidTeams, payload.avoidTeam || payload.avoidPreviousTeam || []),
+    feedbackPriorities: feedback.priorities,
+    feedbackNotes: feedback.notes,
+  };
+}
+
+function strictShowdownCandidateIsLegal(candidate = {}, format = "single") {
+  const key = [format, candidate.slug, candidate.item, candidate.ability, candidate.nature, candidate.evs, ...(candidate.moves || [])].join("|");
+  if (strictCandidateLegalityCache.has(key)) return strictCandidateLegalityCache.get(key);
+  const species = legalShowdownSpeciesName(candidate.slug || candidate.id || candidate.name, candidate);
+  const item = showdownLegalValue(candidate.item, "", "items");
+  const ability = showdownLegalValue(candidate.ability, "", "abilities");
+  const nature = showdownLegalValue(candidate.nature, "", "natures");
+  const moves = (candidate.moves || []).map((move) => showdownLegalValue(move, "", "moves")).filter(Boolean).slice(0, 4);
+  if (!species || !item || !ability || moves.length < 4) {
+    strictCandidateLegalityCache.set(key, false);
+    return false;
+  }
+  const lines = [`${species} @ ${item}`, `Ability: ${ability}`, "Level: 50"];
+  const evs = championStatPointsFromChampionStats(candidate.evs, "");
+  if (evs) lines.push(`EVs: ${evs}`);
+  if (nature) lines.push(`${nature} Nature`);
+  moves.forEach((move) => lines.push(`- ${move}`));
+  const parsed = Teams.import(lines.join("\n"))[0];
+  const validator = TeamValidator.get(showdownFormatFor(format));
+  const problems = parsed ? (validator.validateSet(parsed) || []) : ["无法解析候选配置。"];
+  const legal = !problems.some((problem) => !/is level 50, but this format allows level 100/i.test(problem));
+  strictCandidateLegalityCache.set(key, legal);
+  return legal;
+}
+
+function strictCandidateGraph(format = "single") {
+  const season = "M-3";
+  const champion = readChampionDataFile();
+  const sourceTeams = readTeamDataFile().filter((team) => team.season === season && team.format === format);
+  const knownPokemon = Object.values(champion?.formats || {}).flatMap((formatData) => formatData?.pokemon || []);
+  const knownByKey = new Map(knownPokemon.map((mon) => [strictKey(mon.slug || mon.id || mon.name), mon]));
+  const availableByKey = new Map((champion?.formats?.[format]?.pokemon || []).map((mon) => [strictKey(mon.slug || mon.id || mon.name), mon]));
+  for (const team of sourceTeams) {
+    for (const config of team.configurations || []) {
+      const key = strictKey(config.slug || config.name || config.id);
+      if (!key || availableByKey.has(key) || !config.item || !config.ability || !Array.isArray(config.moves) || config.moves.length < 4) continue;
+      const known = knownByKey.get(key) || {};
+      // A same-season, same-format complete team is legality evidence even when the usage ranking is truncated.
+      availableByKey.set(key, {
+        ...known,
+        id: known.id || config.id || config.slug,
+        slug: config.slug || known.slug || config.name,
+        name: known.name || config.name || config.slug,
+        sampleVerified: true,
+      });
+    }
+  }
+  const available = [...availableByKey.values()];
+  const bySpecies = new Map();
+  for (const team of sourceTeams) {
+    for (const config of team.configurations || []) {
+      const key = strictKey(config.slug || config.name || config.id);
+      const mon = availableByKey.get(key);
+      if (!mon || !config.item || !config.ability || !Array.isArray(config.moves) || config.moves.length < 4) continue;
+      const candidate = {
+        id: String(mon.id || config.id || config.slug),
+        slug: config.slug || mon.slug,
+        name: mon.name || config.name || config.slug,
+        item: String(config.item),
+        ability: String(config.ability),
+        nature: String(config.nature || ""),
+        evs: String(config.stats || ""),
+        moves: config.moves.slice(0, 4).map(String),
+        speed: Number(mon.stats?.速度 || mon.stats?.speed || strictBaseSpeedFor(config.slug || mon.slug)),
+        rank: Number(mon.rank || 9999),
+        types: strictTypesFor(config.slug || mon.slug),
+        evidence: { teamId: team.id, title: team.title || "M-3 热门样本", source: team.source || "热门队伍", season, format },
+      };
+      candidate.tags = strictTags(candidate, format);
+      candidate.defense = Object.fromEntries(STRICT_ATTACK_TYPES.map((attackType) => [attackType, strictTypeMultiplier(candidate, attackType)]));
+      candidate.mega = strictIsMegaItem(candidate.item);
+      if (!strictShowdownCandidateIsLegal(candidate, format)) continue;
+      const list = bySpecies.get(strictKey(candidate.slug)) || [];
+      const signature = JSON.stringify([candidate.item, candidate.ability, candidate.moves]);
+      if (!list.some((item) => JSON.stringify([item.item, item.ability, item.moves]) === signature)) list.push(candidate);
+      bySpecies.set(strictKey(candidate.slug), list);
+    }
+  }
+  return { season, available, bySpecies, candidates: [...bySpecies.values()].flat() };
+}
+
+function strictMemberScore(member, team = [], format = "single", constraints = {}) {
+  const tags = member.tags || strictTags(member, format);
+  let score = Math.max(0, 160 - Number(member.rank || 9999)) * 0.08;
+  for (const tag of ["wincon", "speed", "safe-entry", "defensive", "pivot", "hazard", "removal", "protect", "spread"]) if (tags.has(tag)) score += 7;
+  if (tags.has("prankster") && tags.has("status")) score += 12;
+  const megaCount = team.filter((own) => own.mega).length;
+  if (member.mega && megaCount === 0) score += 24;
+  if (member.mega && megaCount === 1) score += 3;
+  for (const theme of constraints.themes || []) {
+    const info = strictThemeInfo(member, theme);
+    if (info.source) score += 80;
+    if (info.abuser) score += 38;
+  }
+  for (const move of constraints.requiredMoves || []) if (strictMemberMatchesRequirement(member, "moves", move)) score += 120;
+  for (const item of constraints.requiredItems || []) if (strictMemberMatchesRequirement(member, "items", item)) score += 110;
+  for (const ability of constraints.requiredAbilities || []) if (strictMemberMatchesRequirement(member, "abilities", ability)) score += 100;
+  if (constraints.requiresSetup && tags.has("setup")) score += 56;
+  if (constraints.requiresSetup && (tags.has("protect") || tags.has("safe-entry"))) score += 14;
+  for (const priority of constraints.feedbackPriorities || []) if (tags.has(priority)) score += 20;
+  for (const own of team) {
+    const ownTags = own.tags || strictTags(own, format);
+    const ownTypes = new Set(own.types || strictTypesFor(own.slug));
+    const sharedTypes = (member.types || strictTypesFor(member.slug)).filter((type) => ownTypes.has(type)).length;
+    score -= sharedTypes * 18;
+    if (tags.has("pivot") && (ownTags.has("wincon") || own.mega)) score += 12;
+    if (tags.has("speed") && ownTags.has("wincon")) score += 12;
+    if (tags.has("defensive") && ownTags.has("wallbreaker")) score += 8;
+  }
+  // Make an existing weakness cluster expensive while the beam is still choosing members.
+  // Final validation also checks this, but scoring it here prevents an otherwise popular
+  // weather attacker from pushing every valid switch-in out of the beam.
+  for (const attackType of STRICT_ATTACK_TYPES) {
+    const existingWeak = team.filter((own) => strictDefenseMultiplier(own, attackType) > 1).length;
+    const existingAnswers = team.filter((own) => strictDefenseMultiplier(own, attackType) < 1).length;
+    const multiplier = strictDefenseMultiplier(member, attackType);
+    if (existingWeak + Number(multiplier > 1) >= 2 && existingAnswers + Number(multiplier < 1) === 0) score -= 52;
+    if (multiplier < 1 && existingWeak >= 1) score += 18;
+    if (multiplier === 0 && existingWeak >= 1) score += 8;
+  }
+  // In AI-original mode, a verified AI pick should beat a generic popular filler
+  // when both choices preserve the same structural requirements. Final selection
+  // also compares retained-pick count, so this only helps keep those branches in
+  // the beam long enough to be validated.
+  if ((constraints.aiPreferred || []).includes(strictFamilyKey(member.slug))) score += 108;
+  const repeatedAcrossHistory = (constraints.avoidTeamFamilySets || []).filter((families) => families.has(strictFamilyKey(member.slug))).length;
+  // Hard requirements are locked separately. This small penalty only decides
+  // between otherwise viable fillers, keeping repeated requests exploratory.
+  if (repeatedAcrossHistory) score -= repeatedAcrossHistory * 14;
+  // Variation only resolves near-ties between otherwise suitable candidates; it
+  // must never outweigh a verified system role, defensive answer, or hard core.
+  if (constraints.aiVariation) score += strictVariationScore(member.slug, constraints.aiVariation) * 0.42;
+  return score;
+}
+
+function strictConflictsWithThemes(member = {}, constraints = {}) {
+  const text = strictText(member);
+  const themes = new Set(constraints.themes || []);
+  const weatherThemes = ["rain", "sun", "sand", "snow"];
+  const incompatibleWeatherPayoffs = {
+    rain: /chlorophyll|solar-power|solar-beam|sand-rush|sand-force|slush-rush|aurora-veil/,
+    sun: /swift-swim|thunder|hurricane|electro-shot|sand-rush|sand-force|slush-rush|aurora-veil/,
+    sand: /swift-swim|thunder|hurricane|electro-shot|chlorophyll|solar-power|solar-beam|slush-rush|aurora-veil/,
+    snow: /swift-swim|thunder|hurricane|electro-shot|chlorophyll|solar-power|solar-beam|sand-rush|sand-force/,
+  };
+  if (!weatherThemes.some((theme) => themes.has(theme)) && weatherThemes.some((theme) => {
+    const info = strictThemeInfo(member, theme);
+    return info.source || info.abuser;
+  })) return true;
+  if (!themes.has("trick-room") && /trick-room/.test(text)) return true;
+  if (themes.has("trick-room") && /tailwind/.test(text)) return true;
+  for (const theme of weatherThemes) {
+    if (themes.has(theme) && incompatibleWeatherPayoffs[theme].test(text)) return true;
+  }
+  if (themes.has("rain") && /drought|sunny-day|heat-wave|fire-blast|flare-blitz|eruption|solar-beam|charizardite-y|torkoal|ninetales/.test(text)) return true;
+  if (themes.has("sun") && /drizzle|rain-dance|hydro-pump|muddy-water|wave-crash|waterfall|thunder|hurricane|pelipper|politoed/.test(text)) return true;
+  if (themes.has("sand") && /drizzle|rain-dance|drought|sunny-day|snow-warning|snowscape/.test(text)) return true;
+  if (themes.has("snow") && /drizzle|rain-dance|drought|sunny-day|sand-stream|sandstorm/.test(text)) return true;
+  return false;
+}
+
+function strictTeamValidation(team = [], format = "single", constraints = {}) {
+  const failures = [];
+  const tags = new Set(team.flatMap((member) => [...(member.tags || [])]));
+  const mega = team.filter((member) => member.mega);
+  const typeCounts = new Map();
+  for (const member of team) {
+    for (const type of member.types || strictTypesFor(member.slug)) typeCounts.set(type, (typeCounts.get(type) || 0) + 1);
+  }
+  if (team.length !== 6) failures.push(`只构筑出 ${team.length}/6 个有验证配置的位置。`);
+  if (new Set(team.map((member) => strictFamilyKey(member.slug))).size !== team.length) failures.push("队伍出现同族或形态重复。");
+  if (new Set(team.map((member) => strictKey(member.item))).size !== team.length) failures.push("同一队伍出现重复道具，无法确认其符合当前规则。");
+  if (mega.length > 2) failures.push("Mega 候选超过两个。");
+  for (const [type, count] of typeCounts) if (count > 2) failures.push(`${type} 属性成员达到 ${count} 只，联防与换入点过度重叠。`);
+  for (const attackType of STRICT_ATTACK_TYPES) {
+    const weak = team.filter((member) => strictTypeMultiplier(member, attackType) > 1).length;
+    const answers = team.filter((member) => strictTypeMultiplier(member, attackType) < 1).length;
+    if (weak >= 2 && answers === 0) failures.push(`面对 ${attackType} 打点有 ${weak} 个弱点位，却没有抗性或免疫换入点。`);
+  }
+  for (const required of constraints.requiredPokemon || []) {
+    const key = strictKey(required.slug || required.id || required.name);
+    if (!team.some((member) => strictKey(member.slug) === key)) failures.push(`缺少用户指定核心：${required.name || required.slug || required.id}。`);
+  }
+  for (const forbidden of constraints.forbidden || []) {
+    if (team.some((member) => strictKey(member.slug) === strictKey(forbidden))) failures.push(`队伍包含用户禁止的宝可梦：${forbidden}。`);
+  }
+  for (const move of constraints.requiredMoves || []) {
+    if (!team.some((member) => strictMemberMatchesRequirement(member, "moves", move))) failures.push(`缺少用户指定招式：${strictRequirementLabel(move)}。`);
+  }
+  for (const item of constraints.requiredItems || []) {
+    if (!team.some((member) => strictMemberMatchesRequirement(member, "items", item))) failures.push(`缺少用户指定道具：${strictRequirementLabel(item)}。`);
+  }
+  for (const ability of constraints.requiredAbilities || []) {
+    if (!team.some((member) => strictMemberMatchesRequirement(member, "abilities", ability))) failures.push(`缺少用户指定特性：${strictRequirementLabel(ability)}。`);
+  }
+  for (const theme of constraints.themes || []) {
+    const source = team.some((member) => strictThemeInfo(member, theme).source);
+    const abuser = team.some((member) => {
+      const info = strictThemeInfo(member, theme);
+      return info.abuser && (theme === "tailwind" || !info.source);
+    });
+    if (!source) failures.push(`${theme} 体系没有真实启动者。`);
+    if (!abuser) failures.push(`${theme} 体系没有独立收益位。`);
+  }
+  if ((constraints.themes || []).includes("pass-chain")) {
+    const passer = team.find((member) => strictThemeInfo(member, "pass-chain").source);
+    const receiver = strictPassReceiver(team, passer);
+    const safety = team.find((member) => member !== passer && member !== receiver && ((member.tags || new Set()).has("protect") || (member.tags || new Set()).has("safe-entry")));
+    if (!passer) failures.push("接棒体系缺少同一只实际携带强化招式和接棒的传递者。 ");
+    if (!receiver) failures.push("接棒体系缺少独立的强化接收者。 ");
+    if (!safety) failures.push("接棒体系缺少独立的保护或安全上场成员。 ");
+  }
+  if (constraints.requiresSetup) {
+    const setupMembers = team.filter((member) => (member.tags || new Set()).has("setup"));
+    if (setupMembers.length < 2) failures.push("强化队至少需要两名实际携带强化招式的成员。");
+    if (!team.some((member) => (member.tags || new Set()).has("protect") || (member.tags || new Set()).has("safe-entry"))) failures.push("强化队缺少保护强化回合或安全上场资源。");
+    if (!setupMembers.some((member) => (member.tags || new Set()).has("wincon"))) failures.push("强化队缺少能将强化转化为终盘压力的成员。");
+  }
+  if (format === "single") {
+    if (!tags.has("wincon")) failures.push("缺少明确的突破或终盘胜点。");
+    if (!tags.has("speed")) failures.push("缺少速度控制、高速压制或先制兜底。");
+    if (!tags.has("safe-entry")) failures.push("缺少安全上场、转场或防守中转。");
+    if (!tags.has("hazard") && !tags.has("removal") && !tags.has("status")) failures.push("缺少撒场、清场或状态消耗资源。");
+  } else {
+    if (!tags.has("speed")) failures.push("双打缺少真实控速或速度收益。");
+    if (!tags.has("protect")) failures.push("双打缺少守住、掩护、击掌或广域防守等安全回合资源。");
+    if (!tags.has("wincon")) failures.push("双打缺少明确输出或终盘收割位。");
+  }
+  return { ok: !failures.length, failures, tags, mega };
+}
+
+function strictSynergyReport(team = [], format = "single", constraints = {}) {
+  const links = [];
+  const isPassChain = (constraints.themes || []).includes("pass-chain");
+  const passer = isPassChain ? team.find((member) => strictThemeInfo(member, "pass-chain").source) : null;
+  const receiver = isPassChain ? strictPassReceiver(team, passer) : null;
+  if (passer && receiver) links.push(`${passer.name} 先强化再接棒，把强化交给 ${receiver.name} 完成终盘。`);
+  // Put requested-system links first. Otherwise common pivot text can fill the
+  // short report before it ever explains why a rain, sun, or Trick Room team
+  // works as that system.
+  for (const theme of constraints.themes || []) {
+    if (theme === "pass-chain") continue;
+    const source = strictPreferredThemeSource(team, theme);
+    if (!source) continue;
+    let reported = 0;
+    for (const target of team) {
+      if (target === source || !strictThemeInfo(target, theme).abuser) continue;
+      links.push(`${source.name} 启动${strictThemeLabel(theme)}，由 ${target.name} 吃到体系收益。`);
+      reported += 1;
+      if (reported >= 2) break;
+    }
+  }
+  for (const source of team) {
+    for (const target of team) {
+      if (source === target) continue;
+      const sourceTags = source.tags || new Set();
+      const targetTags = target.tags || new Set();
+      if (sourceTags.has("pivot") && (targetTags.has("wincon") || target.mega)) links.push(`${source.name} 用转场让 ${target.name} 安全上场。`);
+      if (sourceTags.has("speed-control") && targetTags.has("wincon")) links.push(`${source.name} 的控速服务 ${target.name} 的突破或收割。`);
+      if (sourceTags.has("defensive") && targetTags.has("wallbreaker")) links.push(`${source.name} 承接压力，为 ${target.name} 保留进攻回合。`);
+    }
+  }
+  return [...new Set(links)].slice(0, 4);
+}
+
+function strictPreferredThemeSource(team = [], theme = "") {
+  const sourcePattern = {
+    sun: /drought/,
+    rain: /drizzle/,
+    sand: /sand-stream/,
+    snow: /snow-warning/,
+  }[theme];
+  const sources = team.filter((member) => strictThemeInfo(member, theme).source);
+  return sources.find((member) => sourcePattern?.test(strictText(member))) || sources[0] || null;
+}
+
+function strictBuildPlan(team = [], format = "single", constraints = {}) {
+  const isPassChain = (constraints.themes || []).includes("pass-chain");
+  const passer = isPassChain ? team.find((member) => strictThemeInfo(member, "pass-chain").source) : null;
+  const receiver = isPassChain ? strictPassReceiver(team, passer) : null;
+  const activeTheme = (constraints.themes || []).find((theme) => STRICT_THEMES.includes(theme) && theme !== "pass-chain");
+  const systemSetter = activeTheme ? strictPreferredThemeSource(team, activeTheme) : null;
+  const lead = passer || systemSetter || team.find((member) => (member.tags || new Set()).has("hazard") || (member.tags || new Set()).has("speed-control") || (member.tags || new Set()).has("speed")) || team[0];
+  const pivot = team.find((member) => (member.tags || new Set()).has("pivot") || (member.tags || new Set()).has("defensive")) || team[1] || team[0];
+  const closer = receiver || team.find((member) => (member.tags || new Set()).has("wincon")) || team.at(-1);
+  const themes = (constraints.themes || []).map(strictThemeLabel);
+  const themeLine = isPassChain
+    ? passer && receiver
+      ? `${passer.name} 先获得强化回合并用接棒传给 ${receiver.name}，其余成员负责保护传递与清除阻断。`
+      : "接棒体系缺少完整传递链，不能输出为可用队伍。"
+    : constraints.requiresSetup ? "以双强化主轴制造压力，优先保护强化回合，再由强化收益位接管终盘。" : themes.length ? `围绕 ${themes.join(" + ")} 组件抢到启动回合，再让收益位接管节奏。` : "以平衡/半攻轮换推进，不强塞天气或空间轴。";
+  return `${themeLine} 开局优先由 ${lead?.name || "首发位"} 建立节奏；中盘用 ${pivot?.name || "中转位"} 吃伤害或转场，给核心创造进场；终盘交给 ${closer?.name || "终盘位"} 完成收割。`;
+}
+
+function strictFullSampleCandidate(graph, format, constraints = {}) {
+  const configuredTeams = readTeamDataFile().filter((entry) => entry.season === graph.season && entry.format === format && (entry.configurations || []).length >= 6);
+  const requestedWeather = ["rain", "sun", "sand", "snow"].filter((theme) => (constraints.themes || []).includes(theme));
+  const candidateForConfig = (config = {}) => {
+    const variants = graph.bySpecies.get(strictKey(config.slug || config.name || config.id)) || [];
+    return variants.find((member) => strictKey(member.item) === strictKey(config.item) && strictKey(member.ability) === strictKey(config.ability) && JSON.stringify(member.moves.map(strictKey)) === JSON.stringify((config.moves || []).slice(0, 4).map(strictKey))) || null;
+  };
+  const samples = configuredTeams
+    .map((source) => ({ source, team: source.configurations.slice(0, 6).map(candidateForConfig) }))
+    .filter(({ team }) => team.length === 6 && team.every(Boolean))
+    .filter(({ team }) => !team.some((member) => (constraints.forbidden || []).includes(strictKey(member.slug))))
+    .filter(({ team }) => strictIsDistinctFromAvoidedTeam(team, constraints))
+    .filter(({ team }) => team.every((member) => !strictConflictsWithThemes(member, constraints)))
+    .filter(({ team }) => {
+      const validation = strictTeamValidation(team, format, constraints);
+      if (!validation.ok) return false;
+      const activeWeather = requestedWeather.length
+        ? ["rain", "sun", "sand", "snow"].filter((theme) => team.some((member) => strictThemeInfo(member, theme).source))
+        : [];
+      if (requestedWeather.length === 1 && activeWeather.some((theme) => theme !== requestedWeather[0])) return false;
+      const text = team.map(strictText).join(" ");
+      if ((constraints.themes || []).includes("rain") && /chlorophyll|solar-power|solar-beam|sand-rush|sand-force|slush-rush|aurora-veil/.test(text)) return false;
+      if ((constraints.themes || []).includes("sun") && /swift-swim|thunder|hurricane|electro-shot|sand-rush|sand-force|slush-rush|aurora-veil/.test(text)) return false;
+      if ((constraints.themes || []).includes("sand") && /swift-swim|chlorophyll|solar-power|slush-rush|aurora-veil/.test(text)) return false;
+      if ((constraints.themes || []).includes("snow") && /swift-swim|chlorophyll|solar-power|sand-rush|sand-force/.test(text)) return false;
+      if (team.filter((member) => strictThemeInfo(member, "tailwind").source).length > 2) return false;
+      return requestedWeather.every((theme) => team.some((member) => strictThemeInfo(member, theme).source));
+    })
+    .sort((a, b) => Number(b.source.rate || 0) - Number(a.source.rate || 0) || Number(a.source.rank || 9999) - Number(b.source.rank || 9999) || strictVariationScore(String(a.source.id || a.source.title || ""), constraints.aiVariation) - strictVariationScore(String(b.source.id || b.source.title || ""), constraints.aiVariation));
+  return samples[0] || null;
+}
+
+function strictRiskReport(team = [], format = "single", constraints = {}) {
+  const themes = new Set(constraints.themes || []);
+  const risks = [];
+  const named = (member) => member?.name || "核心成员";
+  if (themes.has("pass-chain")) {
+    const passer = team.find((member) => strictThemeInfo(member, "pass-chain").source);
+    const receiver = strictPassReceiver(team, passer);
+    const safety = team.find((member) => member !== passer && member !== receiver && ((member.tags || new Set()).has("protect") || (member.tags || new Set()).has("safe-entry")));
+    risks.push(`优先保护 ${named(passer)} 的强化与接棒回合；面对挑衅、击掌或集火时先用 ${named(safety)} 争取安全回合，再把强化交给 ${named(receiver)}。`);
+  }
+  for (const [theme, label] of [["rain", "雨天"], ["sun", "晴天"], ["sand", "沙暴"], ["snow", "雪天"]]) {
+    if (!themes.has(theme)) continue;
+    const source = strictPreferredThemeSource(team, theme);
+    const abuser = team.find((member) => member !== source && strictThemeInfo(member, theme).abuser);
+    risks.push(`对手抢 ${label} 时，优先保留 ${named(source)} 的启动机会；${named(abuser)} 不要在天气被覆盖前过早换入。`);
+  }
+  if (themes.has("trick-room")) {
+    const setter = team.find((member) => strictThemeInfo(member, "trick-room").source);
+    risks.push(`空间回合优先保护 ${named(setter)} 开出戏法空间；空间结束前预留低速输出位，避免高速成员被迫站场。`);
+  }
+  if (themes.has("tailwind")) {
+    const setter = team.find((member) => strictThemeInfo(member, "tailwind").source);
+    risks.push(`顺风由 ${named(setter)} 开启后再推进主输出；对手有挑衅或反顺风时保留第二条控速或先制收割路线。`);
+  }
+  if (format === "double") risks.push("注意首发集火、守住与范围招的回合交换；不要为了输出让两只核心同时暴露在同一轮压制下。");
+  else risks.push("注意速度线、钉子资源与转场血量；终盘位进场前先完成必要的消耗或清场。");
+  return [...new Set(risks)].slice(0, 3);
+}
+
+function strictBuildResult(team = [], format = "single", graph = {}, constraints = {}, intent = "new-team", current = [], source = null, aiDraft = null, alternatives = []) {
+  const validation = strictTeamValidation(team, format, constraints);
+  const synergies = strictSynergyReport(team, format, constraints);
+  const mega = validation.mega;
+  const isPassChain = (constraints.themes || []).includes("pass-chain");
+  const passer = isPassChain ? team.find((member) => strictThemeInfo(member, "pass-chain").source) : null;
+  const receiver = isPassChain ? strictPassReceiver(team, passer) : null;
+  const safety = isPassChain ? team.find((member) => member !== passer && member !== receiver && ((member.tags || new Set()).has("protect") || (member.tags || new Set()).has("safe-entry"))) : null;
+  return {
+    ok: true,
+    format,
+    season: graph.season,
+    buildMethod: aiDraft?.mode === "engine-guided" ? "engine-guided" : aiDraft ? "ai-designed" : source ? "sample" : "strict",
+    team: team.map((member) => ({
+      id: member.id,
+      slug: member.slug,
+      name: member.name,
+      item: member.item,
+      ability: member.ability,
+      nature: member.nature,
+      evs: member.evs,
+      level: "50",
+      moves: member.moves,
+      role: member === passer ? "强化接棒/首发位" : member === receiver ? "强化接收/终盘位" : member === safety ? "安全回合/保护位" : member.tags.has("speed") ? "控速/节奏位" : member.tags.has("pivot") ? "轮换中转位" : member.tags.has("defensive") ? "联防中转位" : member.tags.has("wincon") ? "突破/终盘位" : "结构补位",
+      note: source
+        ? "来自当前 M-3 同格式完整热门样本。"
+        : aiDraft
+          ? "该成员配置经当前 M-3 同格式样本验证；六人组合不是完整热门队原样复用。"
+          : member.mega
+            ? "Mega 候选；本局只作为已规划的 Mega 资源使用。"
+            : "配置来自当前 M-3 同格式热门样本。",
+      evidence: member.evidence,
+    })),
+    buildReport: {
+      plan: strictBuildPlan(team, format, constraints),
+      synergies,
+      risks: strictRiskReport(team, format, constraints),
+      mega: mega.length ? { primary: mega[0].name, secondary: mega[1]?.name || "", reason: mega.length > 1 ? "两个 Mega 只作为不同对局分支，不可同局同时 Mega。" : "该 Mega 补足当前主轴的突破或终盘能力。" } : { primary: "", secondary: "", reason: "当前验证候选没有能提升主轴且不破坏结构的 Mega，未强塞。" },
+      feedback: (constraints.feedbackPriorities || []).length ? { priorities: constraints.feedbackPriorities, notes: constraints.feedbackNotes || [] } : null,
+      changes: intent === "current-team" ? { kept: current.filter((item) => team.some((member) => strictFamilyKey(member.slug) === strictFamilyKey(item.slug || item.name || item.id))).map((item) => item.name || item.slug), replaced: current.filter((item) => !team.some((member) => strictFamilyKey(member.slug) === strictFamilyKey(item.slug || item.name || item.id))).map((item) => item.name || item.slug) } : null,
+      source: source ? { id: source.id, title: source.title || "完整热门样本", provider: source.source || "热门队伍" } : null,
+      aiDesign: aiDraft ? {
+        proposed: (aiDraft.aiSelected || aiDraft.pokemon || []).map((item) => item.name || item.slug || item).filter(Boolean),
+        engineAdded: (aiDraft.engineAdded || []).map((item) => item.name || item.slug || item).filter(Boolean),
+        retained: team.filter((member) => (aiDraft.aiSelected || aiDraft.pokemon || []).some((item) => strictFamilyKey(item?.slug || item?.name || item) === strictFamilyKey(member.slug))).map((member) => member.name),
+        adjusted: team.filter((member) => !(aiDraft.pokemon || []).some((item) => strictFamilyKey(item?.slug || item?.name || item) === strictFamilyKey(member.slug))).map((member) => member.name),
+        rationale: String(aiDraft.rationale || ""),
+        completionNote: String(aiDraft.completionNote || ""),
+      } : null,
+    },
+    alternatives: alternatives.map((entry, index) => {
+      const alternativeTeam = entry.team || entry;
+      const alternativeValidation = strictTeamValidation(alternativeTeam, format, constraints);
+      const alternativeMega = alternativeValidation.mega;
+      return {
+        id: `strict-variant-${index + 1}`,
+        score: Math.round(Number(entry.score || 0) * 10) / 10,
+        team: alternativeTeam.map((member) => ({
+          id: member.id,
+          slug: member.slug,
+          name: member.name,
+          item: member.item,
+          ability: member.ability,
+          nature: member.nature,
+          evs: member.evs,
+          level: "50",
+          moves: member.moves,
+          role: member.tags.has("speed") ? "控速/节奏位" : member.tags.has("pivot") ? "轮换中转位" : member.tags.has("defensive") ? "联防中转位" : member.tags.has("wincon") ? "突破/终盘位" : "结构补位",
+          note: "该成员配置经当前 M-3 同格式样本验证；六人组合不是完整热门队原样复用。",
+          evidence: member.evidence,
+        })),
+        plan: strictBuildPlan(alternativeTeam, format, constraints),
+        synergies: strictSynergyReport(alternativeTeam, format, constraints),
+        risks: strictRiskReport(alternativeTeam, format, constraints),
+        mega: alternativeMega.length ? { primary: alternativeMega[0].name, secondary: alternativeMega[1]?.name || "", reason: alternativeMega.length > 1 ? "两个 Mega 只作为不同对局分支，不可同局同时 Mega。" : "该 Mega 补足当前主轴的突破或终盘能力。" } : { primary: "", secondary: "", reason: "当前验证候选没有能提升主轴且不破坏结构的 Mega，未强塞。" },
+      };
+    }),
+  };
+}
+
+function strictBuildTeam(payload = {}) {
+  const format = payload.format === "double" ? "double" : "single";
+  const graph = strictCandidateGraph(format);
+  const constraints = strictGoalConstraints(payload, graph.available);
+  const variantsFor = (ref = "", exactOnly = false) => {
+    const exact = graph.bySpecies.get(strictKey(ref));
+    if (exact?.length) return exact;
+    if (exactOnly) return [];
+    return [...graph.bySpecies.entries()].find(([key]) => strictFamilyKey(key) === strictFamilyKey(ref))?.[1] || [];
+  };
+  const diagnostics = [];
+  if (constraints.unavailable.length) diagnostics.push(...constraints.unavailable.map((item) => `${item.name || item.slug || item.id} 不在当前 ${graph.season} ${format} 可用池。`));
+  const current = Array.isArray(payload.currentTeam) ? payload.currentTeam : [];
+  const intent = payload.intent || "new-team";
+  const requiredKeys = new Set(constraints.requiredPokemon.map((item) => strictKey(item.slug || item.name || item.id)));
+  const unavailableKeys = new Set(constraints.unavailable.map((item) => strictKey(item.slug || item.name || item.id)));
+  const forbiddenKeys = new Set((constraints.forbidden || []).map(strictKey));
+  if (intent === "complete-team" || intent === "moveset-only") current.forEach((item) => requiredKeys.add(strictKey(item.slug || item.name || item.id)));
+  for (const key of requiredKeys) if (!unavailableKeys.has(key) && !variantsFor(key, true).length) diagnostics.push(`找不到 ${key} 的当前 ${graph.season} ${format} 验证配置。`);
+  for (const key of requiredKeys) if (forbiddenKeys.has(key)) diagnostics.push(`硬性要求冲突：${key} 同时被指定为核心和禁止项。`);
+  for (const [category, requirements] of [["moves", constraints.requiredMoves], ["items", constraints.requiredItems], ["abilities", constraints.requiredAbilities]]) {
+    for (const requirement of requirements || []) {
+      if (!graph.candidates.some((member) => strictMemberMatchesRequirement(member, category, requirement))) diagnostics.push(`当前 ${graph.season} ${format} 没有可验证的${category === "moves" ? "招式" : category === "items" ? "道具" : "特性"}：${strictRequirementLabel(requirement)}。`);
+    }
+  }
+  if (diagnostics.length) return { ok: false, code: "BUILD_UNSATISFIED", format, diagnostics };
+
+  const locked = [];
+  for (const item of current) {
+    const configured = item?.config || {};
+    const variants = variantsFor(item.slug || item.name || item.id, true);
+    const configuredVariant = variants.find((member) => {
+      const hasItem = configured.item && strictKey(member.item) === strictKey(configured.item);
+      const hasAbility = configured.ability && strictKey(member.ability) === strictKey(configured.ability);
+      const configuredMoves = Array.isArray(configured.moves) ? configured.moves.filter(Boolean).map(strictKey) : [];
+      const hasMoves = configuredMoves.length && configuredMoves.every((move) => member.moves.map(strictKey).includes(move));
+      return (hasItem || hasAbility || hasMoves) && (!configured.item || hasItem) && (!configured.ability || hasAbility) && (!configuredMoves.length || hasMoves);
+    });
+    const fallbackVariant = variants.find((member) => !locked.some((own) => strictKey(own.item) === strictKey(member.item))) || variants[0];
+    if (configuredVariant || fallbackVariant) locked.push(configuredVariant || fallbackVariant);
+  }
+  if ((intent === "complete-team" || intent === "moveset-only") && locked.length !== current.length) return { ok: false, code: "BUILD_UNSATISFIED", format, diagnostics: ["当前队伍中存在没有 M-3 同格式验证配置的成员，锁定模式不能偷偷替换。"] };
+  if (intent === "moveset-only" && locked.length !== 6) return { ok: false, code: "BUILD_UNSATISFIED", format, diagnostics: ["只改配置需要先拥有完整的六只队伍。"] };
+
+  // An engine-guided draft was already selected from a complete, validated
+  // current-format build. Recreate that exact result instead of treating it as
+  // a free-form AI six and accidentally changing its verified configurations.
+  if (payload.aiDraft?.mode === "engine-guided") {
+    const resolved = strictBuildTeam({ ...payload, buildMethod: "strict", forceGenerated: true, variationSeed: payload.aiDraft.variationSeed, aiDraft: undefined });
+    if (!resolved.ok) return resolved;
+    resolved.buildMethod = "engine-guided";
+    resolved.buildReport.aiDesign = {
+      proposed: (payload.aiDraft.aiSelected || []).map((item) => item.name || item.slug || item).filter(Boolean),
+      engineAdded: (payload.aiDraft.engineAdded || payload.aiDraft.pokemon || []).map((item) => item.name || item.slug || item).filter(Boolean),
+      retained: [],
+      adjusted: resolved.team.map((member) => member.name),
+      rationale: String(payload.aiDraft.rationale || ""),
+      completionNote: String(payload.aiDraft.completionNote || ""),
+    };
+    return resolved;
+  }
+
+  const aiDesigned = payload.buildMethod === "ai-designed" && constraints.aiPreferred.length > 0;
+  const evolutionMode = payload.buildMethod === "evolution" || payload.evolution === true;
+  const shouldPreferFullSample = !payload.forceGenerated && !evolutionMode && !aiDesigned && !constraints.feedbackPriorities?.length && ((constraints.themes || []).length || (constraints.requiredPokemon || []).length);
+  const fullSample = shouldPreferFullSample ? strictFullSampleCandidate(graph, format, constraints) : null;
+  if (fullSample) return strictBuildResult(fullSample.team, format, graph, constraints, intent, current, fullSample.source);
+
+  const rankedPool = graph.candidates
+    .filter((member) => !constraints.forbidden.includes(strictKey(member.slug)) && (!strictConflictsWithThemes(member, constraints) || requiredKeys.has(strictKey(member.slug))))
+    .sort((a, b) => strictMemberScore(b, locked, format, constraints) - strictMemberScore(a, locked, format, constraints));
+  const variantsBySpecies = new Map();
+  for (const member of rankedPool) {
+    const key = strictFamilyKey(member.slug);
+    const variants = variantsBySpecies.get(key) || [];
+    if (variants.length < 2) variants.push(member);
+    variantsBySpecies.set(key, variants);
+  }
+  const primaryPool = [...variantsBySpecies.values()].flat().slice(0, aiDesigned ? 240 : 120);
+  // Keep at least one verified resist / immunity answer for every attacking type in
+  // the beam. Theme scoring otherwise crowds out the exact switch-in required to
+  // close a shared weakness (notably Rock against common sun cores).
+  const coveragePool = STRICT_ATTACK_TYPES
+    .map((attackType) => rankedPool.find((member) => strictDefenseMultiplier(member, attackType) < 1))
+    .filter(Boolean);
+  const pool = [...new Map([...primaryPool, ...coveragePool].map((member) => [`${member.slug}:${member.item}:${member.ability}:${member.moves.join(",")}`, member])).values()];
+  const seeds = [];
+  const megaLimit = /双\s*mega|two\s*mega|两个\s*mega/i.test(String(payload.userGoal || "")) ? 2 : 1;
+  const addUnique = (team, member) => {
+    if (!member || forbiddenKeys.has(strictKey(member.slug)) || team.some((own) => strictFamilyKey(own.slug) === strictFamilyKey(member.slug)) || team.some((own) => strictKey(own.item) === strictKey(member.item)) || (member.mega && team.filter((own) => own.mega).length >= megaLimit)) return null;
+    const memberTypes = member.types?.length ? member.types : strictTypesFor(member.slug);
+    if (memberTypes.some((type) => team.filter((own) => (own.types?.length ? own.types : strictTypesFor(own.slug)).includes(type)).length >= 2)) return null;
+    if (constraints.requiresSetup && (member.tags || new Set()).has("setup") && team.filter((own) => (own.tags || new Set()).has("setup")).length >= 2 && !requiredKeys.has(strictKey(member.slug))) return null;
+    for (const theme of constraints.themes || []) {
+      const limit = theme === "trick-room" ? 2 : 1;
+      if (strictThemeInfo(member, theme).source && team.filter((own) => strictThemeInfo(own, theme).source).length >= limit) return null;
+    }
+    return [...team, member];
+  };
+  if (aiDesigned) {
+    const preferred = [...new Set(constraints.aiPreferred || [])];
+    if (preferred.length !== 6) return { ok: false, code: "BUILD_UNSATISFIED", format, diagnostics: ["AI 原创草案必须先给出六名不重复的当前格式成员；严格引擎不会再用热门成员补位。"] };
+    let draftTeams = [[]];
+    for (const family of preferred) {
+      const variants = rankedPool.filter((member) => strictFamilyKey(member.slug) === family).slice(0, 8);
+      const expanded = [];
+      for (const team of draftTeams) {
+        for (const member of variants) {
+          const next = addUnique(team, member);
+          if (next) expanded.push(next);
+        }
+      }
+      draftTeams = expanded
+        .sort((a, b) => b.reduce((sum, member) => sum + strictMemberScore(member, b.filter((item) => item !== member), format, constraints), 0) - a.reduce((sum, member) => sum + strictMemberScore(member, a.filter((item) => item !== member), format, constraints), 0))
+        .slice(0, 96);
+      if (!draftTeams.length) break;
+    }
+    const direct = draftTeams
+      .filter((team) => team.length === 6)
+      .map((team) => ({ team, validation: strictTeamValidation(team, format, constraints), score: team.reduce((sum, member) => sum + strictMemberScore(member, team.filter((item) => item !== member), format, constraints), 0) }))
+      .sort((a, b) => Number(b.validation.ok) - Number(a.validation.ok) || b.score - a.score);
+    const selectedDraft = direct.find((entry) => entry.validation.ok && strictIsDistinctFromAvoidedTeam(entry.team, constraints) && strictSynergyReport(entry.team, format, constraints).length >= 2);
+    if (!selectedDraft) {
+      const best = direct[0];
+      return {
+        ok: false,
+        code: "BUILD_UNSATISFIED",
+        format,
+        diagnostics: [
+          ...(best?.validation.failures || ["AI 选择的成员无法组成当前格式的有效六人队。"]),
+          "AI 原创模式不会静默替换这些成员；请让模型按诊断重选职责槽位。",
+        ],
+      };
+    }
+    return strictBuildResult(selectedDraft.team, format, graph, constraints, intent, current, null, payload.aiDraft);
+  }
+  let initial = [];
+  if (intent === "complete-team" || intent === "moveset-only") initial = locked;
+  else {
+    for (const key of requiredKeys) {
+      const requiredVariant = variantsFor(key, true)
+        .slice()
+        .sort((a, b) => strictMemberScore(b, initial, format, constraints) - strictMemberScore(a, initial, format, constraints))[0];
+      initial = addUnique(initial, requiredVariant) || initial;
+    }
+    for (const member of locked) {
+      const next = addUnique(initial, member);
+      if (next) initial = next;
+    }
+    for (const theme of constraints.themes || []) {
+      const source = rankedPool.find((member) => strictThemeInfo(member, theme).source && addUnique(initial, member));
+      const withSource = addUnique(initial, source);
+      if (withSource) initial = withSource;
+      const abuser = theme === "pass-chain"
+        ? rankedPool
+          .filter((member) => strictThemeInfo(member, theme).abuser && !strictThemeInfo(member, theme).source && addUnique(initial, member))
+          .sort((a, b) => strictPassReceiverScore(b) - strictPassReceiverScore(a))[0]
+        : rankedPool.find((member) => strictThemeInfo(member, theme).abuser && !strictThemeInfo(member, theme).source && addUnique(initial, member));
+      const withAbuser = addUnique(initial, abuser);
+      if (withAbuser) initial = withAbuser;
+    }
+    for (const [category, requirements] of [["moves", constraints.requiredMoves], ["items", constraints.requiredItems], ["abilities", constraints.requiredAbilities]]) {
+      for (const requirement of requirements || []) {
+        if (initial.some((member) => strictMemberMatchesRequirement(member, category, requirement))) continue;
+        const candidate = rankedPool.find((member) => strictMemberMatchesRequirement(member, category, requirement) && addUnique(initial, member));
+        const next = addUnique(initial, candidate);
+        if (next) initial = next;
+      }
+    }
+    if (constraints.requiresSetup) {
+      while (initial.filter((member) => (member.tags || new Set()).has("setup")).length < 2) {
+        const setupMember = rankedPool.find((member) => (member.tags || new Set()).has("setup") && addUnique(initial, member));
+        const next = addUnique(initial, setupMember);
+        if (!next) break;
+        initial = next;
+      }
+    }
+    // Lock in answers for any weakness already doubled by a required core or a
+    // required system pair before general-purpose popularity scoring fills slots.
+    while (initial.length < 6) {
+      const uncovered = STRICT_ATTACK_TYPES.filter((attackType) =>
+        initial.filter((member) => strictDefenseMultiplier(member, attackType) > 1).length >= 2
+        && !initial.some((member) => strictDefenseMultiplier(member, attackType) < 1)
+      );
+      if (!uncovered.length) break;
+      const answer = rankedPool
+        .filter((member) => addUnique(initial, member))
+        .sort((a, b) => {
+          const aCoverage = uncovered.filter((attackType) => strictDefenseMultiplier(a, attackType) < 1).length;
+          const bCoverage = uncovered.filter((attackType) => strictDefenseMultiplier(b, attackType) < 1).length;
+          return bCoverage - aCoverage || strictMemberScore(b, initial, format, constraints) - strictMemberScore(a, initial, format, constraints);
+        })[0];
+      const next = addUnique(initial, answer);
+      if (!next) break;
+      initial = next;
+    }
+  }
+  seeds.push(initial);
+  let beam = seeds;
+  while (beam.length && beam[0].length < 6) {
+    const expanded = [];
+    for (const team of beam) {
+      for (const member of pool) {
+        const next = addUnique(team, member);
+        if (!next) continue;
+        expanded.push(next);
+      }
+    }
+    const seen = new Set();
+    beam = expanded
+      .sort((a, b) => b.reduce((sum, member) => sum + strictMemberScore(member, b.filter((item) => item !== member), format, constraints), 0) - a.reduce((sum, member) => sum + strictMemberScore(member, a.filter((item) => item !== member), format, constraints), 0))
+      .filter((team) => {
+        const key = team.map((member) => `${member.slug}:${member.item}`).sort().join("|");
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .slice(0, 80);
+  }
+  const complete = beam.filter((team) => team.length === 6);
+  const aiRetainedCount = (team = []) => {
+    if (!aiDesigned) return 0;
+    const families = new Set(constraints.aiPreferred || []);
+    return team.filter((member) => families.has(strictFamilyKey(member.slug))).length;
+  };
+  const ranked = complete
+    .map((team) => ({
+      team,
+      validation: strictTeamValidation(team, format, constraints),
+      retained: aiRetainedCount(team),
+      score: team.reduce((sum, member) => sum + strictMemberScore(member, team.filter((item) => item !== member), format, constraints), 0),
+    }))
+    .sort((a, b) => Number(b.validation.ok) - Number(a.validation.ok) || b.retained - a.retained || b.score - a.score);
+  const scoreEvolutionTeam = (team) => team.reduce((sum, member) => sum + strictMemberScore(member, team.filter((item) => item !== member), format, constraints), 0);
+  const evolutionSeed = String(payload.variationSeed || constraints.aiVariation || "evolution-default");
+  const teamKey = (team) => team.map((member) => `${strictFamilyKey(member.slug)}:${strictKey(member.item)}`).sort().join("|");
+  const sharedFamilies = (first = [], second = []) => {
+    const families = new Set(first.map((member) => strictFamilyKey(member.slug)));
+    return second.filter((member) => families.has(strictFamilyKey(member.slug))).length;
+  };
+  const selectDiversePopulation = (entries = [], limit = 24, maxShared = 3) => {
+    const selectedPopulation = [];
+    const unique = new Set();
+    for (const entry of entries) {
+      const key = teamKey(entry.team);
+      if (unique.has(key)) continue;
+      unique.add(key);
+      if (selectedPopulation.every((other) => sharedFamilies(other.team, entry.team) <= maxShared)) selectedPopulation.push(entry);
+      if (selectedPopulation.length >= limit) return selectedPopulation;
+    }
+    for (const entry of entries) {
+      const key = teamKey(entry.team);
+      if (selectedPopulation.some((other) => teamKey(other.team) === key)) continue;
+      selectedPopulation.push(entry);
+      if (selectedPopulation.length >= limit) break;
+    }
+    return selectedPopulation;
+  };
+  let finalRanked = ranked;
+  let evolutionStats = null;
+  if (evolutionMode) {
+    const valid = ranked.filter((entry) => entry.validation.ok && strictIsDistinctFromAvoidedTeam(entry.team, constraints) && strictSynergyReport(entry.team, format, constraints).length >= 2);
+    let population = valid.slice(0, 24);
+    const generations = 4;
+    const makeChild = (genes = [], salt = "") => {
+      let child = [];
+      const addGene = (member) => {
+        const next = addUnique(child, member);
+        if (next) child = next;
+      };
+      genes.forEach(addGene);
+      for (const key of requiredKeys) addGene(rankedPool.find((member) => strictKey(member.slug) === key));
+      for (const theme of constraints.themes || []) {
+        if (!child.some((member) => strictThemeInfo(member, theme).source)) addGene(rankedPool.find((member) => strictThemeInfo(member, theme).source && addUnique(child, member)));
+        if (!child.some((member) => {
+          const info = strictThemeInfo(member, theme);
+          return info.abuser && (theme === "tailwind" || !info.source);
+        })) addGene(rankedPool.find((member) => {
+          const info = strictThemeInfo(member, theme);
+          return info.abuser && (theme === "tailwind" || !info.source) && addUnique(child, member);
+        }));
+      }
+      for (const [category, requirements] of [["moves", constraints.requiredMoves], ["items", constraints.requiredItems], ["abilities", constraints.requiredAbilities]]) {
+        for (const requirement of requirements || []) {
+          if (!child.some((member) => strictMemberMatchesRequirement(member, category, requirement))) addGene(rankedPool.find((member) => strictMemberMatchesRequirement(member, category, requirement) && addUnique(child, member)));
+        }
+      }
+      const orderedPool = [...pool].sort((a, b) => strictVariationScore(`${a.slug}:${salt}`, evolutionSeed) - strictVariationScore(`${b.slug}:${salt}`, evolutionSeed));
+      for (const member of orderedPool) {
+        if (child.length >= 6) break;
+        addGene(member);
+      }
+      const validation = strictTeamValidation(child, format, constraints);
+      if (child.length !== 6 || !validation.ok || !strictIsDistinctFromAvoidedTeam(child, constraints) || strictSynergyReport(child, format, constraints).length < 2) return null;
+      return { team: child, validation, retained: aiRetainedCount(child), score: scoreEvolutionTeam(child) };
+    };
+    for (let generation = 0; generation < generations && population.length; generation += 1) {
+      const elites = selectDiversePopulation(population, Math.min(10, population.length), 3);
+      const offspring = [];
+      for (let index = 0; index < 36; index += 1) {
+        const first = elites[index % elites.length]?.team || [];
+        const distantParents = elites.filter((entry) => sharedFamilies(first, entry.team) <= 3);
+        const second = (distantParents[(index * 5 + generation + 1) % Math.max(1, distantParents.length)] || elites[(index * 5 + generation + 1) % elites.length])?.team || [];
+        const crossover = first.filter((_, gene) => (gene + index + generation) % 2 === 0).concat(second.filter((_, gene) => (gene + index + generation) % 2 === 1));
+        const child = makeChild(crossover, `crossover-${generation}-${index}`);
+        if (child) offspring.push(child);
+        const mutable = first.filter((member) => !requiredKeys.has(strictKey(member.slug)));
+        if (mutable.length) {
+          const mutationCount = Math.min(mutable.length, 1 + (strictVariationScore(`count:${generation}:${index}`, evolutionSeed) % 2));
+          const mutationGenes = [...first];
+          for (let mutation = 0; mutation < mutationCount; mutation += 1) {
+            const mutationIndex = strictVariationScore(`${generation}:${index}:${mutation}`, evolutionSeed) % mutable.length;
+            const member = mutable[mutationIndex];
+            const position = mutationGenes.indexOf(member);
+            if (position >= 0) mutationGenes.splice(position, 1);
+          }
+          const mutant = makeChild(mutationGenes, `mutation-${generation}-${index}`);
+          if (mutant) offspring.push(mutant);
+        }
+      }
+      population = selectDiversePopulation([...elites, ...offspring].sort((a, b) => b.score - a.score), 24, 3);
+    }
+    finalRanked = population.sort((a, b) => b.score - a.score);
+    evolutionStats = { generations, population: population.length, method: "selection-crossover-mutation" };
+  }
+  const selected = finalRanked.find((entry) => entry.validation.ok && strictIsDistinctFromAvoidedTeam(entry.team, constraints));
+  if (!selected) {
+    const best = finalRanked[0];
+    const retryReason = constraints.avoidTeamFamilies?.size ? "当前硬性要求下无法替换至少两名成员，系统没有把上一支队伍原样重发。" : "系统没有用不相关热门宝可梦填空。";
+    return { ok: false, code: "BUILD_UNSATISFIED", format, diagnostics: [...(best?.validation.failures || ["当前验证配置无法组成完整六人队。"]), retryReason] };
+  }
+  const synergies = strictSynergyReport(selected.team, format, constraints);
+  if (synergies.length < 2) return { ok: false, code: "BUILD_UNSATISFIED", format, diagnostics: ["当前验证配置无法形成至少两条可追溯的队友联动，因此未输出硬凑阵容。"] };
+  const alternativeEntries = [];
+  for (const entry of finalRanked) {
+    if (!entry.validation.ok || !strictIsDistinctFromAvoidedTeam(entry.team, constraints) || strictSynergyReport(entry.team, format, constraints).length < 2) continue;
+    const families = new Set(entry.team.map((member) => strictFamilyKey(member.slug)));
+    const maxShared = evolutionMode ? 3 : 4;
+    if (alternativeEntries.some((other) => other.team.filter((member) => families.has(strictFamilyKey(member.slug))).length > maxShared)) continue;
+    alternativeEntries.push(entry);
+    if (alternativeEntries.length >= 5) break;
+  }
+  if (!alternativeEntries.length) alternativeEntries.push(selected);
+  const result = strictBuildResult(selected.team, format, graph, constraints, intent, current, null, aiDesigned ? payload.aiDraft : null, alternativeEntries);
+  if (evolutionStats) {
+    result.buildMethod = "evolution";
+    result.buildReport.evolution = evolutionStats;
+  }
+  return result;
+}
+
+async function handleStrictTeamBuild(req, res) {
+  const payload = await readJson(req).catch(() => ({}));
+  const engineGuided = payload.buildMethod === "engine-guided";
+  let result = strictBuildTeam(engineGuided
+    ? { ...payload, buildMethod: "strict", forceGenerated: true, aiDraft: undefined }
+    : payload);
+  if (engineGuided && !result.ok) {
+    // Last-resort availability path: an explicit same-format complete sample
+    // is better than leaving a valid user request on an error screen.
+    result = strictBuildTeam({ ...payload, buildMethod: "sample", forceGenerated: false, aiDraft: undefined });
+    if (result.ok) result.buildReport.emergencySampleFallback = true;
+  }
+  if (engineGuided && result.ok) {
+    result.buildMethod = "engine-guided";
+    result.buildReport.aiDesign = {
+      proposed: [],
+      engineAdded: result.team.map((member) => member.name),
+      retained: [],
+      adjusted: result.team.map((member) => member.name),
+      rationale: "AI 服务没有给出可用六人草案，已按同一目标直接生成严格可用队伍。",
+      completionNote: result.buildReport.emergencySampleFallback
+        ? "原创严格搜索未找到完整闭环，已使用同一 M-3 目标格式的完整样本作为最后兜底。"
+        : "这是本地 M-3 目标格式候选池的原创严格构筑，不是完整热门样本复用。",
+    };
+  }
+  sendJson(res, result.ok ? 200 : 422, result);
+}
+
 async function readBattleHistoryFile() {
   try {
     const data = JSON.parse(await readFile(BATTLE_HISTORY_PATH, "utf8"));
@@ -755,6 +1914,16 @@ async function handleBattleHistory(req, res) {
     return;
   }
   const body = await readJson(req).catch(() => ({}));
+  if (req.method === "DELETE") {
+    const id = String(body.id || "").trim();
+    if (!id) {
+      sendJson(res, 400, { ok: false, error: "缺少要删除的对局记录。" });
+      return;
+    }
+    const items = await writeBattleHistoryFile((await readBattleHistoryFile()).filter((item) => item.id !== id));
+    sendJson(res, 200, { ok: true, items });
+    return;
+  }
   const incoming = Array.isArray(body.items) ? body.items : body.entry ? [body.entry] : [];
   const existing = await readBattleHistoryFile();
   const merged = [];
@@ -770,14 +1939,289 @@ async function handleBattleHistory(req, res) {
   sendJson(res, 200, { ok: true, items });
 }
 
-function battleFormatFor(format = "single", custom = false) {
-  const value = String(format || "").toLowerCase();
-  if (!custom) return showdownFormatFor(format);
-  return value.includes("double") || value.includes("vgc") ? "gen9doublescustomgame" : "gen9customgame";
+function showdownReplayLogUrl(value = "") {
+  try {
+    const url = new URL(String(value || "").trim());
+    if (url.protocol !== "https:" || url.hostname !== "replay.pokemonshowdown.com") return null;
+    const match = url.pathname.match(/^\/([a-z0-9-]+?)(?:\.log)?\/?$/i);
+    if (!match) return null;
+    return { id: match[1], url: `https://replay.pokemonshowdown.com/${match[1]}`, logUrl: `https://replay.pokemonshowdown.com/${match[1]}.log` };
+  } catch {
+    return null;
+  }
+}
+
+function replayMatchesRulesEngine(tier = "", rulesEngine = {}) {
+  const text = String(tier || "").toLowerCase();
+  if (rulesEngine.id === CHAMPIONS_FORMAT_IDS.double) return /champions.*vgc\s*2026\s*reg\s*m-b/.test(text);
+  if (rulesEngine.id === CHAMPIONS_FORMAT_IDS.single) return /champions.*bss\s*reg\s*m-b/.test(text);
+  return false;
+}
+
+function parseShowdownReplayLog(log = "", playerName = "", playerSide = "") {
+  const players = {};
+  const moves = { p1: [], p2: [] };
+  const switches = { p1: 0, p2: 0 };
+  const faints = { p1: 0, p2: 0 };
+  const trace = [];
+  let tier = "";
+  let winner = "";
+  let turns = 0;
+  for (const rawLine of String(log || "").split(/\r?\n/)) {
+    const parts = rawLine.split("|");
+    const type = parts[1] || "";
+    if (type === "tier") tier = parts[2] || "";
+    if (type === "player") players[parts[2]] = parts[3] || parts[2];
+    if (type === "turn") turns = Math.max(turns, Number(parts[2] || 0));
+    if (type === "move") {
+      const side = (parts[2] || "").slice(0, 2);
+      if (moves[side]) moves[side].push(parts[3] || "未知招式");
+    }
+    if (type === "switch" || type === "drag") {
+      const side = (parts[2] || "").slice(0, 2);
+      if (switches[side] !== undefined) switches[side] += 1;
+    }
+    if (type === "faint") {
+      const side = (parts[2] || "").slice(0, 2);
+      if (faints[side] !== undefined) faints[side] += 1;
+    }
+    if (type === "win") winner = parts[2] || "";
+    if (trace.length < 90 && ["turn", "move", "switch", "drag", "faint", "win", "tie"].includes(type)) trace.push(rawLine.replace(/^\|/, ""));
+  }
+  const normalizedPlayer = String(playerName || "").trim().toLowerCase();
+  const selectedSide = /^(p1|p2)$/i.test(String(playerSide || "")) ? String(playerSide).toLowerCase() : "";
+  const candidateSide = selectedSide || (normalizedPlayer
+    ? Object.entries(players).find(([, name]) => String(name).trim().toLowerCase() === normalizedPlayer)?.[0] || ""
+    : "");
+  const winnerSide = Object.entries(players).find(([, name]) => String(name) === winner)?.[0] || "";
+  const result = winner ? (candidateSide ? (winnerSide === candidateSide ? "win" : "loss") : "recorded") : "tie";
+  return { tier, players, moves, switches, faints, turns, winner, winnerSide, candidateSide, result, trace };
+}
+
+async function handleShowdownReplay(req, res) {
+  const body = await readJson(req).catch(() => ({}));
+  const rulesEngine = championsRulesEngine(body.format === "double" ? "double" : "single");
+  if (!rulesEngine.ok) {
+    sendJson(res, 503, { ok: false, code: "EXACT_RULES_UNAVAILABLE", error: rulesEngine.error, rulesEngine });
+    return;
+  }
+  const replay = showdownReplayLogUrl(body.url);
+  if (!replay) {
+    sendJson(res, 400, { ok: false, error: "只支持 replay.pokemonshowdown.com 的公开回放链接。" });
+    return;
+  }
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    const response = await fetch(replay.logUrl, { signal: controller.signal, headers: { accept: "text/plain" } }).finally(() => clearTimeout(timeout));
+    if (!response.ok) {
+      sendJson(res, response.status === 404 ? 404 : 502, { ok: false, error: response.status === 404 ? "找不到这条公开回放，请确认链接完整且未被删除。" : `回放服务返回 ${response.status}。` });
+      return;
+    }
+    const report = parseShowdownReplayLog(await response.text(), body.playerName || "", body.playerSide || "");
+    const formatMatches = replayMatchesRulesEngine(report.tier, rulesEngine);
+    const opponentSide = report.candidateSide === "p1" ? "p2" : report.candidateSide === "p2" ? "p1" : "";
+    const opponent = opponentSide ? report.players[opponentSide] || "对手" : "对手";
+    const failureReasons = [];
+    if (!formatMatches) failureReasons.push(`回放赛制为 ${report.tier || "未识别"}，不是 ${rulesEngine.name}；已保存供查看，但不会用于当前构筑反馈。`);
+    if (!report.candidateSide) failureReasons.push("未填写或未匹配你的 Showdown 用户名，无法判断胜负归属；仍已保存回放摘要。");
+    if (report.result === "loss" && report.candidateSide) failureReasons.push(`实战负于 ${opponent}；优先复盘第 ${report.turns || "?"} 回合前后的换人、控速与终盘资源。`);
+    const ownMoves = report.candidateSide ? report.moves[report.candidateSide] || [] : [];
+    const feedbackSignals = [];
+    if (report.result === "loss" && rulesEngine.gameType === "doubles") {
+      if (!ownMoves.some((move) => /tailwind|trick room|icy wind|electroweb|thunder wave|glare/i.test(move))) feedbackSignals.push("missing-speed-control");
+      if (!ownMoves.some((move) => /protect|detect|spiky shield|king's shield|wide guard/i.test(move))) feedbackSignals.push("missing-protect");
+      if (Number(report.switches[report.candidateSide] || 0) < 1) feedbackSignals.push("missing-safe-entry");
+    }
+    const entry = {
+      id: `showdown-replay-${replay.id}`,
+      key: `showdown-replay:${replay.id}`,
+      contextKey: String(body.contextKey || ""),
+      type: "public-showdown-replay",
+      sourceUrl: replay.url,
+      format: body.format === "double" ? "double" : "single",
+      sourceFormat: report.tier,
+      rulesEngine,
+      eligibleForBuildFeedback: formatMatches && Boolean(report.candidateSide),
+      buildIntent: String(body.buildIntent || ""),
+      userGoal: String(body.userGoal || ""),
+      teamSignature: String(body.teamSignature || ""),
+      wins: report.result === "win" ? 1 : 0,
+      losses: report.result === "loss" ? 1 : 0,
+      ties: report.result === "tie" ? 1 : 0,
+      games: 1,
+      winRate: report.result === "win" ? 100 : report.result === "loss" ? 0 : 50,
+      feedbackSignals,
+      failureReasons,
+      badOpponents: report.result === "win" ? [] : [{ title: opponent, result: report.result, turns: report.turns, reasons: failureReasons }],
+      results: [{
+        id: `showdown-replay-${replay.id}-1`,
+        title: opponent,
+        result: report.result,
+        turns: report.turns,
+        winner: report.winner,
+        trace: report.trace,
+        actions: {
+          moves: Object.values(report.moves).reduce((sum, value) => sum + value.length, 0),
+          switches: Object.values(report.switches).reduce((sum, value) => sum + value, 0),
+          teamPreview: 1,
+          tags: { publicReplay: 1, ...(formatMatches ? { exactFormat: 1 } : {}) },
+        },
+        failureReasons,
+      }],
+      updatedAt: new Date().toISOString(),
+    };
+    const existing = await readBattleHistoryFile();
+    const items = await writeBattleHistoryFile([entry, ...existing.filter((item) => item.id !== entry.id)]);
+    sendJson(res, 200, { ok: true, entry, items, replay: { ...replay, ...report, formatMatches, rulesEngine } });
+  } catch (err) {
+    sendJson(res, 502, { ok: false, error: err.name === "AbortError" ? "获取公开回放超时，请稍后再试。" : `读取公开回放失败：${err.message || "网络错误。"}` });
+  }
+}
+
+function championStatPointsFromChampionStats(value = "", fallback = "") {
+  const text = String(value || "").trim();
+  const aliases = { h: "HP", a: "Atk", b: "Def", c: "SpA", d: "SpD", s: "Spe" };
+  const entries = [...text.matchAll(/(?:^|[\s/,])([habcds])\s*(\d{1,3})(?=$|[\s/,])/gi)]
+    .map((match) => ({ key: String(match[1] || "").toLowerCase(), value: Number(match[2] || 0) }))
+    .filter((entry) => aliases[entry.key] && entry.value > 0);
+  if (!entries.length) return text || String(fallback || "");
+  return entries.map((entry) => `${entry.value} ${aliases[entry.key]}`).join(" / ");
+}
+
+function normalizeChampionShowdownText(text = "") {
+  return String(text || "").replace(/^(\s*EVs:\s*)([^\r\n]+)$/gim, (_, prefix, raw) => `${prefix}${championStatPointsFromChampionStats(raw, "")}`);
+}
+
+function pruneShowdownImportBridge() {
+  const now = Date.now();
+  for (const [token, item] of showdownImportBridge) if (Number(item.expiresAt || 0) <= now) showdownImportBridge.delete(token);
+}
+
+async function localShowdownBrowserExecutable() {
+  const candidates = [
+    process.env.CHROME_PATH,
+    "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    try {
+      if ((await stat(candidate)).isFile()) return candidate;
+    } catch {
+      // Try the next known local browser path.
+    }
+  }
+  return "";
+}
+
+async function launchShowdownBridgeBrowser(token = "") {
+  const item = showdownImportBridge.get(token);
+  if (!item) return { ok: false, status: 404, error: "导入令牌不存在或已过期。请回 Champion Lab 再点一次一键导入。" };
+  const executable = await localShowdownBrowserExecutable();
+  if (!executable) return { ok: false, status: 503, error: "未找到可用于桥接的 Chrome 或 Edge 浏览器。" };
+  try {
+    const { chromium } = await import("playwright");
+    await mkdir(SHOWDOWN_BRIDGE_PROFILE_PATH, { recursive: true });
+    if (!showdownBridgeContext || !showdownBridgeContext.pages) {
+      showdownBridgeContext = await chromium.launchPersistentContext(SHOWDOWN_BRIDGE_PROFILE_PATH, {
+        headless: false,
+        executablePath: executable,
+        args: ["--no-first-run", "--no-default-browser-check"],
+      });
+      showdownBridgeContext.on("close", () => {
+        showdownBridgeContext = null;
+        showdownBridgePage = null;
+      });
+    }
+    showdownBridgePage = showdownBridgePage && !showdownBridgePage.isClosed()
+      ? showdownBridgePage
+      : showdownBridgeContext.pages().find((page) => /pokemonshowdown\.com/.test(page.url())) || await showdownBridgeContext.newPage();
+    await showdownBridgePage.goto("https://play.pokemonshowdown.com/", { waitUntil: "domcontentloaded", timeout: 60000 });
+    const imported = await showdownBridgePage.evaluate(async (payload) => {
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const modernTeams = window.PS?.teams;
+        if (modernTeams?.unshift && modernTeams?.save) {
+          modernTeams.unshift({ name: payload.name, format: payload.formatId, folder: "", packedTeam: payload.packedTeam, iconCache: null, isBox: false, key: "" });
+          modernTeams.save();
+          return true;
+        }
+        const legacyStorage = window.Storage;
+        if (legacyStorage?.teams && legacyStorage?.saveTeams) {
+          legacyStorage.teams.unshift({ name: payload.name, format: payload.formatId, folder: "", team: payload.packedTeam, capacity: 6, iconCache: "" });
+          legacyStorage.saveTeams();
+          return true;
+        }
+        await sleep(200);
+      }
+      return false;
+    }, item);
+    if (!imported) return { ok: false, status: 503, error: "Showdown 队伍库未在限定时间内就绪。请稍后再试。" };
+    showdownImportBridge.delete(token);
+    await showdownBridgePage.evaluate(() => window.app?.send?.("/teambuilder")).catch(() => {});
+    return { ok: true, browser: executable.includes("msedge") ? "Edge" : "Chrome" };
+  } catch (error) {
+    return { ok: false, status: 503, error: `无法启动本地 Showdown 桥接：${error.message || "浏览器自动化不可用。"}` };
+  }
+}
+
+async function handleShowdownImportBridge(req, res) {
+  pruneShowdownImportBridge();
+  const url = new URL(req.url || "/api/showdown-bridge", "http://127.0.0.1");
+  const complete = url.pathname.endsWith("/complete");
+  const launch = url.pathname.endsWith("/launch");
+  const body = req.method === "POST" ? await readJson(req).catch(() => ({})) : {};
+  const token = String(body.token || url.searchParams.get("token") || "").trim();
+  if (launch) {
+    const result = await launchShowdownBridgeBrowser(token);
+    sendJson(res, result.ok ? 200 : result.status || 500, result);
+    return;
+  }
+  if (complete) {
+    if (token) showdownImportBridge.delete(token);
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+  if (req.method === "GET") {
+    const item = showdownImportBridge.get(token);
+    if (!item) {
+      sendJson(res, 404, { ok: false, error: "导入令牌不存在或已过期。请回 Champion Lab 再点一次一键导入。" });
+      return;
+    }
+    sendJson(res, 200, { ok: true, token, payload: item });
+    return;
+  }
+  const format = String(body.format || "single").includes("double") ? "double" : "single";
+  const rulesEngine = championsRulesEngine(format);
+  if (!rulesEngine.ok) {
+    sendJson(res, 503, { ok: false, code: "EXACT_RULES_UNAVAILABLE", error: rulesEngine.error });
+    return;
+  }
+  const prepared = prepareBattleTeam(body.teamText || "", format, "待导入队伍");
+  if (!prepared.ok || !prepared.strictLegal) {
+    sendJson(res, 422, {
+      ok: false,
+      code: "EXACT_FORMAT_ILLEGAL",
+      error: `待导入队伍未通过 ${rulesEngine.name} 校验，未创建导入令牌。`,
+      problems: prepared.problems || [],
+    });
+    return;
+  }
+  const nextToken = randomUUID().replace(/-/g, "");
+  const expiresAt = Date.now() + 90_000;
+  showdownImportBridge.set(nextToken, {
+    packedTeam: prepared.packedTeam,
+    formatId: rulesEngine.id,
+    name: String(body.name || "Champion Lab Team").trim().slice(0, 48) || "Champion Lab Team",
+    expiresAt,
+  });
+  sendJson(res, 200, { ok: true, token: nextToken, expiresAt, rulesEngine });
 }
 
 function prepareBattleTeam(text = "", format = "single", label = "队伍") {
-  const team = Teams.import(text);
+  const team = Teams.import(normalizeChampionShowdownText(text));
   if (!team?.length) {
     return {
       ok: false,
@@ -830,15 +2274,14 @@ function prepareBattleTeam(text = "", format = "single", label = "队伍") {
   };
 }
 
-function availableSwitchIndexes(request = {}, activeIndex = 0) {
+function availableSwitchIndexes(request = {}, activeIndex = 0, reservedIndexes = new Set()) {
   const side = request.side?.pokemon || [];
-  const activeCount = Array.isArray(request.forceSwitch) ? request.forceSwitch.length : Array.isArray(request.active) ? request.active.length : 1;
   return side
     .map((pokemon, index) => ({ pokemon, index: index + 1 }))
     .filter(({ pokemon, index }) => {
       if (pokemon.active) return false;
       if (String(pokemon.condition || "").includes("0 fnt")) return false;
-      if (index <= activeCount && side.length > activeCount) return false;
+      if (reservedIndexes.has(index)) return false;
       return true;
     })
     .map((item) => item.index);
@@ -874,6 +2317,7 @@ function createBattleAgentState(playerId = "p1") {
     playerId,
     foeId: playerId === "p1" ? "p2" : "p1",
     foes: new Map(),
+    pendingChargeMoves: new Map(),
   };
 }
 
@@ -893,6 +2337,7 @@ function observeBattleLine(agent, line = "") {
   const cmd = parts[1];
   if (cmd === "switch" || cmd === "drag" || cmd === "replace") {
     const ident = parseBattleIdent(parts[2]);
+    if (ident.side === agent.playerId) agent.pendingChargeMoves?.delete(ident.slot);
     if (ident.side === agent.foeId) {
       agent.foes.set(ident.slot, {
         name: ident.name,
@@ -900,8 +2345,12 @@ function observeBattleLine(agent, line = "") {
         active: true,
       });
     }
+  } else if (cmd === "-prepare") {
+    const ident = parseBattleIdent(parts[2]);
+    if (ident.side === agent.playerId) agent.pendingChargeMoves?.set(ident.slot, String(parts[3] || "").replace(/[^a-z0-9]+/gi, "").toLowerCase());
   } else if (cmd === "-damage" || cmd === "-heal" || cmd === "faint") {
     const ident = parseBattleIdent(parts[2]);
+    if (cmd === "faint" && ident.side === agent.playerId) agent.pendingChargeMoves?.delete(ident.slot);
     if (ident.side === agent.foeId) {
       const previous = agent.foes.get(ident.slot) || { name: ident.name, hp: 1, active: true };
       agent.foes.set(ident.slot, {
@@ -988,6 +2437,10 @@ function moveBattleValue(move = {}, format = "single", turn = 1, activeIndex = 0
     score += Math.min(32, data.basePower / 4) + Math.max(0, data.accuracy - 80) / 5 + data.priority * 4;
     if (data.category === "Status") score -= 5;
   }
+  // The local evaluator is a baseline tactical agent, not a full battle AI. It
+  // should prefer moves that resolve this turn over charge moves whose target
+  // rules change between charge and release phases when weather is interrupted.
+  if (data.flags?.charge) score -= format === "double" ? 28 : 18;
   if (tags.includes("priority") && foeHp.some((ratio) => ratio <= 0.35)) score += 12;
   if (tags.includes("protect")) score += format === "double" ? (hp <= 0.45 ? 16 : turn <= 3 ? 6 : 1) : hp <= 0.3 ? 4 : -12;
   if (tags.includes("team-protect")) score += format === "double" ? 12 : -8;
@@ -1044,8 +2497,8 @@ function battleScoreNoise(format = "single") {
   return (Math.random() - 0.5) * (format === "double" ? 6 : 4);
 }
 
-function chooseBattleSwitch(request = {}, format = "single", activeIndex = 0, agent = null) {
-  const switches = availableSwitchIndexes(request, activeIndex);
+function chooseBattleSwitch(request = {}, format = "single", activeIndex = 0, agent = null, reservedIndexes = new Set()) {
+  const switches = availableSwitchIndexes(request, activeIndex, reservedIndexes);
   if (!switches.length) return "default";
   const sidePokemon = request.side?.pokemon || [];
   const options = switches
@@ -1066,7 +2519,14 @@ function scoreBattleMove(move = {}, format = "single", turn = 1, activeIndex = 0
 }
 
 function targetSuffixForMove(move = {}, format = "single", activeIndex = 0, agent = null) {
-  const target = move?.target || moveDataFor(move).target;
+  const data = moveDataFor(move);
+  // A charged move needs a target when it starts, but Showdown rejects one on
+  // the forced release turn. Observe -prepare and only omit the suffix once.
+  if (data.flags?.charge && agent?.pendingChargeMoves?.get(activeIndex) === data.id) {
+    agent.pendingChargeMoves.delete(activeIndex);
+    return "";
+  }
+  const target = move?.target || data.target;
   if (format !== "double") return "";
   if (["normal", "any", "adjacentFoe"].includes(target)) {
     const foes = opponentHpRatios(agent, "double");
@@ -1081,12 +2541,15 @@ function chooseBattleMove(request = {}, format = "single", turn = 1, agent = nul
   if (request.wait) return "";
   if (request.teamPreview) return "default";
   if (Array.isArray(request.forceSwitch)) {
+    const chosenSwitches = new Set();
     return request.forceSwitch
       .map((required, index) => {
         if (!required) return "pass";
-        const choice = chooseBattleSwitch(request, format, index, agent);
+        const choice = chooseBattleSwitch(request, format, index, agent, chosenSwitches);
         const switchIndex = String(choice).match(/^switch\s+(\d+)$/)?.[1];
-        return `switch ${switchIndex || index + 2}`;
+        if (!switchIndex) return "pass";
+        chosenSwitches.add(Number(switchIndex));
+        return `switch ${switchIndex}`;
       })
       .join(", ");
   }
@@ -1203,6 +2666,10 @@ function describeBattleLine(line = "", turn = 0) {
   return raw.replace(/^\|/, "").replace(/\|/g, " · ");
 }
 
+function isRecoverableBattleTargetError(detail = "") {
+  return /can't move: (?:you can't choose a target for|.+ needs a target)/i.test(String(detail || ""));
+}
+
 async function runBattlePlayer(stream, format, actionLog, playerId, agent, candidatePlayerId = "p1") {
   let turn = 1;
   for await (const chunk of stream) {
@@ -1210,7 +2677,14 @@ async function runBattlePlayer(stream, format, actionLog, playerId, agent, candi
       observeBattleLine(agent, line);
       if (line.startsWith("|turn|")) turn = Number(line.split("|")[2] || turn) || turn;
       if (line.startsWith("|error|")) {
-        actionLog.errors.push(`${playerId}: ${line.slice(7)}`);
+        const detail = line.slice(7);
+        if (isRecoverableBattleTargetError(detail)) {
+          actionLog.recoveries.push(`${playerId}: ${detail}`);
+          pushBattleTrace(actionLog, `[${playerId.toUpperCase()}] 目标选择已由模拟器自动修正。`);
+          stream.write("default");
+          continue;
+        }
+        actionLog.errors.push(`${playerId}: ${detail}`);
         stream.write("default");
         continue;
       }
@@ -1235,7 +2709,7 @@ async function runBattlePlayer(stream, format, actionLog, playerId, agent, candi
 async function runLocalBattle({ format = "single", formatId, p1Team, p2Team, maxTurns = 80, seed = null, p1Name = "Candidate", p2Name = "Meta", candidateName = "Candidate" }) {
   const battleStream = new BattleStream();
   const streams = getPlayerStreams(battleStream);
-  const actionLog = { moves: 0, switches: 0, teamPreview: 0, errors: [], tags: {}, trace: [] };
+  const actionLog = { moves: 0, switches: 0, teamPreview: 0, errors: [], recoveries: [], tags: {}, trace: [] };
   const p1Agent = createBattleAgentState("p1");
   const p2Agent = createBattleAgentState("p2");
   const candidatePlayerId = p1Name === candidateName ? "p1" : p2Name === candidateName ? "p2" : "p1";
@@ -1271,7 +2745,9 @@ async function runLocalBattle({ format = "single", formatId, p1Team, p2Team, max
           tied = true;
           pushBattleTrace(actionLog, describeBattleLine(line, turns));
         } else if (line.startsWith("|error|")) {
-          actionLog.errors.push(line.slice(7));
+          const detail = line.slice(7);
+          if (isRecoverableBattleTargetError(detail)) actionLog.recoveries.push(detail);
+          else actionLog.errors.push(detail);
           pushBattleTrace(actionLog, describeBattleLine(line, turns));
         } else if (shouldRecordBattleLine(line)) {
           pushBattleTrace(actionLog, describeBattleLine(line, turns));
@@ -1421,7 +2897,8 @@ function showdownTextForHotTeam(team = {}) {
       const lines = [`${species}${item ? ` @ ${item}` : ""}`];
       if (ability) lines.push(`Ability: ${ability}`);
       lines.push(`Level: ${config.level || 50}`);
-      if (config.stats) lines.push(`EVs: ${config.stats}`);
+      const evs = championStatPointsFromChampionStats(config.stats, "");
+      if (evs) lines.push(`EVs: ${evs}`);
       if (nature) lines.push(`${nature} Nature`);
       for (const move of moves.slice(0, 4)) lines.push(`- ${move}`);
       return lines.join("\n");
@@ -1482,9 +2959,24 @@ function calibrateBattleResults(results = []) {
 async function handleBattleEval(req, res) {
   const body = await readJson(req).catch(() => ({}));
   const format = String(body.format || "single").includes("double") ? "double" : "single";
+  const rulesEngine = championsRulesEngine(format);
+  if (!rulesEngine.ok) {
+    sendJson(res, 503, { ok: false, code: "EXACT_RULES_UNAVAILABLE", error: rulesEngine.error, rulesEngine });
+    return;
+  }
   const own = prepareBattleTeam(body.teamText || "", format, "候选队伍");
   if (!own.ok) {
     sendJson(res, 400, { ok: false, error: own.problems[0], problems: own.problems });
+    return;
+  }
+  if (!own.strictLegal) {
+    sendJson(res, 422, {
+      ok: false,
+      code: "EXACT_FORMAT_ILLEGAL",
+      error: `候选队伍未通过 ${rulesEngine.name} 校验，不能用自定义规则替代测试。`,
+      problems: own.problems,
+      rulesEngine,
+    });
     return;
   }
   const gamesPerOpponent = Math.max(1, Math.min(3, Number(body.gamesPerOpponent || 1) || 1));
@@ -1527,8 +3019,19 @@ async function handleBattleEval(req, res) {
       continue;
     }
     warnings.push(...opponentTeam.problems.map((problem) => `${opponentTeam.label}：${problem}`));
-    const useCustom = !own.strictLegal || !opponentTeam.strictLegal;
-    const formatId = battleFormatFor(format, useCustom);
+    if (!opponentTeam.strictLegal) {
+      results.push({
+        opponentId: opponent.id || "",
+        opponentTitle: opponent.title || "固定靶队",
+        result: "skipped",
+        formatId: rulesEngine.id,
+        strictLegal: false,
+        failureReasons: [`靶队未通过 ${rulesEngine.name} 校验，未使用自定义规则降级模拟。`, ...opponentTeam.problems.slice(0, 5)],
+        actions: { moves: 0, switches: 0, teamPreview: 0, errors: [], recoveries: [], tags: {}, trace: [`跳过对局：靶队未通过 ${rulesEngine.name} 校验。`, ...opponentTeam.problems.slice(0, 5).map((problem) => `原因：${problem}`)] },
+      });
+      continue;
+    }
+    const formatId = rulesEngine.id;
     for (let game = 0; game < gamesPerOpponent; game += 1) {
       const pairings = [
         {
@@ -1577,11 +3080,23 @@ async function handleBattleEval(req, res) {
   const wins = played.filter((item) => item.result === "win").length;
   const losses = played.filter((item) => item.result === "loss").length;
   const ties = played.filter((item) => item.result === "tie").length;
+  if (!played.length) {
+    sendJson(res, 422, {
+      ok: false,
+      code: "NO_EXACT_ELIGIBLE_OPPONENTS",
+      error: `没有通过 ${rulesEngine.name} 校验的靶队；本次没有用普通双打或自定义规则替代。`,
+      warnings: [...new Set(warnings)].slice(0, 12),
+      results,
+      rulesEngine,
+    });
+    return;
+  }
   sendJson(res, 200, {
     ok: played.length > 0,
     mode: opponentSource === "hot" ? "local-showdown-hot-meta" : "local-showdown-fixed-meta",
     agentVersion: "tactical-single-double-v2",
     format,
+    rulesEngine,
     games: played.length,
     wins,
     losses,
@@ -1589,13 +3104,26 @@ async function handleBattleEval(req, res) {
     winRate: played.length ? Math.round((wins / played.length) * 100) : 0,
     warnings: [...new Set(warnings)].slice(0, 12),
     results,
-    note: opponentSource === "hot" ? "本地模拟使用热门队池随机抽样和基础合法动作代理；结果用于发现结构压力点，不等同于公开天梯胜率。" : "本地模拟使用固定 Top5 靶队和基础合法动作代理；结果用于发现结构压力点，不等同于公开天梯胜率。",
+    note: `${rulesEngine.name} 精确规则模拟。${opponentSource === "hot" ? "靶队来自热门队池随机抽样" : "靶队为固定热门队"}，基础动作代理用于发现结构压力点，不等同于公开天梯胜率。`,
   });
 }
 
 function extractOutputText(data) {
   const chatText = data.choices?.[0]?.message?.content;
   if (typeof chatText === "string") return chatText;
+  if (Array.isArray(chatText)) {
+    const text = chatText
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (typeof part?.text === "string") return part.text;
+        if (typeof part?.content === "string") return part.content;
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
+    if (text) return text;
+  }
+  if (typeof data.choices?.[0]?.text === "string") return data.choices[0].text;
   if (typeof data.output_text === "string") return data.output_text;
   const parts = [];
   for (const item of data.output || []) {
@@ -4019,10 +5547,7 @@ function aiMaxTokens(payload = {}) {
   return 2200;
 }
 
-async function requestAI(aiConfig, payload, useJsonSchema) {
-  const prompt = buildPrompt(payload);
-  const timeoutMs = aiTimeoutMs(payload);
-  const maxTokens = aiMaxTokens(payload);
+async function requestAIText(aiConfig, prompt, { timeoutMs = AI_REQUEST_TIMEOUT_MS, maxTokens = 2200, useJsonSchema = false, forceJson = false } = {}) {
   if (aiConfig.endpoint === "chat") {
     return fetchWithTimeout(aiEndpoint(aiConfig.baseUrl, "/chat/completions", aiConfig.source), {
       method: "POST",
@@ -4035,7 +5560,7 @@ async function requestAI(aiConfig, payload, useJsonSchema) {
         messages: [{ role: "user", content: prompt }],
         temperature: 0.3,
         max_tokens: maxTokens,
-        response_format: useJsonSchema ? { type: "json_object" } : undefined,
+        response_format: useJsonSchema || forceJson ? { type: "json_object" } : undefined,
       }),
     }, timeoutMs);
   }
@@ -4066,6 +5591,481 @@ async function requestAI(aiConfig, payload, useJsonSchema) {
     },
     body: JSON.stringify(body),
   }, timeoutMs);
+}
+
+async function requestAI(aiConfig, payload, useJsonSchema) {
+  return requestAIText(aiConfig, buildPrompt(payload), {
+    timeoutMs: aiTimeoutMs(payload),
+    maxTokens: aiMaxTokens(payload),
+    useJsonSchema,
+  });
+}
+
+function parseTeamCoachJson(text = "") {
+  const raw = String(text || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  const candidates = [raw, raw.match(/\{[\s\S]*\}/)?.[0]].filter(Boolean);
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      return {
+        plan: String(parsed.plan || "").trim(),
+        leads: Array.isArray(parsed.leads) ? parsed.leads.map(String).filter(Boolean).slice(0, 4) : [],
+        synergies: Array.isArray(parsed.synergies) ? parsed.synergies.map(String).filter(Boolean).slice(0, 4) : [],
+        risks: Array.isArray(parsed.risks) ? parsed.risks.map(String).filter(Boolean).slice(0, 4) : [],
+      };
+    } catch {
+      // Try the next JSON-shaped fragment.
+    }
+  }
+  return { plan: raw.slice(0, 1800), leads: [], synergies: [], risks: [] };
+}
+
+function teamCoachPrompt(payload = {}) {
+  const team = Array.isArray(payload.team) ? payload.team : [];
+  const teamText = team.map((member, index) => [
+    `${index + 1}. ${member.name || member.slug || "成员"}`,
+    `道具:${member.item || "未提供"}`,
+    `特性:${member.ability || "未提供"}`,
+    `招式:${(member.moves || []).join(" / ")}`,
+    `职责:${member.role || "未提供"}`,
+  ].join("；")).join("\n");
+  return `你是宝可梦竞技配队教练。以下六人队已经由本地系统按 M-3、${payload.format === "double" ? "双打" : "单打"}、可验证招式/道具/特性严格校验。\n\n用户目标：${payload.userGoal || "未额外指定"}\n\n已验证队伍：\n${teamText}\n\n只给战术解读，绝不能替换宝可梦、道具、特性或招式，不能编造配置。请用简体中文严格返回 JSON：\n{"plan":"开局到终盘的可执行路线","leads":["首发或选出建议，须点名现有成员"],"synergies":["基于现有成员、特性或招式的联动"],"risks":["明确威胁和处理顺序"]}\n每个数组 2 到 4 条。`;
+}
+
+async function handleTeamCoach(req, res) {
+  const payload = await readJson(req);
+  const team = Array.isArray(payload.team) ? payload.team : [];
+  if (team.length !== 6) {
+    sendJson(res, 400, { error: "AI 战术解读需要一支已验证的六人队。" });
+    return;
+  }
+  const aiConfig = resolveRequestAIConfig(payload);
+  if (!aiConfig) {
+    sendJson(res, 501, { error: "请先填写 AI 服务的 API Key、Base URL 和模型。" });
+    return;
+  }
+  try {
+    const response = await requestAIText(aiConfig, teamCoachPrompt(payload), {
+      timeoutMs: aiTimeoutMs(payload),
+      maxTokens: payload.promptMode === "compare" ? 1800 : 1200,
+    });
+    const data = await readAIResponse(response);
+    if (!response.ok) {
+      sendJson(res, response.status, { error: data.error?.message || "AI 战术服务请求失败。" });
+      return;
+    }
+    sendJson(res, 200, {
+      ok: true,
+      model: aiConfig.model,
+      provider: aiConfig.source,
+      coach: parseTeamCoachJson(extractOutputText(data)),
+    });
+  } catch (err) {
+    const timeoutSeconds = Math.round(aiTimeoutMs(payload) / 1000);
+    sendJson(res, 502, {
+      error: err.name === "AbortError" ? `AI 战术服务超过 ${timeoutSeconds} 秒未返回。` : `AI 战术服务连接失败：${err.message || "请检查配置。"}`,
+    });
+  }
+}
+
+function aiDesignCatalogue(format = "single", limit = 96) {
+  const graph = strictCandidateGraph(format);
+  const byFamily = new Map();
+  for (const candidate of graph.candidates) {
+    const key = strictFamilyKey(candidate.slug);
+    const current = byFamily.get(key);
+    if (!current || Number(candidate.rank || 9999) < Number(current.rank || 9999)) byFamily.set(key, candidate);
+  }
+  return [...byFamily.values()]
+    .sort((a, b) => Number(a.rank || 9999) - Number(b.rank || 9999))
+    .slice(0, limit)
+    .map((candidate) => ({
+      name: candidate.name,
+      slug: candidate.slug,
+      roles: [...(candidate.tags || [])].join(",") || "flex",
+    }));
+}
+
+function aiDesignSlotCandidates(graph = {}, constraints = {}, predicate = () => true, limit = 10) {
+  const byFamily = new Map();
+  for (const candidate of graph.candidates || []) {
+    if (constraints.forbidden?.includes(strictKey(candidate.slug)) || strictConflictsWithThemes(candidate, constraints) || !predicate(candidate)) continue;
+    const key = strictFamilyKey(candidate.slug);
+    const current = byFamily.get(key);
+    if (!current || strictMemberScore(candidate, [], graph.format || "single", constraints) > strictMemberScore(current, [], graph.format || "single", constraints)) byFamily.set(key, candidate);
+  }
+  return [...byFamily.values()]
+    .sort((a, b) => strictMemberScore(b, [], graph.format || "single", constraints) - strictMemberScore(a, [], graph.format || "single", constraints))
+    .slice(0, limit)
+    .map((candidate) => ({ name: candidate.name, slug: candidate.slug }));
+}
+
+function aiDesignSlotContract(graph = {}, constraints = {}, format = "single") {
+  const slots = [];
+  const add = (id, label, predicate, required = true) => {
+    if (slots.length >= 6) return;
+    const candidates = aiDesignSlotCandidates(graph, constraints, predicate);
+    if (candidates.length) slots.push({ id, label, candidates, required });
+  };
+  for (const core of constraints.requiredPokemon || []) {
+    const key = strictFamilyKey(core.slug || core.name || core.id);
+    add(`hard-core-${slots.length + 1}`, `硬性核心：${core.name || core.slug || core.id}`, (member) => strictFamilyKey(member.slug) === key);
+  }
+  for (const theme of constraints.themes || []) {
+    add(`${theme}-setter`, `${strictThemeLabel(theme)}启动者`, (member) => strictThemeInfo(member, theme).source);
+    add(`${theme}-payoff`, `${strictThemeLabel(theme)}独立收益位`, (member) => {
+      const info = strictThemeInfo(member, theme);
+      return info.abuser && (theme === "tailwind" || !info.source);
+    });
+  }
+  if (format === "double") {
+    add("safe-turn", "安全回合位", (member) => {
+      const tags = member.tags || strictTags(member, format);
+      return tags.has("protect") || tags.has("safe-entry");
+    });
+    if (!(constraints.themes || []).includes("trick-room")) add("speed-plan", "控速或速度收益位", (member) => (member.tags || strictTags(member, format)).has("speed"));
+  } else {
+    add("safe-entry", "安全上场或转场位", (member) => {
+      const tags = member.tags || strictTags(member, format);
+      return tags.has("safe-entry") || tags.has("pivot") || tags.has("defensive");
+    });
+    add("speed-plan", "速度线位", (member) => (member.tags || strictTags(member, format)).has("speed"));
+  }
+  add("endgame", "突破或终盘位", (member) => {
+    const tags = member.tags || strictTags(member, format);
+    return tags.has("wincon") || tags.has("wallbreaker");
+  });
+  while (slots.length < 6) add(`flex-${slots.length + 1}`, "结构补位", () => true);
+  return slots.slice(0, 6);
+}
+
+function aiDesignContractPrompt(slots = []) {
+  return slots.map((slot) => `${slot.id}（${slot.label}）：${slot.candidates.map((candidate) => candidate.slug).join(", ")}`).join("\n");
+}
+
+function parseAIDesignJson(text = "", catalogue = []) {
+  const raw = String(text || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  const fragment = raw.match(/\{[\s\S]*\}/)?.[0] || raw;
+  let parsed;
+  try {
+    parsed = JSON.parse(fragment);
+  } catch {
+    parsed = { rationale: raw };
+  }
+  const lookup = (value) => {
+    const key = strictKey(value);
+    if (!key) return null;
+    const exact = catalogue.find((candidate) => strictKey(candidate.slug) === key || strictKey(candidate.name) === key || strictFamilyKey(candidate.slug) === strictFamilyKey(value));
+    if (exact) return exact;
+    if (key.length < 4) return null;
+    return catalogue.find((candidate) => {
+      const candidateSlug = strictKey(candidate.slug);
+      const candidateName = strictKey(candidate.name);
+      return candidateSlug.includes(key) || key.includes(candidateSlug) || candidateName.includes(key) || key.includes(candidateName);
+    }) || null;
+  };
+  const collectValues = (value, key = "", result = []) => {
+    if (Array.isArray(value)) {
+      for (const item of value) collectValues(item, key, result);
+      return result;
+    }
+    if (value && typeof value === "object") {
+      for (const [childKey, childValue] of Object.entries(value)) {
+        const isPokemonField = /pokemon|team|member|species|core|阵容|队伍|成员|宝可梦|精灵|核心/i.test(childKey);
+        if (isPokemonField && (typeof childValue === "string" || typeof childValue === "number")) result.push(childValue);
+        collectValues(childValue, childKey, result);
+      }
+      return result;
+    }
+    if ((typeof value === "string" || typeof value === "number") && /pokemon|team|member|species|core|阵容|队伍|成员|宝可梦|精灵|核心/i.test(key)) result.push(value);
+    return result;
+  };
+  const selected = [];
+  const listValues = [parsed.pokemon, parsed.team, parsed.members, parsed.draft?.pokemon, parsed.draft?.team, parsed.data?.pokemon, parsed.result?.team];
+  const values = [
+    ...listValues.flatMap((value) => Array.isArray(value) ? value : typeof value === "string" ? value.split(/[、,，\n/]+/) : []),
+    ...collectValues(parsed),
+  ];
+  for (const value of values) {
+    const candidate = lookup(typeof value === "object" ? value.slug || value.name || value.id || value.pokemon || value.species || value.pokemonName || value.speciesName || value.pokemon_name || value.species_name : value);
+    if (candidate && !selected.some((item) => strictFamilyKey(item.slug) === strictFamilyKey(candidate.slug))) selected.push(candidate);
+  }
+  if (!selected.length) {
+    for (const candidate of catalogue) {
+      if (!raw.toLowerCase().includes(String(candidate.slug).toLowerCase()) && !raw.includes(candidate.name)) continue;
+      selected.push(candidate);
+      if (selected.length >= 6) break;
+    }
+  }
+  const rawSlots = parsed.slots || parsed.roles || parsed.positions || {};
+  const slots = {};
+  if (rawSlots && typeof rawSlots === "object" && !Array.isArray(rawSlots)) {
+    for (const [slot, value] of Object.entries(rawSlots)) {
+      const candidate = lookup(typeof value === "object" ? value.slug || value.name || value.id : value);
+      if (!candidate) continue;
+      slots[slot] = candidate;
+      if (!selected.some((item) => strictFamilyKey(item.slug) === strictFamilyKey(candidate.slug))) selected.push(candidate);
+    }
+  }
+  return { pokemon: selected, slots, rationale: String(parsed.rationale || parsed.summary || "").trim() };
+}
+
+function aiAssignDraftSlots(draft = {}, slots = []) {
+  const members = [...new Map((draft.pokemon || []).map((member) => [strictFamilyKey(member.slug || member.name || member), member])).values()];
+  if (members.length !== 6 || slots.length !== 6) return draft;
+  const candidatesFor = (slot) => members.filter((member) => slot.candidates.some((candidate) => strictFamilyKey(candidate.slug) === strictFamilyKey(member.slug || member.name || member)));
+  const ordered = slots.map((slot) => ({ slot, members: candidatesFor(slot) })).sort((a, b) => a.members.length - b.members.length);
+  const assigned = {};
+  const used = new Set();
+  const place = (index) => {
+    if (index === ordered.length) return true;
+    const { slot, members: choices } = ordered[index];
+    for (const member of choices) {
+      const key = strictFamilyKey(member.slug || member.name || member);
+      if (used.has(key)) continue;
+      used.add(key);
+      assigned[slot.id] = member;
+      if (place(index + 1)) return true;
+      delete assigned[slot.id];
+      used.delete(key);
+    }
+    return false;
+  };
+  if (place(0)) draft.slots = { ...(draft.slots || {}), ...assigned };
+  return draft;
+}
+
+function completeAIDesignDraft(draft = {}, graph = {}, constraints = {}) {
+  const byFamily = new Map();
+  for (const candidate of graph.candidates || []) {
+    const key = strictFamilyKey(candidate.slug);
+    const current = byFamily.get(key);
+    if (!current || Number(candidate.rank || 9999) < Number(current.rank || 9999)) byFamily.set(key, candidate);
+  }
+  const selected = [];
+  const add = (candidate) => {
+    if (!candidate || selected.some((item) => strictFamilyKey(item.slug) === strictFamilyKey(candidate.slug))) return;
+    selected.push(candidate);
+  };
+  for (const item of draft.pokemon || []) add(byFamily.get(strictFamilyKey(item.slug || item.name || item)));
+  if (selected.length !== 6) return null;
+  return {
+    pokemon: selected.map((candidate) => ({ name: candidate.name, slug: candidate.slug })),
+    aiSelected: selected.map((candidate) => ({ name: candidate.name, slug: candidate.slug })),
+    engineAdded: [],
+    slots: Object.fromEntries(Object.entries(draft.slots || {}).map(([slot, candidate]) => [slot, candidate.slug || candidate.name || candidate])),
+    variationSeed: String(draft.variationSeed || ""),
+    rationale: draft.rationale || "AI 已按职责槽位选择六人，严格引擎只验证当前 M-3 配置与结构，不会替换成员。",
+    completionNote: "AI 选择的六只成员会原样进入严格配置验证；结构不通过会要求 AI 重选，而不是自动换成热门样本。",
+  };
+}
+
+function teamDesignPrompt(payload = {}, slots = []) {
+  const constraints = payload.goalConstraints || {};
+  const required = (constraints.requiredPokemon || []).map((item) => item.name || item.slug).join("、") || "无";
+  const themes = (constraints.themes || []).join("、") || "无";
+  const avoided = (Array.isArray(payload.avoidTeam) ? payload.avoidTeam : []).map((item) => typeof item === "object" ? item.name || item.slug || item.id : item).filter(Boolean);
+  const requiresSetup = /强化队|强化|setup\s*(team|squad)?|boost(?:ing)?\s*(team|squad)?/i.test(String(payload.userGoal || ""));
+  const setupRule = requiresSetup ? "强化队硬要求：至少两名实际携带强化招式的成员，另有保护强化回合的协作位和强化后终盘收割位。" : "";
+  const variation = String(payload.variationSeed || "").slice(0, 80);
+  const retryRule = avoided.length ? `上一版队伍：${avoided.join("、")}。本次必须至少替换两名非硬性核心成员，不能原样重复。` : "";
+  return `你是宝可梦竞技配队设计师。请为当前 M-3 ${payload.format === "double" ? "双打" : "单打"}设计一支原创六人队。\n用户目标：${payload.userGoal || "平衡/半攻"}\n必须包含：${required}\n体系：${themes}\n${setupRule}\n${retryRule}\n本次构筑变体编号：${variation || "默认"}。\n\n本地严格引擎已根据当前格式和硬性要求生成六个职责槽位。每个槽位只能从自己的 slug 候选中选一只；六个选择不得重复。不要自行添加宝可梦、不要输出道具或招式。\n${aiDesignContractPrompt(slots)}\n\n只需返回严格 JSON：{"pokemon":["slug1","slug2","slug3","slug4","slug5","slug6"],"rationale":"一句说明主胜利路线、联防和速度规划"}。可选地附加 slots；即使不附加，系统也会根据 pokemon 自动匹配职责槽位。`;
+}
+
+function aiDraftConstraintViolations(draft = {}, graph = {}, constraints = {}, slots = []) {
+  aiAssignDraftSlots(draft, slots);
+  const selected = (draft.pokemon || [])
+    .map((item) => graph.candidates?.find((candidate) => strictFamilyKey(candidate.slug) === strictFamilyKey(item.slug || item.name || item)))
+    .filter(Boolean);
+  const violations = [];
+  if (selected.length !== 6) violations.push("必须返回恰好六名当前 M-3 目标格式可验证成员。");
+  const selectedFamilies = new Set(selected.map((member) => strictFamilyKey(member.slug)));
+  if (selectedFamilies.size !== 6) violations.push("六个成员必须互不重复。");
+  const selectedKeys = new Set(selected.map((member) => strictFamilyKey(member.slug)));
+  const repeatedFromPrevious = selected.filter((member) => constraints.avoidTeamFamilies?.has(strictFamilyKey(member.slug))).length;
+  if (constraints.avoidTeamFamilies?.size && repeatedFromPrevious > 4) violations.push("本次必须至少替换两名非硬性核心成员，不能原样重复上一队。 ");
+  const slotValues = new Set();
+  for (const slot of slots) {
+    const picked = draft.slots?.[slot.id];
+    if (!picked) {
+      violations.push(`缺少职责槽位：${slot.label}。`);
+      continue;
+    }
+    const key = strictFamilyKey(picked.slug || picked.name || picked);
+    if (!slot.candidates.some((candidate) => strictFamilyKey(candidate.slug) === key)) violations.push(`${slot.label}没有从指定候选中选择。`);
+    if (slotValues.has(key)) violations.push(`职责槽位重复选择：${slot.label}。`);
+    slotValues.add(key);
+  }
+  if (slots.length && (slotValues.size !== 6 || [...slotValues].some((key) => !selectedKeys.has(key)) || [...selectedKeys].some((key) => !slotValues.has(key)))) violations.push("pokemon 必须与六个职责槽位的选择完全一致。");
+  for (const theme of constraints.themes || []) {
+    if (!selected.some((member) => strictThemeInfo(member, theme).source)) violations.push(`${strictThemeLabel(theme)}缺少真实启动者。`);
+    if (!selected.some((member) => {
+      const info = strictThemeInfo(member, theme);
+      return info.abuser && (theme === "tailwind" || !info.source);
+    })) violations.push(`${strictThemeLabel(theme)}缺少独立收益位。`);
+  }
+  const conflicts = selected.filter((member) => strictConflictsWithThemes(member, constraints));
+  if (conflicts.length) violations.push(`成员与体系冲突：${conflicts.map((member) => member.name).join("、")}。`);
+  return violations;
+}
+
+function teamDesignCorrectionPrompt(slots = [], violations = []) {
+  return [
+    `上一轮草案不合格：${violations.join("；") || "没有给出可验证的队伍成员。"}`,
+    "现在只能返回一行 JSON，禁止解释、禁止 Markdown、禁止中文宝可梦名、禁止候选外名字。pokemon 必须恰好是六个不重复 slug，并覆盖每个职责槽位；slots 字段可省略。",
+    aiDesignContractPrompt(slots),
+    "返回：{\"pokemon\":[\"slug1\",\"slug2\",\"slug3\",\"slug4\",\"slug5\",\"slug6\"],\"rationale\":\"一句简短构筑理由\"}",
+  ].join("\n");
+}
+
+function engineGuidedAIDraft(payload = {}, format = "single", parsedDraft = {}, reason = "") {
+  const fallback = strictBuildTeam({ ...payload, format, buildMethod: "strict", forceGenerated: true, aiDraft: undefined });
+  if (!fallback.ok) return null;
+  return {
+    pokemon: fallback.team.map((member) => ({ name: member.name, slug: member.slug })),
+    aiSelected: (parsedDraft.pokemon || []).map((member) => ({ name: member.name, slug: member.slug })),
+    engineAdded: fallback.team.map((member) => ({ name: member.name, slug: member.slug })),
+    variationSeed: String(payload.variationSeed || ""),
+    mode: "engine-guided",
+    rationale: parsedDraft.rationale || "AI 已识别用户目标；本地严格引擎据此完成了可用六人队。",
+    completionNote: `AI 草案${reason || "未通过当前格式验证"}，已自动采用同一目标下的严格定稿，避免把报错或不完整队伍交给你。`,
+  };
+}
+
+async function handleTeamDesign(req, res) {
+  const payload = await readJson(req);
+  const format = payload.format === "double" ? "double" : "single";
+  const graph = strictCandidateGraph(format);
+  const constraints = strictGoalConstraints(payload, graph.available);
+  if (constraints.unavailable.length) {
+    sendJson(res, 422, { error: "用户指定的核心不在当前 M-3 目标格式可用池。" });
+    return;
+  }
+  const aiConfig = resolveRequestAIConfig(payload);
+  if (!aiConfig) {
+    sendJson(res, 501, { error: "AI 原创设计需要先填写 API Key、Base URL 和模型。" });
+    return;
+  }
+  const lookupCatalogue = aiDesignCatalogue(format, 2000);
+  for (const required of constraints.requiredPokemon || []) {
+    const candidate = graph.candidates.find((item) => strictFamilyKey(item.slug) === strictFamilyKey(required.slug || required.name || required.id));
+    if (!candidate) continue;
+    const entry = { name: candidate.name, slug: candidate.slug, roles: [...(candidate.tags || [])].join(",") || "flex" };
+    if (!lookupCatalogue.some((item) => strictFamilyKey(item.slug) === strictFamilyKey(candidate.slug))) lookupCatalogue.unshift(entry);
+  }
+  const slots = aiDesignSlotContract({ ...graph, format }, constraints, format);
+  if (slots.length !== 6) {
+    sendJson(res, 422, { code: "AI_SLOT_CONTRACT_UNAVAILABLE", error: "当前 M-3 目标格式无法为这组硬性要求生成完整的六个职责槽位。" });
+    return;
+  }
+  try {
+    let response = await requestAIText(aiConfig, teamDesignPrompt(payload, slots), {
+      timeoutMs: aiTimeoutMs(payload),
+      maxTokens: 1100,
+      forceJson: true,
+    });
+    let data = await readAIResponse(response);
+    if (!response.ok && [400, 422].includes(response.status)) {
+      response = await requestAIText(aiConfig, teamDesignPrompt(payload, slots), {
+        timeoutMs: aiTimeoutMs(payload),
+        maxTokens: 1100,
+      });
+      data = await readAIResponse(response);
+    }
+    if (!response.ok) {
+      sendJson(res, response.status, { error: data.error?.message || "AI 原创设计请求失败。" });
+      return;
+    }
+    let rawText = extractOutputText(data);
+    let parsedDraft = parseAIDesignJson(rawText, lookupCatalogue);
+    let draftViolations = aiDraftConstraintViolations(parsedDraft, { ...graph, format }, constraints, slots);
+    if (draftViolations.length) {
+      const correctionResponse = await requestAIText(aiConfig, teamDesignCorrectionPrompt(slots, draftViolations), {
+        timeoutMs: aiTimeoutMs(payload),
+        maxTokens: 420,
+        forceJson: true,
+      });
+      const correctionData = await readAIResponse(correctionResponse);
+      if (correctionResponse.ok) {
+        rawText = extractOutputText(correctionData);
+        parsedDraft = parseAIDesignJson(rawText, lookupCatalogue);
+        draftViolations = aiDraftConstraintViolations(parsedDraft, { ...graph, format }, constraints, slots);
+      }
+    }
+    if (draftViolations.length) {
+      const engineDraft = engineGuidedAIDraft(payload, format, parsedDraft, "未形成完整可识别的六人职责结构");
+      if (engineDraft) {
+        sendJson(res, 200, { ok: true, format, model: aiConfig.model, provider: aiConfig.source, draft: engineDraft });
+        return;
+      }
+      sendJson(res, 422, {
+        code: "AI_DRAFT_CONSTRAINT_VIOLATION",
+        error: `AI 原创草案未满足职责槽位或体系要求：${draftViolations.join("；")}。已停止，避免把严格引擎补位误称为 AI 阵容。`,
+        diagnostics: draftViolations,
+        rawPreview: String(rawText || "").slice(0, 360),
+      });
+      return;
+    }
+    let draft = completeAIDesignDraft(
+      { ...parsedDraft, variationSeed: String(payload.variationSeed || "") },
+      { ...graph, format },
+      { ...constraints, aiVariation: String(payload.variationSeed || "") },
+    );
+    if (!draft) {
+      const engineDraft = engineGuidedAIDraft(payload, format, parsedDraft, "没有给出完整的六名不重复成员");
+      if (engineDraft) {
+        sendJson(res, 200, { ok: true, format, model: aiConfig.model, provider: aiConfig.source, draft: engineDraft });
+        return;
+      }
+      sendJson(res, 422, { code: "AI_DRAFT_INCOMPLETE", error: "AI 原创草案没有给出完整的六名不重复成员。" });
+      return;
+    }
+    let preflight = strictBuildTeam({ ...payload, format, buildMethod: "ai-designed", aiDraft: draft });
+    if (!preflight.ok) {
+      // Slot matching proves that the model understood the request. Retry once
+      // with configuration-level diagnostics before using the deterministic net.
+      const repairResponse = await requestAIText(aiConfig, teamDesignCorrectionPrompt(slots, preflight.diagnostics || []), {
+        timeoutMs: aiTimeoutMs(payload),
+        maxTokens: 420,
+        forceJson: true,
+      });
+      const repairData = await readAIResponse(repairResponse);
+      if (repairResponse.ok) {
+        const repairedDraft = parseAIDesignJson(extractOutputText(repairData), lookupCatalogue);
+        const repairViolations = aiDraftConstraintViolations(repairedDraft, { ...graph, format }, constraints, slots);
+        const completedRepair = repairViolations.length
+          ? null
+          : completeAIDesignDraft(
+            { ...repairedDraft, variationSeed: String(payload.variationSeed || "") },
+            { ...graph, format },
+            { ...constraints, aiVariation: String(payload.variationSeed || "") },
+          );
+        const repairedPreflight = completedRepair
+          ? strictBuildTeam({ ...payload, format, buildMethod: "ai-designed", aiDraft: completedRepair })
+          : null;
+        if (repairedPreflight?.ok) {
+          draft = completedRepair;
+          preflight = repairedPreflight;
+        }
+      }
+    }
+    if (!preflight.ok) {
+      const engineDraft = engineGuidedAIDraft(payload, format, parsedDraft, "两次未通过配置级结构验证");
+      if (!engineDraft) {
+        sendJson(res, 422, {
+          code: "AI_DRAFT_STRUCTURE_UNSATISFIED",
+          error: `AI 草案和本地严格构筑都无法满足这组要求：${(preflight.diagnostics || []).join("；")}`,
+          diagnostics: preflight.diagnostics || [],
+        });
+        return;
+      }
+      draft = engineDraft;
+    }
+    sendJson(res, 200, { ok: true, format, model: aiConfig.model, provider: aiConfig.source, draft });
+  } catch (err) {
+    const timeoutSeconds = Math.round(aiTimeoutMs(payload) / 1000);
+    sendJson(res, 502, { error: err.name === "AbortError" ? `AI 原创设计超过 ${timeoutSeconds} 秒未返回。` : `AI 原创设计连接失败：${err.message || "请检查配置。"}` });
+  }
 }
 
 async function handleAI(req, res) {
@@ -4375,6 +6375,7 @@ export {
   pocketAgFormatWatch,
   pocketAgRepairAdvice,
   pocketAgSelectTeam,
+  strictBuildTeam,
 };
 
 function startServer() {
@@ -4394,6 +6395,18 @@ function startServer() {
         await handleAI(req, res);
         return;
       }
+      if (req.method === "POST" && req.url === "/api/team-build") {
+        await handleStrictTeamBuild(req, res);
+        return;
+      }
+      if (req.method === "POST" && req.url === "/api/team-coach") {
+        await handleTeamCoach(req, res);
+        return;
+      }
+      if (req.method === "POST" && req.url === "/api/team-design") {
+        await handleTeamDesign(req, res);
+        return;
+      }
       if (req.method === "POST" && req.url === "/api/ai-test") {
         await handleAITest(req, res);
         return;
@@ -4411,8 +6424,16 @@ function startServer() {
         await handleBattleEval(req, res);
         return;
       }
-      if ((req.method === "GET" || req.method === "POST") && req.url === "/api/battle-history") {
+      if ((req.method === "GET" || req.method === "POST" || req.method === "DELETE") && req.url === "/api/battle-history") {
         await handleBattleHistory(req, res);
+        return;
+      }
+      if (req.method === "POST" && req.url === "/api/showdown-replay") {
+        await handleShowdownReplay(req, res);
+        return;
+      }
+      if ((req.method === "GET" || req.method === "POST") && req.url?.startsWith("/api/showdown-bridge")) {
+        await handleShowdownImportBridge(req, res);
         return;
       }
       if ((req.method === "POST" || req.method === "GET") && req.url === "/api/refresh-data") {

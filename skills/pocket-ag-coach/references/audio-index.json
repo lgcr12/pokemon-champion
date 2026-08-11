@@ -1,0 +1,24 @@
+[
+  {
+    "bvid": "BV1GGoXB5ENF",
+    "url": "https://www.bilibili.com/video/BV1GGoXB5ENF",
+    "title": "最快大力士mega宝石海星，攻击力比烈空坐都高【宝可梦冠军对战05】",
+    "bucket": "mega_slot",
+    "status": "ok",
+    "audio_path": "audio\\BV1GGoXB5ENF.m4a",
+    "error": "",
+    "duration": 3218.999,
+    "ext": "m4a"
+  },
+  {
+    "bvid": "BV1ufDwBEEnM",
+    "url": "https://www.bilibili.com/video/BV1ufDwBEEnM",
+    "title": "《宝可梦冠军》给大家推荐一些好用的宝可梦",
+    "bucket": "champions_individual_analysis",
+    "status": "ok",
+    "audio_path": "audio\\BV1ufDwBEEnM.m4a",
+    "error": "",
+    "duration": 20213.119,
+    "ext": "m4a"
+  }
+]

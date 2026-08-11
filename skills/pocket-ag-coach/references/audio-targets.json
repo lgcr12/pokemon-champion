@@ -1,0 +1,126 @@
+{
+  "source": "transcript-index.json + manual-sources.json",
+  "target_count": 10,
+  "targets": [
+    {
+      "bvid": "BV1ufDwBEEnM",
+      "url": "https://www.bilibili.com/video/BV1ufDwBEEnM",
+      "title": "《宝可梦冠军》给大家推荐一些好用的宝可梦",
+      "bucket": "champions_individual_analysis",
+      "status": "manual-audio-target",
+      "cid": null,
+      "duration_seconds": 20213,
+      "view": 505909,
+      "priority": 405,
+      "reason": "public subtitle unavailable, failed, or manually marked critical; use audio transcription"
+    },
+    {
+      "bvid": "BV1aDorBUEdV",
+      "url": "https://www.bilibili.com/video/BV1aDorBUEdV",
+      "title": "孤儿天气，mega雪妖女【宝可梦冠军对战06】",
+      "bucket": "mega_slot",
+      "status": "no-subtitle",
+      "cid": 37876402657,
+      "duration_seconds": 2380,
+      "view": 121737,
+      "priority": 267,
+      "reason": "public subtitle unavailable, failed, or manually marked critical; use audio transcription"
+    },
+    {
+      "bvid": "BV112jz6wEsp",
+      "url": "https://www.bilibili.com/video/BV112jz6wEsp",
+      "title": "轮椅队来了，用mega姆克鹰我奶奶都能上大师【宝可梦冠军对战13】",
+      "bucket": "champions_team_core",
+      "status": "no-subtitle",
+      "cid": 39249775300,
+      "duration_seconds": 4283,
+      "view": 141681,
+      "priority": 257,
+      "reason": "public subtitle unavailable, failed, or manually marked critical; use audio transcription"
+    },
+    {
+      "bvid": "BV1BFRbB7Eiv",
+      "url": "https://www.bilibili.com/video/BV1BFRbB7Eiv",
+      "title": "对战宝可梦用法分析04 mega大竺葵【宝可梦冠军】",
+      "bucket": "mega_slot",
+      "status": "error",
+      "cid": 38141693870,
+      "duration_seconds": 1980,
+      "view": 160531,
+      "priority": 233,
+      "reason": "public subtitle unavailable, failed, or manually marked critical; use audio transcription"
+    },
+    {
+      "bvid": "BV1hwjF6fEwh",
+      "url": "https://www.bilibili.com/video/BV1hwjF6fEwh",
+      "title": "mega巨沼怪队，终于会波动冲了【宝可梦冠军对战12】",
+      "bucket": "champions_team_core",
+      "status": "error",
+      "cid": 39205146220,
+      "duration_seconds": 6179,
+      "view": 263727,
+      "priority": 225,
+      "reason": "public subtitle unavailable, failed, or manually marked critical; use audio transcription"
+    },
+    {
+      "bvid": "BV1Zj5w6gECb",
+      "url": "https://www.bilibili.com/video/BV1Zj5w6gECb",
+      "title": "mega大钢蛇最高光的时刻，印第安纳波利斯R赛 决赛",
+      "bucket": "mega_slot",
+      "status": "no-subtitle",
+      "cid": 38783615611,
+      "duration_seconds": 1759,
+      "view": 200852,
+      "priority": 224,
+      "reason": "public subtitle unavailable, failed, or manually marked critical; use audio transcription"
+    },
+    {
+      "bvid": "BV1xKdiBnEkP",
+      "url": "https://www.bilibili.com/video/BV1xKdiBnEkP",
+      "title": "没见过这么猥琐的队，谁才是正义？【宝可梦冠军】",
+      "bucket": "champions_team_core",
+      "status": "no-subtitle",
+      "cid": 37566809548,
+      "duration_seconds": 1256,
+      "view": 153606,
+      "priority": 218,
+      "reason": "public subtitle unavailable, failed, or manually marked critical; use audio transcription"
+    },
+    {
+      "bvid": "BV1fkonBYE4e",
+      "url": "https://www.bilibili.com/video/BV1fkonBYE4e",
+      "title": "破灭之光花叶蒂，轰起来不要命【宝可梦冠军对战04】",
+      "bucket": "champions_team_core",
+      "status": "no-subtitle",
+      "cid": 37707907705,
+      "duration_seconds": 2355,
+      "view": 123151,
+      "priority": 217,
+      "reason": "public subtitle unavailable, failed, or manually marked critical; use audio transcription"
+    },
+    {
+      "bvid": "BV1ukQFBLEx1",
+      "url": "https://www.bilibili.com/video/BV1ukQFBLEx1",
+      "title": "版本答案，Y喷晴天队【宝可梦冠军对战01】",
+      "bucket": "champions_team_core",
+      "status": "error",
+      "cid": 37386126663,
+      "duration_seconds": 2180,
+      "view": 424422,
+      "priority": 188,
+      "reason": "public subtitle unavailable, failed, or manually marked critical; use audio transcription"
+    },
+    {
+      "bvid": "BV1D84y1h7pe",
+      "url": "https://www.bilibili.com/video/BV1D84y1h7pe",
+      "title": "《宝可梦朱紫》对战精灵用法分析01 红莲铠骑",
+      "bucket": "usage_analysis",
+      "status": "error",
+      "cid": 966786802,
+      "duration_seconds": 1755,
+      "view": 659161,
+      "priority": 83,
+      "reason": "public subtitle unavailable, failed, or manually marked critical; use audio transcription"
+    }
+  ]
+}

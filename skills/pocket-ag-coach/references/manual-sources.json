@@ -1,0 +1,40 @@
+{
+  "sources": [
+    {
+      "id": "critical-season-vgc2026",
+      "kind": "bilibili-season",
+      "season_id": 6356913,
+      "title": "2026年官方比赛大全",
+      "url": "https://space.bilibili.com/343348/lists",
+      "priority": "high",
+      "bucket": "vgc_commentary",
+      "role": "transferable battle-theory reference",
+      "note": "Critical collection from screenshot: 87 VGC2026 official-event commentary videos. Use for speed-control, Protect, switching, support conversion, and tempo concepts only; do not override Pokemon Champions rules."
+    },
+    {
+      "id": "critical-season-pokemon-champions",
+      "kind": "bilibili-season",
+      "season_id": 7859672,
+      "title": "宝可梦冠军",
+      "url": "https://space.bilibili.com/343348/lists",
+      "priority": "critical",
+      "bucket": "champions_team_core",
+      "role": "primary Pokemon Champions team and battle evidence",
+      "note": "Critical collection from screenshot: 21 Pokemon Champions videos. Treat as primary environment/rules corpus."
+    },
+    {
+      "id": "individual-analysis-bv1ufdwbeenm",
+      "kind": "bilibili-video",
+      "bvid": "BV1ufDwBEEnM",
+      "title": "《宝可梦冠军》给大家推荐一些好用的宝可梦",
+      "url": "https://www.bilibili.com/video/BV1ufDwBEEnM",
+      "pubdate": "2026-04-04",
+      "duration_seconds": 20213,
+      "view": 505909,
+      "bucket": "champions_individual_analysis",
+      "priority": "critical",
+      "role": "Pokemon Champions individual Pokemon recommendation and usage analysis",
+      "note": "User-provided key source for individual Pokemon analysis. Long-form video, likely needs audio transcription and chapter/segment curation."
+    }
+  ]
+}

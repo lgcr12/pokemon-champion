@@ -1,0 +1,207 @@
+{
+  "version": "0.4",
+  "generated_at": "2026-06-21T16:36:44",
+  "overall": {
+    "label": "Pocket AG Skill 成熟度",
+    "percent": 78.1,
+    "status": "warn",
+    "summary": "关键个体视频已完成转写，个体卡片库已生成，教练规则层已产品化并接入服务端提示。"
+  },
+  "source_index": {
+    "videos_indexed": 208,
+    "video_count_reported": 208,
+    "season_count": 4,
+    "progress": 100.0
+  },
+  "critical_sources": {
+    "registered": 3,
+    "target": 3,
+    "progress": 100.0,
+    "items": {
+      "critical-season-pokemon-champions": true,
+      "individual-analysis-bv1ufdwbeenm": true,
+      "critical-season-vgc2026": true
+    }
+  },
+  "collections": [
+    {
+      "id": "1021365",
+      "label": "朱紫精灵用法分析（历史参考）",
+      "indexed": 90,
+      "progress": 100.0
+    },
+    {
+      "id": "6356913",
+      "label": "2026 官方比赛大全（通用理论参考）",
+      "indexed": 87,
+      "progress": 100.0
+    },
+    {
+      "id": "7859672",
+      "label": "宝可梦冠军（主环境 / 规则语料）",
+      "indexed": 21,
+      "progress": 100.0
+    },
+    {
+      "id": "7932882",
+      "label": "宝可梦冠军热门分析（环境补强）",
+      "indexed": 10,
+      "progress": 100.0
+    }
+  ],
+  "transcripts": {
+    "total_records": 34,
+    "ok": 21,
+    "by_bucket": {
+      "vgc_commentary": {
+        "total": 8,
+        "ok": 6,
+        "no_subtitle": 1,
+        "error": 1,
+        "lines": 6591
+      },
+      "mega_slot": {
+        "total": 8,
+        "ok": 5,
+        "no_subtitle": 2,
+        "error": 1,
+        "lines": 4288
+      },
+      "champions_team_core": {
+        "total": 9,
+        "ok": 4,
+        "no_subtitle": 3,
+        "error": 2,
+        "lines": 14214
+      },
+      "usage_analysis": {
+        "total": 8,
+        "ok": 6,
+        "no_subtitle": 0,
+        "error": 2,
+        "lines": 2466
+      },
+      "champions_individual_analysis": {
+        "total": 1,
+        "ok": 0,
+        "no_subtitle": 1,
+        "error": 0,
+        "lines": 0
+      }
+    }
+  },
+  "evidence": {
+    "total": 1520,
+    "by_bucket": {
+      "champions_team_core": 1035,
+      "vgc_commentary": 222,
+      "mega_slot": 162,
+      "usage_analysis": 101
+    },
+    "by_tag": {
+      "team-axis": 83,
+      "protect": 277,
+      "mega-slot": 9,
+      "speed-control": 452,
+      "support": 300,
+      "switching": 121,
+      "endgame": 169,
+      "lead-choice": 54,
+      "focus-fire": 55
+    },
+    "targets": {
+      "team-axis": 100,
+      "mega-slot": 40,
+      "speed-control": 500,
+      "support": 300,
+      "protect": 250,
+      "switching": 150,
+      "lead-choice": 80,
+      "focus-fire": 80,
+      "endgame": 180
+    },
+    "progress": 78.5
+  },
+  "critical_individual_video": {
+    "bvid": "BV1ufDwBEEnM",
+    "title": "《宝可梦冠军》给大家推荐一些好用的宝可梦",
+    "duration_seconds": 20213,
+    "audio_status": "ok",
+    "audio_path": "audio\\BV1ufDwBEEnM.m4a",
+    "segment_seconds": 600,
+    "expected_chunks": 34,
+    "completed_chunks": 34,
+    "line_count": 685,
+    "snippets": 518,
+    "by_tag": {
+      "recommendation": 83,
+      "move-template": 101,
+      "matchup-warning": 64,
+      "item-ability": 102,
+      "individual-role": 66,
+      "speed-control": 84,
+      "team-fit": 12,
+      "mega-slot": 6
+    },
+    "progress": 100.0
+  },
+  "individual_cards": {
+    "path": "references/individual-pokemon-cards.json",
+    "summary": {
+      "cards": 105,
+      "high_confidence": 11,
+      "needs_manual_review": 94,
+      "with_ag_evidence": 11,
+      "with_curated_ag_summary": 7,
+      "with_mega_forms": 39,
+      "unassigned_evidence_clusters": 62
+    },
+    "targets": {
+      "cards": 100,
+      "with_ag_evidence": 20,
+      "high_confidence": 12,
+      "with_curated_ag_summary": 20
+    },
+    "progress": 70.4
+  },
+  "coach_rules": {
+    "path": "references/coach-rules.json",
+    "exists": true,
+    "server_integrated": true,
+    "global_rules": 10,
+    "pokemon_rules": 11,
+    "product_checks": 6,
+    "progress": 98.8
+  },
+  "quality": {
+    "source_version": "0.11",
+    "status": "BV1ufDwBEEnM fully transcribed in 34 chunks; structured individual Pokemon cards refined and productized into coach-rules.json",
+    "next_step": "Use the productized coach layer in real AI team-generation runs, then promote failure cases and newly reviewed video snippets into coach-rules.json and individual cards",
+    "limitations": [
+      "faster-whisper tiny is fast but noisy for Pokemon names, so medium/low individual cards need manual curation",
+      "Only 11 cards currently have direct matched AG evidence and 7 have curated AG summaries; 62 evidence clusters still need manual Pokemon assignment",
+      "Many strong decision snippets still come from VGC commentary; these are reference-only for Pokemon Champions unless corroborated",
+      "Automatic evidence extraction has keyword noise from off-topic openings and analogies; manually accepted snippets should be curated before v1.0",
+      "Champion rank/usage and team configurations in individual cards are environment data, not direct AG claims",
+      "Cookie was not stored; future Bilibili downloads may need env var BILIBILI_COOKIE for restricted videos"
+    ],
+    "confidence": {
+      "pokemon_champions_default_format_boundary": "high",
+      "critical_individual_video_transcription_coverage": "high",
+      "individual_cards_structure": "medium",
+      "individual_cards_ag_claim_accuracy": "low-medium until manual review",
+      "productized_coach_rules": "medium-high for global rules; medium for individual Pokemon rules",
+      "server_prompt_integration": "high",
+      "doubles_vgc_reference_only": "medium-high",
+      "usage_analysis_role_and_set_logic": "medium",
+      "pokemon_champions_mega": "medium",
+      "singles_specific_battle_decision_logic": "low-medium",
+      "audio_transcription_pipeline": "medium"
+    }
+  },
+  "next_actions": [
+    "继续人工复核未归属证据簇，把高价值片段绑定到具体宝可梦。",
+    "继续补宝可梦冠军主环境与热门分析视频；VGC 只作为通用对战理论参考。",
+    "在产品侧继续观察 AI 输出，按失败案例补充 coach-rules 的规则和个体卡片。"
+  ]
+}

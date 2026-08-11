@@ -1,0 +1,26 @@
+﻿{
+  "creator": "Bilibili 博主口袋迷AG",
+  "profile_id": "343348",
+  "primary_entries": [
+    {
+      "id": "bili-space-lists",
+      "url": "https://space.bilibili.com/343348/lists",
+      "purpose": "合集/列表页，重点查找 2026vgc比赛解说、宝可梦冠军对战、宝可梦冠军热门分析。",
+      "status": "pending-collection"
+    },
+    {
+      "id": "bili-upload-video",
+      "url": "https://space.bilibili.com/343348/upload/video",
+      "purpose": "投稿视频页，重点查找宝可梦冠军mega、对战精灵用法分析；该页有多页，需要逐页记录。",
+      "status": "pending-collection"
+    }
+  ],
+  "priority_topics": [
+    "2026vgc比赛解说",
+    "宝可梦冠军对战",
+    "宝可梦冠军热门分析",
+    "宝可梦冠军mega",
+    "对战精灵用法分析"
+  ],
+  "videos": []
+}

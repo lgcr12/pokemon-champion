@@ -1213,6 +1213,10 @@ body.has-ai-advice .team-library-preview {
   border-left-color: var(--color-warn);
 }
 
+.speedline-row.is-unknown {
+  border-left-color: var(--text-muted);
+}
+
 .speedline-rank strong {
   display: block;
   color: var(--text-main);
@@ -1821,6 +1825,14 @@ body.has-ai-advice .team-library-preview {
   color: #166534;
 }
 
+.ai-build-source {
+  width: max-content;
+  max-width: 100%;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .ai-structure-score.is-warn {
   border-color: rgba(245, 158, 11, 0.42);
   background: #fffbeb;
@@ -2049,6 +2061,60 @@ body.has-ai-advice .team-library-preview {
   overflow: hidden;
 }
 
+.replay-feedback {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 0.9fr);
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid rgba(37, 99, 235, 0.18);
+  border-radius: var(--radius-md);
+  background: rgba(239, 246, 255, 0.62);
+}
+
+.replay-feedback strong {
+  display: block;
+  font-size: 14px;
+}
+
+.replay-feedback p {
+  margin: 5px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.replay-feedback-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.7fr) minmax(92px, 0.45fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.replay-feedback-form input,
+.replay-feedback-form select {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  background: #ffffff;
+  color: var(--text-main);
+  font: inherit;
+}
+
+.replay-feedback-status {
+  grid-column: 1 / -1;
+}
+
+.replay-feedback-status.is-error {
+  color: #b91c1c;
+}
+
+.replay-feedback-status.is-ok {
+  color: #047857;
+}
+
 .battle-review-list {
   display: grid;
   gap: 8px;
@@ -2218,6 +2284,79 @@ body.battle-review-open {
 .ai-note {
   padding-top: 8px;
   border-top: 1px solid rgba(226, 232, 240, 0.78);
+}
+
+.ai-evidence {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.strict-build-report,
+.ai-diagnostic {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid rgba(37, 99, 235, 0.2);
+  background: rgba(239, 246, 255, 0.64);
+}
+
+.strict-build-report {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.strict-variant-picker > div {
+  display: grid;
+  gap: 8px;
+}
+
+.strict-variant-picker button {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  gap: 10px;
+  width: 100%;
+  min-height: 38px;
+  text-align: left;
+  align-items: center;
+}
+
+.strict-variant-picker button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.strict-variant-picker button.is-active {
+  border-color: var(--accent, #1677ff);
+  background: color-mix(in srgb, var(--accent, #1677ff) 9%, transparent);
+}
+
+.strict-build-report section {
+  min-width: 0;
+}
+
+.strict-build-report h3,
+.ai-diagnostic strong {
+  margin: 0;
+  font-size: 14px;
+}
+
+.strict-build-report p,
+.strict-build-report ul,
+.ai-diagnostic p,
+.ai-diagnostic ul {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+}
+
+.strict-build-report ul,
+.ai-diagnostic ul {
+  padding-left: 18px;
+}
+
+.ai-diagnostic {
+  border-color: rgba(239, 68, 68, 0.28);
+  background: rgba(254, 242, 242, 0.78);
 }
 
 .ai-card-actions {
@@ -3449,6 +3588,11 @@ body[data-font-scale="large"] select {
     grid-template-columns: 1fr;
   }
 
+  .replay-feedback,
+  .replay-feedback-form {
+    grid-template-columns: 1fr;
+  }
+
   .team-preview-mons img {
     width: 100%;
     height: auto;
@@ -3506,6 +3650,14 @@ body[data-font-scale="large"] select {
 }
 
 @media (max-width: 768px) {
+  .strict-build-report {
+    grid-template-columns: 1fr;
+  }
+
+  .strict-build-result .ai-format-card .ai-team-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .premium-layout {
     padding: 0 16px 48px;
   }
@@ -3567,6 +3719,10 @@ body[data-font-scale="large"] select {
 }
 
 @media (max-width: 520px) {
+  .strict-build-result .ai-format-card .ai-team-grid {
+    grid-template-columns: 1fr;
+  }
+
   .ai-beginner-team-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

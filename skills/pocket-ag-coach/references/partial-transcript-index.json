@@ -1,0 +1,14 @@
+[
+  {
+    "bvid": "BV1ufDwBEEnM",
+    "status": "partial",
+    "transcript_path": "audio-transcripts\\BV1ufDwBEEnM.partial.txt",
+    "chunk_count": 34,
+    "line_count": 685,
+    "model_filter": "tiny",
+    "device_filter": "cuda",
+    "compute_type_filter": "float16",
+    "batch_size_filter": 8,
+    "chunk_seconds_filter": 600
+  }
+]

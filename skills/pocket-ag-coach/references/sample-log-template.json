@@ -1,0 +1,18 @@
+﻿# Sample Log Template
+
+[
+  {
+    "source_url": "",
+    "page_number": "",
+    "series": "",
+    "video_title": "",
+    "date": "",
+    "format": "single|double",
+    "scene": "team|lead|midgame|endgame|review",
+    "decision": "",
+    "reason": "",
+    "evidence_timestamp": "",
+    "confidence": "high|medium|low",
+    "tags": []
+  }
+]

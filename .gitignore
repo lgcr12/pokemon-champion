@@ -8,5 +8,6 @@ __pycache__/
 *.py[cod]
 data/*.json
 !data/.gitkeep
+!data/zh-hans-terms.json
 skills/pocket-ag-coach/references/audio/
 skills/pocket-ag-coach/references/audio-transcripts/

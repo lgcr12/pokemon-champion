@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Champion Lab Showdown Bridge",
+  "version": "1.0.0",
+  "description": "Imports a locally verified Champion Lab team into Pokemon Showdown's team storage.",
+  "host_permissions": [
+    "http://127.0.0.1:4174/*",
+    "https://play.pokemonshowdown.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://play.pokemonshowdown.com/*"],
+      "js": ["page-bridge.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://play.pokemonshowdown.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

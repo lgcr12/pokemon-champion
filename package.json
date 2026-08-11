@@ -7,11 +7,21 @@
     "fetch:data": "node scripts/fetch-data.mjs",
     "fetch:teams": "node scripts/fetch-teams.mjs",
     "fetch:knowledge": "node scripts/fetch-knowledge.mjs",
+    "build:zh-hans": "node scripts/build-zh-hans-dictionary.mjs",
     "fetch:teams:fast": "set ENRICH_TEAMS=0&& node scripts/fetch-teams.mjs",
     "fetch:missing-all": "node scripts/fetch-data.mjs && node scripts/fetch-teams.mjs && node scripts/fetch-knowledge.mjs",
     "fetch:all": "node scripts/fetch-data.mjs && node scripts/fetch-teams.mjs && node scripts/fetch-knowledge.mjs",
+    "qa:strict-build": "node scripts/qa-strict-team-build.mjs",
+    "qa:strict-ui": "node scripts/qa-strict-ui.mjs",
+    "qa:hard-constraints-ui": "node scripts/qa-hard-constraints-ui.mjs",
+    "qa:build-variation": "node scripts/qa-build-variation-ui.mjs",
+    "qa:showdown-bridge": "node scripts/qa-showdown-bridge.mjs",
+    "qa:speedline": "node scripts/qa-speedline.mjs",
+    "qa:battle-eval": "node scripts/qa-battle-eval.mjs",
+    "qa:zh-hans-ui": "node scripts/qa-zh-hans-ui.mjs",
     "capture:screenshots": "node scripts/capture-screenshots.mjs",
     "capture:social": "node scripts/capture-social-screenshots.mjs",
+    "postinstall": "npm --prefix node_modules/pokemon-showdown run build",
     "start": "npx http-server -p 4173 -c-1 .",
     "start:ai": "node server.mjs"
   },
@@ -19,6 +29,6 @@
     "playwright": "^1.60.0"
   },
   "dependencies": {
-    "pokemon-showdown": "^0.11.10"
+    "pokemon-showdown": "github:smogon/pokemon-showdown#master"
   }
 }

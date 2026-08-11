@@ -65,6 +65,8 @@ const state = {
   aiLastContext: null,
   aiBattleBusy: false,
   aiBattleEval: null,
+  replayBusy: false,
+  replayFeedback: null,
   battleReviewOpen: false,
   battleReviewFormat: "single",
   battleReviewEntry: null,
@@ -87,6 +89,8 @@ const AI_CONFIG_KEY = "champion-lab-ai-config-v1";
 const AI_MODELS_CACHE_KEY = "champion-lab-ai-models-v1";
 const AI_FAILURE_MEMORY_KEY = "champion-lab-ai-failure-memory-v1";
 const AI_BATTLE_HISTORY_KEY = "champion-lab-ai-battle-history-v1";
+const AI_BUILD_METHOD_KEY = "champion-lab-ai-build-method-v1";
+const AI_VARIATION_HISTORY_KEY = "champion-lab-ai-variation-history-v1";
 const RULE_PREFS_KEY = "champion-lab-rule-prefs-v1";
 const UI_LEVEL_KEY = "champion-lab-ui-level-v1";
 const AI_REQUEST_TIMEOUTS_MS = {
@@ -186,6 +190,7 @@ const SHOWDOWN_DEX = typeof globalThis !== "undefined" ? globalThis.Dex || null 
 const SHOWDOWN_SPECIES_LIST = SHOWDOWN_DEX?.species?.all ? SHOWDOWN_DEX.species.all() : [];
 const SHOWDOWN_SPECIES_BY_ID = new Map(SHOWDOWN_SPECIES_LIST.map((species) => [String(species.id || "").toLowerCase(), species]));
 const SHOWDOWN_SPECIES_BY_NUM = new Map(SHOWDOWN_SPECIES_LIST.filter((species) => Number.isFinite(Number(species.num))).map((species) => [Number(species.num), species]));
+let zhHansTerms = { moves: {}, abilities: {}, items: {}, pokemon: {} };
 const LOCALIZED_TERMS = {
   abilities: {
     contrary: "唱反调",
@@ -322,6 +327,9 @@ const LOCALIZED_TERMS = {
     lightningrod: "避雷针",
     levitate: "漂浮",
     "soundproof": "隔音",
+    berserk: "怒火冲天",
+    "liquid voice": "湿润之声",
+    liquidvoice: "湿润之声",
   },
   natures: {
     adamant: "固执",
@@ -343,6 +351,22 @@ const LOCALIZED_TERMS = {
     "わんぱく": "淘气",
   },
   moves: {
+    "bitter blade": "悔念剑",
+    bitterblade: "悔念剑",
+    "gigaton hammer": "巨锻锤",
+    gigatonhammer: "巨锻锤",
+    "make it rain": "淘金潮",
+    makeitrain: "淘金潮",
+    "eerie spell": "诡异咒语",
+    eariespell: "诡异咒语",
+    "chilly reception": "冷笑话",
+    chillyreception: "冷笑话",
+    "sludge bomb": "污泥炸弹",
+    sludgebomb: "污泥炸弹",
+    "giga drain": "终极吸取",
+    gigadrain: "终极吸取",
+    "body press": "扑击",
+    bodypress: "扑击",
     "brave bird": "勇鸟猛攻",
     bravebird: "勇鸟猛攻",
     "close combat": "近身战",
@@ -644,6 +668,10 @@ const LOCALIZED_TERMS = {
     coaching: "指导",
     discharge: "放电",
     trick: "戏法",
+    "lumina crash": "琉光冲击",
+    luminacrash: "琉光冲击",
+    "bitter malice": "冤冤相报",
+    bittermalice: "冤冤相报",
   },
   items: {
     "weakness policy": "弱点保险",
@@ -794,6 +822,8 @@ const LOCALIZED_TERMS = {
     "assault vest": "突击背心",
     assaultvest: "突击背心",
     feraligite: "大力鳄进化石",
+    starminite: "宝石海星进化石",
+    starmnite: "宝石海星进化石",
   },
 };
 const TYPE_EFFECTIVENESS = {
@@ -1045,6 +1075,22 @@ function localTermKey(value = "") {
     .replace(/[^a-z0-9]+/g, "");
 }
 
+async function loadZhHansTerms() {
+  try {
+    const response = await fetch(`data/zh-hans-terms.json?t=${Date.now()}`, { cache: "no-store" });
+    if (!response.ok) return;
+    const data = await response.json();
+    zhHansTerms = {
+      moves: data.moves || {},
+      abilities: data.abilities || {},
+      items: data.items || {},
+      pokemon: data.pokemon || {},
+    };
+  } catch {
+    // Keep the built-in translations usable when the optional dictionary is unavailable.
+  }
+}
+
 function cnKey(value = "") {
   return String(value || "").replace(/[^\u3400-\u9fff]+/g, "");
 }
@@ -1061,10 +1107,11 @@ function nameMatchesGoal(goal = "", name = "") {
   if (lowerGoal.includes(lowerName) || (compactName && compactGoal.includes(compactName))) return true;
   if (!compactNameCn || !compactGoalCn) return false;
   const baseNameCn = compactNameCn.replace(/^(超级|超极巨)/, "");
+  // Never treat a one-character alias such as "龙" as a Pokemon name.
   return (
-    compactGoalCn.includes(compactNameCn) ||
+    (compactNameCn.length >= 2 && compactGoalCn.includes(compactNameCn)) ||
     (baseNameCn.length >= 2 && compactGoalCn.includes(baseNameCn)) ||
-    (compactGoalCn.length >= 2 && compactNameCn.includes(compactGoalCn))
+    (compactGoalCn.length >= 2 && compactNameCn.length >= 2 && compactNameCn.includes(compactGoalCn))
   );
 }
 
@@ -1085,7 +1132,8 @@ function localizeTerm(value = "", category = "") {
   if (!text) return "";
   if (/[\u3400-\u9fff]/.test(text)) return text;
   const dict = LOCALIZED_TERMS[category] || {};
-  return dict[text.toLowerCase()] || dict[localTermKey(text)] || text;
+  const generated = zhHansTerms[category] || {};
+  return dict[text.toLowerCase()] || dict[localTermKey(text)] || generated[text.toLowerCase()] || generated[localTermKey(text)] || text;
 }
 
 function ensureAdviceMove(item = {}, moveName = "") {
@@ -1187,6 +1235,7 @@ function localizeAdviceText(value = "") {
   let text = String(value || "");
   if (!text) return "";
   const replacements = {
+    "OP.GG Replica Teams": "OP.GG 热门队样本",
     "charizardite-y": "喷火龙进化石 Y",
     "charizardite-x": "喷火龙进化石 X",
     dragoninite: "快龙进化石",
@@ -1202,6 +1251,9 @@ function localizeAdviceText(value = "") {
     "sitrus-berry": "文柚果",
     "heat-wave": "热风",
     "earth-power": "大地之力",
+    "bitter-blade": "悔念剑",
+    "gigaton-hammer": "巨锻锤",
+    "make-it-rain": "淘金潮",
     "fake-out": "击掌奇袭",
     "throat-chop": "地狱突刺",
     "parting-shot": "抛下狠话",
@@ -1370,8 +1422,18 @@ function localizePokemonName(value = "") {
     ironbundle: "铁包袱",
     fluttermane: "振翼发",
     chiyu: "古玉鱼",
+    drampa: "老翁龙",
+    kingambit: "仆斩将军",
+    primarina: "西狮海壬",
+    amoonguss: "败露球菇",
+    mimikyu: "谜拟Ｑ",
+    slowkinggalar: "伽勒尔呆智翁",
+    slowkinggalarian: "伽勒尔呆智翁",
   };
   if (pokemonAliases[key]) return pokemonAliases[key];
+  if (zhHansTerms.pokemon?.[key]) return zhHansTerms.pokemon[key];
+  const baseFormKey = key.replace(/(female|male|gmax|mega[xy]?)$/, "");
+  if (baseFormKey !== key && zhHansTerms.pokemon?.[baseFormKey]) return zhHansTerms.pokemon[baseFormKey];
   const fromCurrent = state.data?.pokemon?.find((mon) => [mon.slug, mon.name, knowledgeEntryFor(mon)?.showdown?.name].some((name) => idKey(name) === key));
   if (fromCurrent?.name) return fromCurrent.name;
   const data = currentPokeCampData();
@@ -1530,13 +1592,76 @@ const ROLE_TEMPLATES = {
   },
 };
 
+const SPEED_UP_NATURES = new Set(["timid", "jolly", "hasty", "naive", "胆小", "爽朗", "急躁", "天真", "おくびょう", "ようき", "せっかち", "むじゃき"]);
+const SPEED_DOWN_NATURES = new Set(["brave", "relaxed", "quiet", "sassy", "勇敢", "悠闲", "冷静", "自大", "ゆうかん", "のんき", "れいせい", "なまいき"]);
+
+function normalizedSpeedText(value = "") {
+  return String(value || "").trim().toLowerCase().replace(/[\s_-]+/g, "");
+}
+
+function statAllocationFromText(value = "") {
+  const text = String(value || "").replace(/[，、]/g, "/");
+  const aliases = {
+    hp: "hp", h: "hp", 体力: "hp", hp努力: "hp",
+    atk: "atk", a: "atk", attack: "atk", 攻击: "atk",
+    def: "def", b: "def", defense: "def", 防御: "def",
+    spa: "spa", c: "spa", specialattack: "spa", 特攻: "spa",
+    spd: "spd", d: "spd", specialdefense: "spd", 特防: "spd",
+    spe: "spe", s: "spe", speed: "spe", 速度: "spe",
+  };
+  const allocations = {};
+  const add = (rawStat, rawValue) => {
+    const statKey = aliases[normalizedSpeedText(rawStat)];
+    const amount = Number(rawValue);
+    if (!statKey || !Number.isFinite(amount) || amount < 0 || amount > 252) return;
+    allocations[statKey] = amount;
+  };
+  for (const match of text.matchAll(/(?:^|[\s/,])([A-Za-z\u4e00-\u9fff]+)\s*(\d{1,3})(?=$|[\s/,])/g)) add(match[1], match[2]);
+  for (const match of text.matchAll(/(?:^|[\s/,])(\d{1,3})\s*([A-Za-z\u4e00-\u9fff]+)(?=$|[\s/,])/g)) add(match[2], match[1]);
+  return allocations;
+}
+
+function battleSpeedProfile(pokemon) {
+  const config = editableConfigFor(pokemon);
+  const pokeCamp = pokeCampEntryFor(pokemon);
+  const baseSpeed = stat(pokemon, "速度") || Number(pokemon?.baseStats?.spe || pokemon?.baseStats?.speed || pokeCamp?.stats?.speed || pokeCamp?.baseSpeed || 0);
+  if (!baseSpeed) return { value: 0, resolved: false, source: "缺少种族速度", baseSpeed: 0 };
+
+  const evs = statAllocationFromText(config.evs);
+  const ivs = statAllocationFromText(config.ivs);
+  const hasConfiguredEvs = Object.keys(evs).length > 0;
+  const configuredNature = String(config.nature || "").trim();
+  const preset = pokeCampSpeedPresetFor(pokemon);
+  const presetNature = String(preset?.natureId || "").trim();
+  const nature = configuredNature || presetNature;
+  const natureKey = normalizedSpeedText(nature);
+  const natureMultiplier = SPEED_UP_NATURES.has(natureKey) ? 1.1 : SPEED_DOWN_NATURES.has(natureKey) ? 0.9 : 1;
+  const speedEv = hasConfiguredEvs ? Number(evs.spe || 0) : Number(preset?.speedSp);
+  const speedIv = Object.prototype.hasOwnProperty.call(ivs, "spe") ? Number(ivs.spe) : 31;
+  const hasPreset = Number.isFinite(Number(preset?.speedSp)) && Boolean(presetNature);
+  const resolved = hasConfiguredEvs || hasPreset;
+  if (!resolved) return { value: 0, resolved: false, source: "缺少努力值/性格配置", baseSpeed };
+  return {
+    value: level50Speed(baseSpeed, { ev: speedEv, iv: speedIv, nature: natureMultiplier }),
+    resolved: true,
+    source: hasConfiguredEvs ? "队伍配置" : "同格式常见预设",
+    baseSpeed,
+  };
+}
+
 function effectiveSpeed(pokemon) {
-  const base = stat(pokemon, "速度");
+  const profile = battleSpeedProfile(pokemon);
+  if (!profile.resolved) return { label: "待配置", value: 0, ...profile };
+  const base = profile.value;
   const boosts = [];
   if (hasItem(pokemon, /讲究围巾/)) boosts.push({ label: "围巾", value: Math.floor(base * 1.5) });
   if (hasMove(pokemon, MOVE_PATTERNS.speedControl)) boosts.push({ label: "控速", value: base * 2 });
   if (hasAbility(pokemon, /悠游自如|叶绿素|拨沙|拨雪|轻装|加速/)) boosts.push({ label: "特性加速", value: base * 2 });
-  return boosts.sort((a, b) => b.value - a.value)[0] || { label: "原速", value: base };
+  return { ...profile, ...(boosts.sort((a, b) => b.value - a.value)[0] || { label: "原速", value: base }) };
+}
+
+function resolvedTeamSpeedProfiles(team = state.team) {
+  return team.map((mon) => ({ mon, speed: effectiveSpeed(mon) })).filter(({ speed }) => speed.resolved && Number.isFinite(speed.value) && speed.value > 0);
 }
 
 function currentPokeCampData() {
@@ -1572,8 +1697,8 @@ function pokeCampSpeedPresetFor(mon, format = state.format) {
   if (!data?.speedline?.presets || !entry) return null;
   const preset = data.speedline.presets[entry.identifier] || data.speedline.presets[entry.speciesIdentifier];
   if (!preset) return null;
-  const key = format === "double" ? "doubles" : "singles";
-  return preset[key]?.natureId ? preset[key] : preset.all?.natureId ? preset.all : null;
+  const keys = format === "double" ? ["double", "doubles"] : ["single", "singles"];
+  return keys.map((key) => preset[key]).find((item) => item?.natureId) || (preset.all?.natureId ? preset.all : null);
 }
 
 function speedPresetNote(mon) {
@@ -1606,8 +1731,8 @@ function speedlinePresetForIdentifier(identifier = "") {
   const keyId = entry?.identifier || entry?.speciesIdentifier || identifier;
   const preset = data.speedline.presets[keyId];
   if (!preset) return null;
-  const key = state.format === "double" ? "doubles" : "singles";
-  return preset[key]?.natureId ? preset[key] : preset.all?.natureId ? preset.all : null;
+  const keys = state.format === "double" ? ["double", "doubles"] : ["single", "singles"];
+  return keys.map((key) => preset[key]).find((item) => item?.natureId) || (preset.all?.natureId ? preset.all : null);
 }
 
 function level50Speed(baseSpeed = 0, { ev = 252, iv = 31, nature = 1.1 } = {}) {
@@ -2108,21 +2233,38 @@ function requiredCorePokemonFromGoal(goal = "", source = state.data?.pokemon || 
       .replace(/midnight$/i, "")
       .replace(/dusk$/i, "");
   const isMegaForm = (mon = {}) => /mega|超级/i.test(`${mon.slug || ""} ${mon.name || ""}`);
-  const direct = [...data.filter((mon) => goalMatchesPokemon(goal, mon)), ...goalPokemonLibraryCandidates(goal, format)]
+  const candidateGoalNames = (mon = {}) => [mon.name, pokeCampEntryFor(mon)?.names?.zh, localizePokemonName(mon.slug || "")]
+    .map((value) => String(value || "").trim())
+    .filter((value) => value.length >= 2 && nameMatchesGoal(goal, value));
+  const matched = [...data.filter((mon) => goalMatchesPokemon(goal, mon)), ...goalPokemonLibraryCandidates(goal, format)];
+  // Prefer the explicit long form name when it contains a base form name. For
+  // example, "清洗洛托姆" must not also lock ordinary "洛托姆" as a second core.
+  const direct = matched
+    .filter((mon, index, list) => {
+      const names = candidateGoalNames(mon);
+      return !list.some((other, otherIndex) => otherIndex !== index && candidateGoalNames(other).some((otherName) =>
+        names.some((name) => otherName.length > name.length && otherName.includes(name))
+      ));
+    })
     .sort((a, b) => {
+      const specificity = (mon) => Math.max(0, ...candidateGoalNames(mon).map((name) => cnKey(name).length));
       const megaPreference = wantsMega ? Number(isMegaForm(b)) - Number(isMegaForm(a)) : Number(isMegaForm(a)) - Number(isMegaForm(b));
-      return megaPreference || Number(a.rank || 9999) - Number(b.rank || 9999);
+      return specificity(b) - specificity(a) || megaPreference || Number(a.rank || 9999) - Number(b.rank || 9999);
     });
   const seen = new Set();
   const seenFamilies = new Set();
+  const seenExplicitNames = new Set();
   return direct
     .filter((mon) => {
       const key = idKey(mon.slug || mon.name || mon.id);
       const family = familyKey(mon) || key;
+      const names = candidateGoalNames(mon).map(cnKey).filter(Boolean);
       if (!key || seen.has(key)) return false;
       if (family && seenFamilies.has(family)) return false;
+      if (names.some((name) => [...seenExplicitNames].some((chosen) => chosen.length > name.length && chosen.includes(name)))) return false;
       seen.add(key);
       seenFamilies.add(family);
+      names.forEach((name) => seenExplicitNames.add(name));
       return true;
     })
     .slice(0, 2);
@@ -2157,8 +2299,15 @@ function goalConstraintsFromGoal(goal = "", requiredPokemon = [], source = state
   const cn = cnKey(goal);
   const text = String(goal || "").toLowerCase();
   const goalText = `${goal} ${text}`;
+  const explicitCores = requiredPokemon.filter((mon, index, entries) => {
+    const name = cnKey(mon?.name || "");
+    return !name || !entries.some((other, otherIndex) => {
+      const otherName = cnKey(other?.name || "");
+      return otherIndex !== index && otherName.length > name.length && otherName.includes(name);
+    });
+  });
   const constraints = {
-    requiredPokemon: requiredPokemon.map((mon) => ({
+    requiredPokemon: explicitCores.map((mon) => ({
       id: mon.id,
       name: mon.name,
       slug: mon.slug,
@@ -4182,14 +4331,25 @@ function showdownLegalSpeciesName(mon) {
 function showdownLegalValue(value = "", fallback = "", category = "") {
   const text = String(value || "").trim();
   const safeFallback = String(fallback || "").trim();
-  if (!text || containsNonShowdownText(text) || isPlaceholderConfigValue(text)) return safeFallback;
+  const showdownText = containsNonShowdownText(text) ? showdownSourceTerm(text, category) : text;
+  if (!showdownText || isPlaceholderConfigValue(showdownText)) return safeFallback;
   const dexRoot = typeof globalThis !== "undefined" ? globalThis.Dex : null;
   const dex = category && dexRoot?.[category];
   if (dex?.get) {
-    const data = dex.get(text);
+    const data = dex.get(showdownText);
     if (!data?.exists) return safeFallback;
   }
-  return text;
+  return showdownText;
+}
+
+function showdownSourceTerm(value = "", category = "") {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const sourcesFor = (dictionary = {}) => Object.entries(dictionary)
+    .filter(([, localized]) => String(localized || "").trim() === text)
+    .map(([source]) => source);
+  return [...sourcesFor(LOCALIZED_TERMS[category] || {}), ...sourcesFor(zhHansTerms[category] || {})]
+    .find((candidate) => !containsNonShowdownText(candidate)) || "";
 }
 
 function resolveAdvicePokemonMon(item = {}, format = state.format) {
@@ -4252,7 +4412,8 @@ function showdownTeamText() {
       if (config.level) lines.push(`Level: ${config.level}`);
       if (config.shiny) lines.push("Shiny: Yes");
       if (config.teraType) lines.push(`Tera Type: ${config.teraType}`);
-      if (config.evs) lines.push(`EVs: ${config.evs}`);
+      const evs = showdownEvsFromChampionStats(config.evs || config.stats, "");
+      if (evs) lines.push(`EVs: ${evs}`);
       if (config.ivs) lines.push(`IVs: ${config.ivs}`);
       if (nature) lines.push(`${nature} Nature`);
       if (config.ball) lines.push(`Ball: ${config.ball}`);
@@ -4280,6 +4441,8 @@ function showdownTextForTeamMembers(members = [], configurations = [], format = 
       const lines = [`${species}${item ? ` @ ${item}` : ""}`];
       if (ability) lines.push(`Ability: ${ability}`);
       lines.push("Level: 50");
+      const evs = showdownEvsFromChampionStats(config.evs || config.stats, "");
+      if (evs) lines.push(`EVs: ${evs}`);
       if (nature) lines.push(`${nature} Nature`);
       for (const move of moves.slice(0, 4)) lines.push(`- ${move}`);
       return lines.filter(Boolean).join("\n");
@@ -4292,6 +4455,16 @@ function showdownSafeValue(value = "", fallback = "") {
   const text = String(value || "").trim();
   if (!text || containsNonShowdownText(text) || isPlaceholderConfigValue(text)) return String(fallback || "").trim();
   return text;
+}
+
+function showdownEvsFromChampionStats(value = "", fallback = "") {
+  const text = String(value || "").trim();
+  const aliases = { h: "HP", a: "Atk", b: "Def", c: "SpA", d: "SpD", s: "Spe" };
+  const entries = [...text.matchAll(/(?:^|[\s/,])([habcds])\s*(\d{1,3})(?=$|[\s/,])/gi)]
+    .map((match) => ({ key: String(match[1] || "").toLowerCase(), value: Number(match[2] || 0) }))
+    .filter((entry) => aliases[entry.key] && entry.value > 0);
+  if (!entries.length) return showdownSafeValue(text, fallback);
+  return entries.map((entry) => `${entry.value} ${aliases[entry.key]}`).join(" / ");
 }
 
 function adviceShowdownTeamText(format = state.aiAdviceView || state.format) {
@@ -4315,7 +4488,7 @@ function adviceShowdownTeamText(format = state.aiAdviceView || state.format) {
       const lines = [`${species || mon.slug || item.name}${itemName ? ` @ ${itemName}` : ""}`];
       if (ability) lines.push(`Ability: ${ability}`);
       lines.push(`Level: ${showdownSafeValue(item.level, "50") || "50"}`);
-      lines.push(`EVs: ${showdownSafeValue(item.evs, "4 HP") || "4 HP"}`);
+      lines.push(`EVs: ${showdownEvsFromChampionStats(item.evs, "4 HP") || "4 HP"}`);
       if (nature) lines.push(`${nature} Nature`);
       for (const move of finalMoves) lines.push(`- ${move}`);
       return lines.join("\n");
@@ -4550,6 +4723,69 @@ async function copyShowdownText() {
     const output = $("#showdown-export");
     output?.select();
     document.execCommand("copy");
+  }
+}
+
+async function openShowdownForBattle(text = "") {
+  const teamText = text || adviceShowdownTeamText(state.aiAdviceView || state.format) || showdownTeamText();
+  if (!teamText) return;
+  const format = state.aiAdviceView || state.format;
+  const showdownWindow = window.open("about:blank", "champion-lab-showdown");
+  try {
+    await navigator.clipboard.writeText(teamText);
+  } catch {
+    const output = $("#showdown-export");
+    output?.select();
+    document.execCommand("copy");
+  }
+  try {
+    const res = await fetch(aiApiUrl("/api/showdown-bridge"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ teamText, format, name: `Champion Lab ${formatLabel(format)}队伍` }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok || !data.token) {
+      const problems = Array.isArray(data.problems) ? data.problems.slice(0, 3).join("；") : "";
+      throw new Error([data.error || "无法创建一键导入令牌。", problems].filter(Boolean).join(" "));
+    }
+    const url = `https://play.pokemonshowdown.com/?champion-lab-import=${encodeURIComponent(data.token)}`;
+    const launch = await fetch(aiApiUrl("/api/showdown-bridge/launch"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: data.token }),
+    }).then(async (response) => ({ ok: response.ok, body: await response.json().catch(() => ({})) })).catch(() => ({ ok: false, body: {} }));
+    if (launch.ok && launch.body?.ok) {
+      showdownWindow?.close();
+    } else if (showdownWindow) {
+      showdownWindow.location.replace(url);
+    } else {
+      window.open(url, "_blank", "noopener");
+    }
+    window.setTimeout(async () => {
+      try {
+        const pending = await fetch(aiApiUrl(`/api/showdown-bridge?token=${encodeURIComponent(data.token)}`), { cache: "no-store" });
+        if (!pending.ok) return;
+        state.showdownValidation = {
+          ok: false,
+          unavailable: true,
+          format,
+          problems: ["Showdown 页面没有完成自动导入。请启用 Champion Lab Showdown Bridge 扩展后重试；队伍文本已复制到剪贴板。"],
+        };
+        renderValidationHints();
+      } catch {
+        // The browser can still complete the import even if this status check is unavailable.
+      }
+    }, 25000);
+  } catch (err) {
+    showdownWindow?.close();
+    state.showdownValidation = {
+      ok: false,
+      format,
+      problems: [err.message || "无法创建 Showdown 导入令牌。请先修复队伍中的非法配置。"],
+    };
+    renderValidationHints();
+    console.warn("Showdown one-click import unavailable; copied team text remains available.", err);
   }
 }
 
@@ -4789,7 +5025,10 @@ function pokemonForTeamMember(member, options = {}) {
     if (bySlug) return bySlug;
   }
   const targetId = Number(alias?.id || member.id);
-  return targetData.pokemon.find((mon) => Number(mon.id) === targetId) || (allowFallback ? fallbackPokemonForTeamMember(member) : null);
+  const byId = Number.isFinite(targetId) && targetId > 0
+    ? targetData.pokemon.find((mon) => Number(mon.id) === targetId)
+    : null;
+  return byId || (allowFallback ? fallbackPokemonForTeamMember(member) : null);
 }
 
 function addPokemonToTeam(mon, options = {}) {
@@ -4816,7 +5055,7 @@ function fallbackPokemonForTeamMember(member) {
   return {
     id: Number.isFinite(id) ? id : String(member.id || member.name),
     name: member.name || `外部成员 ${member.id || ""}`.trim(),
-    slug: `external-${member.id || member.name}`,
+    slug: member.slug || `external-${member.id || member.name}`,
     rank: 9999,
     sprite: member.sprite || "",
     types: [],
@@ -5590,7 +5829,12 @@ function renderSpeedlineSummary() {
     target.innerHTML = `<p class="speedline-summary-text">先选队伍，速度线会自动告诉你哪些档位已压过、哪些接近、哪些还得控速。</p>`;
     return;
   }
-  const ownMax = Math.max(...state.team.map((mon) => effectiveSpeed(mon).value));
+  const knownSpeeds = resolvedTeamSpeedProfiles();
+  if (!knownSpeeds.length) {
+    target.innerHTML = `<p class="speedline-summary-text">当前队伍的速度配置还没有解析出来。填写努力值和性格后，我会按实际速度帮你对照关键档位。</p>`;
+    return;
+  }
+  const ownMax = Math.max(...knownSpeeds.map(({ speed }) => speed.value));
   const ahead = rows.filter((row) => ownMax >= row.actualSpeed).length;
   const close = rows.filter((row) => ownMax < row.actualSpeed && ownMax >= row.actualSpeed - 10).length;
   const firstGap = rows.find((row) => ownMax < row.actualSpeed) || rows[0];
@@ -5785,6 +6029,7 @@ function renderAdviceCard(item = {}, index, format = state.format) {
       ${meta.length ? `<div class="ai-mon-meta">${meta.map((value) => `<span>${escapeHtml(value)}</span>`).join("")}</div>` : ""}
       ${moves.length ? `<div class="ai-moves">${moves.map((value) => `<span>${escapeHtml(value)}</span>`).join("")}</div>` : ""}
       ${item.note ? `<p class="ai-note">${escapeHtml(item.note)}</p>` : ""}
+      ${item.evidence ? `<p class="ai-evidence">配置证据：${escapeHtml(item.evidence.season || "M-3")} · ${escapeHtml(item.evidence.format === "double" ? "双打" : "单打")} · ${escapeHtml(localizeAdviceText(item.evidence.source || "热门样本"))}</p>` : ""}
       <div class="ai-card-actions">
         <button class="btn-outline neutral compact" type="button" data-ai-apply-one>只应用这只</button>
         <button class="btn-outline neutral compact" type="button" data-ai-replace-one>替换末位</button>
@@ -6494,6 +6739,55 @@ function syncBattleHistoryToServer(entry) {
   }).catch(() => {});
 }
 
+async function importShowdownReplay() {
+  if (state.replayBusy) return;
+  const url = $("#showdown-replay-url")?.value.trim() || "";
+  const playerName = $("#showdown-replay-player")?.value.trim() || "";
+  if (!url) {
+    state.replayFeedback = { error: "请先粘贴完整的公开 Showdown 回放链接。" };
+    render();
+    return;
+  }
+  const format = state.battleReviewFormat || state.aiAdviceView || state.format;
+  const context = state.aiLastContext || {};
+  state.replayBusy = true;
+  state.replayFeedback = null;
+  render();
+  try {
+    const res = await fetch(aiApiUrl("/api/showdown-replay"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        url,
+        playerName,
+        playerSide: $("#showdown-replay-side")?.value || "",
+        format,
+        contextKey: battleHistoryKey(context),
+        buildIntent: context.buildIntent || "",
+        userGoal: context.userGoal || "",
+        teamSignature: state.aiLastAdvice ? teamSignatureFromAdvice(state.aiLastAdvice, format) : state.team.map((mon) => mon.name || mon.slug).join(" / "),
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data.error || "读取公开回放失败。");
+    const entry = data.entry;
+    const existing = loadBattleHistory();
+    saveBattleHistory([entry, ...existing.filter((item) => item.id !== entry.id)]);
+    state.battleReviewEntry = battleHistoryReviewEntries({ format }).find((item) => item.id === entry.results?.[0]?.id) || null;
+    state.replayFeedback = {
+      ok: true,
+      message: data.replay?.formatMatches && entry.eligibleForBuildFeedback
+        ? "回放已记录，并会在下一次同类构筑时作为实战反馈。"
+        : "回放已记录，但赛制或用户名未匹配，暂不参与当前构筑反馈。",
+    };
+  } catch (err) {
+    state.replayFeedback = { error: err.message || "读取公开回放失败。" };
+  } finally {
+    state.replayBusy = false;
+    render();
+  }
+}
+
 function battleHistoryKey(context = state.aiLastContext || {}) {
   return failureMemoryKey(context);
 }
@@ -6700,7 +6994,8 @@ function rememberBattleEvaluation(format, data, advice = state.aiLastAdvice, con
 function relevantBattleHistory(context = {}) {
   const key = battleHistoryKey(context);
   return loadBattleHistory()
-    .filter((item) => item.key === key || item.teamStyle === context.intent?.teamStyle?.name || (context.intent?.rebuildFromGoal && item.buildIntent === context.buildIntent))
+    .filter((item) => item.eligibleForBuildFeedback !== false)
+    .filter((item) => item.key === key || item.contextKey === key || item.teamStyle === context.intent?.teamStyle?.name || (context.intent?.rebuildFromGoal && item.buildIntent === context.buildIntent))
     .sort((a, b) => (a.winRate || 0) - (b.winRate || 0) || String(b.updatedAt).localeCompare(String(a.updatedAt)))
     .slice(0, 6)
     .map((item) => ({
@@ -6711,6 +7006,7 @@ function relevantBattleHistory(context = {}) {
       avoid: (item.failureReasons || []).slice(0, 3).join("；"),
       actionTags: Object.entries(item.actionTags || {}).map(([tag, count]) => `${tag}:${count}`).slice(0, 6).join("；"),
       badOpponents: (item.badOpponents || []).slice(0, 3).map((opponent) => `${opponent.title}:${opponent.result}`).join("；"),
+      feedbackSignals: Array.isArray(item.feedbackSignals) ? item.feedbackSignals.join("；") : String(item.feedbackSignals || ""),
       count: item.games || 0,
     }));
 }
@@ -6851,6 +7147,7 @@ function renderAIAdvice(data) {
         <button class="btn-outline neutral compact" type="button" data-ai-battle-eval ${state.aiBattleBusy ? "disabled" : ""}>
           ${state.aiBattleBusy ? "模拟中..." : "本地模拟评测"}
         </button>
+        <button class="btn-outline neutral compact" type="button" data-open-showdown>一键导入 Showdown</button>
         <button class="btn-outline neutral compact" type="button" data-battle-review-open>对局回顾</button>
         <button class="btn-outline neutral compact" type="button" data-ai-retry>重新生成</button>
       </div>
@@ -6871,7 +7168,7 @@ function rerenderAIAdvice() {
   const output = $("#ai-output");
   if (!output || !state.aiLastAdvice) return;
   output.className = "ai-output has-structured-result";
-  output.innerHTML = renderAIAdvice({ advice: state.aiLastAdvice });
+  output.innerHTML = state.aiLastAdvice.strictBuild ? renderStrictBuildResult(state.aiLastAdvice) : renderAIAdvice({ advice: state.aiLastAdvice });
   updateDocumentState();
   render();
 }
@@ -6912,9 +7209,11 @@ function renderBattleEvalBlock(format = state.aiAdviceView || state.format) {
       <div class="ai-battle-summary">
         <strong>热门靶队本地模拟：${data.wins || 0}胜 ${data.losses || 0}负 ${data.ties || 0}平</strong>
         <span>胜率 ${data.winRate || 0}% · ${played.length || 0} 局${skipped.length ? ` · 跳过 ${skipped.length} 队` : ""}</span>
+        ${data.rulesEngine?.name ? `<span>规则：${escapeHtml(data.rulesEngine.name)}</span>` : ""}
       </div>
       <div class="ai-battle-actions">
         <button class="btn-outline neutral compact" type="button" data-battle-review-open>对局回顾${reviewCount ? ` ${reviewCount}` : ""}</button>
+        <button class="btn-outline neutral compact" type="button" data-open-showdown>一键导入 Showdown</button>
       </div>
       ${rows.length ? `<ul>${rows.join("")}</ul>` : ""}
       ${topReasons.length ? `<div class="ai-tags warning">${topReasons.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
@@ -6937,6 +7236,11 @@ function renderBattleReviewPanel() {
     .map((entry) => `<button class="battle-review-tab ${selected?.id === entry.id ? "is-active" : ""}" type="button" data-battle-review-select="${escapeHtml(entry.id)}"><strong>${escapeHtml(entry.title)}</strong><span>${escapeHtml(resultLabel(entry.result))} · ${escapeHtml(String(entry.turns || 0))} 回合</span></button>`)
     .join("");
   const details = selected ? renderBattleReviewEntry(selected) : `<p class="empty">没有可回顾的对局。</p>`;
+  const replayFeedback = state.replayFeedback?.error
+    ? `<p class="replay-feedback-status is-error">${escapeHtml(state.replayFeedback.error)}</p>`
+    : state.replayFeedback?.message
+      ? `<p class="replay-feedback-status is-ok">${escapeHtml(state.replayFeedback.message)}</p>`
+      : "";
   return `
     <div id="battle-review-root" class="battle-review-backdrop ${state.battleReviewOpen ? "is-open" : ""}" ${state.battleReviewOpen ? "" : "hidden"}>
       <section class="battle-review-panel" role="dialog" aria-modal="true" aria-labelledby="battle-review-title">
@@ -6951,6 +7255,19 @@ function renderBattleReviewPanel() {
             <button class="btn-outline neutral compact" type="button" data-battle-review-format="double">双打</button>
             <button class="btn-close-palette" type="button" data-battle-review-close aria-label="关闭对局回顾">ESC</button>
           </div>
+        </div>
+        <div class="replay-feedback">
+          <div>
+            <strong>导入真实 Showdown 回放</strong>
+            <p>队伍文本已复制后可在 Showdown 手动导入和实战。对局结束后粘贴公开回放链接，工具会记录赛制、胜负、回合和关键行动，供下一次构筑参考。</p>
+          </div>
+          <div class="replay-feedback-form">
+            <input id="showdown-replay-url" type="url" inputmode="url" placeholder="https://replay.pokemonshowdown.com/..." aria-label="公开回放链接" />
+            <input id="showdown-replay-player" type="text" placeholder="你的 Showdown 用户名" aria-label="你的 Showdown 用户名" />
+            <select id="showdown-replay-side" aria-label="你的对战位置"><option value="">自动识别位置</option><option value="p1">我是 p1</option><option value="p2">我是 p2</option></select>
+            <button class="btn-primary compact" type="button" data-showdown-replay-import ${state.replayBusy ? "disabled" : ""}>${state.replayBusy ? "读取中..." : "导入回放"}</button>
+          </div>
+          ${replayFeedback}
         </div>
         <div class="battle-review-body">
           <div class="battle-review-list">${tabs || `<p class="empty">当前格式还没有可回顾的本地模拟。</p>`}</div>
@@ -7205,7 +7522,554 @@ function promptModeLabel(mode = "quick") {
   return "快速";
 }
 
+function strictBuildVariationKey({ format = state.format, intent = "", buildIntent = "", userGoal = "" } = {}) {
+  const goal = cnKey(userGoal) || String(userGoal || "").trim().toLowerCase().replace(/\s+/g, " ");
+  return [format === "double" ? "double" : "single", intent || buildIntent || "new-team", goal || "默认平衡半攻"].join("|");
+}
+
+function loadStrictBuildVariationHistory() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(AI_VARIATION_HISTORY_KEY) || "{}");
+    return stored && typeof stored === "object" ? stored : {};
+  } catch {
+    return {};
+  }
+}
+
+function strictTeamVariationMembers(team = []) {
+  return [...new Set((team || []).map((member) => typeof member === "object" ? member.slug || member.id || member.name : member).filter(Boolean))].slice(0, 6);
+}
+
+function strictBuildVariationHistoryFor(context = {}) {
+  const key = strictBuildVariationKey(context);
+  const stored = loadStrictBuildVariationHistory()[key];
+  return Array.isArray(stored)
+    ? stored.map(strictTeamVariationMembers).filter((team) => team.length >= 3).slice(0, 5)
+    : [];
+}
+
+function rememberStrictBuildVariation(context = {}, team = []) {
+  const members = strictTeamVariationMembers(team);
+  if (members.length < 6) return;
+  const key = strictBuildVariationKey(context);
+  const history = loadStrictBuildVariationHistory();
+  const signature = members.map((member) => idKey(member)).sort().join("|");
+  const previous = Array.isArray(history[key]) ? history[key] : [];
+  history[key] = [members, ...previous.filter((entry) => strictTeamVariationMembers(entry).map((member) => idKey(member)).sort().join("|") !== signature)].slice(0, 5);
+  localStorage.setItem(AI_VARIATION_HISTORY_KEY, JSON.stringify(history));
+}
+
+function strictBuildPayload(mode = "new-team") {
+  const userGoal = goalText();
+  const requestedFormat = requestedBattleFormat(userGoal);
+  const format = requestedFormat || state.format;
+  const source = state.rawData.formats?.[format]?.pokemon || state.data?.pokemon || [];
+  const knownPokemon = Object.values(state.rawData.formats || {}).flatMap((data) => data?.pokemon || []);
+  const goal = String(userGoal || "");
+  const compactGoal = goal.toLowerCase().replace(/\s+/g, "");
+  const explicitlyForbidden = (mon = {}) => [mon.name, mon.slug]
+    .filter(Boolean)
+    .map((value) => String(value).toLowerCase().replace(/\s+/g, ""))
+    .some((value) => ["不要", "禁用", "不用"].some((prefix) => compactGoal.includes(`${prefix}${value}`)));
+  const requestedIntent = mode === "complete-team" ? "complete-team" : selectedBuildIntent();
+  const intent = requestedIntent === "auto" || requestedIntent === "counter-target" ? "new-team" : requestedIntent;
+  const normalizedGoal = cnKey(userGoal);
+  const explicitCore = [];
+  const seenFamilies = new Set();
+  for (const mon of knownPokemon) {
+    if (explicitlyForbidden(mon)) continue;
+    const chineseName = cnKey(mon.name || "");
+    const englishSlug = String(mon.slug || "").toLowerCase();
+    const mentionsChinese = chineseName.length >= 2 && normalizedGoal.includes(chineseName);
+    const mentionsEnglish = englishSlug.length >= 4 && new RegExp(`(?:^|[^a-z0-9])${englishSlug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:$|[^a-z0-9])`, "i").test(userGoal);
+    if (!mentionsChinese && !mentionsEnglish) continue;
+    const family = String(mon.slug || mon.id || mon.name)
+      .toLowerCase()
+      .replace(/-?mega-?[xy]?$/i, "")
+      .replace(/-?(alola|galar|hisui|paldea|female|male|midday|midnight|dusk)$/i, "");
+    if (seenFamilies.has(family)) continue;
+    seenFamilies.add(family);
+    explicitCore.push(mon);
+  }
+  const constraints = goalConstraintsFromGoal(userGoal, explicitCore, source, format);
+  const escaped = (value = "") => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const configs = state.teamLibrary
+    .filter((team) => team.season === "M-3" && team.format === format)
+    .flatMap((team) => team.configurations || []);
+  const familyKey = (item = {}) => String(item.slug || item.id || item.name || "")
+    .toLowerCase()
+    .replace(/-?mega-?[xy]?$/i, "")
+    .replace(/-?(alola|galar|hisui|paldea|female|male|midday|midnight|dusk)$/i, "");
+  const availableFamilies = new Set([...source, ...configs].map(familyKey).filter(Boolean));
+  constraints.unavailablePokemon = explicitCore
+    .filter((mon) => !availableFamilies.has(familyKey(mon)))
+    .map((mon) => ({ id: mon.id, slug: mon.slug, name: mon.name }));
+  const forbiddenSeen = new Set();
+  constraints.forbiddenPokemon = [...knownPokemon, ...configs]
+    .filter(explicitlyForbidden)
+    .filter((mon) => {
+      const family = familyKey(mon);
+      if (!family || forbiddenSeen.has(family)) return false;
+      forbiddenSeen.add(family);
+      return true;
+    })
+    .map((mon) => ({ id: mon.id, slug: mon.slug, name: mon.name }));
+  const findRequiredConfigValues = (key, category) => [...new Set(configs.flatMap((config) => Array.isArray(config[key]) ? config[key] : [config[key]]).filter(Boolean))]
+    .filter((value) => {
+      const localized = localizeTerm(value, category);
+      return new RegExp(`(?:必须|需要|要有|带)(?:有|带)?\\s*(?:${escaped(localized)}|${escaped(value)})`, "i").test(goal);
+    });
+  constraints.requiredMoves = findRequiredConfigValues("moves", "moves");
+  constraints.requiredItems = findRequiredConfigValues("item", "items");
+  constraints.requiredAbilities = findRequiredConfigValues("ability", "abilities");
+  const selectedMethod = ["sample", "ai-designed", "evolution"].includes($("#ai-build-method")?.value) ? $("#ai-build-method").value : "sample";
+  const variationContext = { format, intent, userGoal };
+  const previousStrictTeam = state.aiLastAdvice?.strictBuild && state.aiLastAdvice?.format === format && strictBuildVariationKey(state.aiLastContext || {}) === strictBuildVariationKey(variationContext)
+    ? strictTeamVariationMembers(state.aiLastAdvice?.[format]?.team || [])
+    : [];
+  const variationHistory = strictBuildVariationHistoryFor(variationContext);
+  const avoidTeams = [...(previousStrictTeam.length ? [previousStrictTeam] : []), ...variationHistory]
+    .filter((team, index, entries) => entries.findIndex((other) => strictTeamVariationMembers(other).map(idKey).sort().join("|") === strictTeamVariationMembers(team).map(idKey).sort().join("|")) === index)
+    .slice(0, 5);
+  const historyContext = { buildIntent: intent, format, userGoal, intent: { goalConstraints: constraints } };
+  return {
+    format,
+    intent,
+    buildMethod: selectedMethod,
+    userGoal,
+    goalConstraints: constraints,
+    avoidTeam: avoidTeams[0] || [],
+    avoidTeams,
+    variationSeed: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
+    battleHistory: relevantBattleHistory(historyContext),
+    currentTeam: state.team.map((mon) => ({
+      id: mon.id,
+      slug: mon.slug,
+      name: mon.name,
+      config: state.teamConfigs?.[configKey(mon)] || {},
+    })),
+  };
+}
+
+function localizedStrictMember(member = {}, format = state.format) {
+  const mon = resolveAdvicePokemonMon(member, format) || pokemonFromAdvice(member, format);
+  return {
+    ...member,
+    id: String(member.id ?? mon?.id ?? ""),
+    slug: member.slug || mon?.slug,
+    name: localizePokemonName(member.name || member.slug || mon?.name || ""),
+    item: localizeTerm(member.item, "items"),
+    ability: localizeTerm(member.ability, "abilities"),
+    nature: localizeTerm(member.nature, "natures"),
+    moves: (member.moves || []).map((move) => localizeTerm(move, "moves")),
+    note: localizeAdviceText(member.note || ""),
+  };
+}
+
+function registerStrictBuildMembers(members = [], format = state.format) {
+  const targetData = state.rawData?.formats?.[format];
+  if (!targetData?.pokemon) return;
+  const allKnown = Object.values(state.rawData.formats || {}).flatMap((data) => data?.pokemon || []);
+  for (const member of members) {
+    const slug = String(member?.slug || "").toLowerCase();
+    if (!slug || targetData.pokemon.some((mon) => String(mon.slug || "").toLowerCase() === slug)) continue;
+    const known = allKnown.find((mon) => String(mon.slug || "").toLowerCase() === slug) || {};
+    targetData.pokemon.push({
+      ...known,
+      id: Number(member.id || known.id || 0),
+      slug: member.slug,
+      name: localizePokemonName(member.name || known.name || member.slug),
+      moves: (member.moves || []).map((name) => ({ name })),
+      items: member.item ? [{ name: member.item }] : [],
+      abilities: member.ability ? [{ name: member.ability }] : [],
+      natures: member.nature ? [{ name: member.nature }] : [],
+      sampleVerified: true,
+    });
+  }
+}
+
+function strictBuildAdvice(build = {}, aiCoach = null) {
+  const format = build.format === "double" ? "double" : "single";
+  registerStrictBuildMembers(build.team || [], format);
+  const team = (build.team || []).map((member) => localizedStrictMember(member, format));
+  const report = build.buildReport || {};
+  const variants = (build.alternatives || []).map((variant, index) => ({
+    ...variant,
+    index,
+    team: (variant.team || []).map((member) => localizedStrictMember(member, format)),
+    plan: localizeAdviceText(variant.plan || report.plan || ""),
+    synergies: (variant.synergies || report.synergies || []).map(localizeAdviceText),
+    risks: (variant.risks || report.risks || []).map(localizeAdviceText),
+  }));
+  const buildMethod = build.buildMethod === "evolution" ? "evolution" : build.buildMethod === "engine-guided" ? "engine-guided" : build.buildMethod === "ai-designed" || report.aiDesign ? "ai-designed" : report.source ? "sample" : "strict";
+  const summary = buildMethod === "sample"
+    ? `已导入 ${build.season || "M-3"} ${formatLabel(format)} 的完整热门样本。`
+    : buildMethod === "ai-designed"
+      ? `AI 原创草案已按 ${build.season || "M-3"} ${formatLabel(format)} 的验证配置完成严格校正。`
+      : buildMethod === "engine-guided"
+        ? `AI 已理解目标；严格引擎已自动定稿为可用的 ${build.season || "M-3"} ${formatLabel(format)} 队伍。`
+        : buildMethod === "evolution"
+          ? `已用多代选择、交叉与突变搜索出 ${build.season || "M-3"} ${formatLabel(format)} 的可比较方案。`
+      : `已按 ${build.season || "M-3"} ${formatLabel(format)} 的验证配置完成构筑。`;
+  return {
+    summary,
+    strictBuild: true,
+    format,
+    buildMethod,
+    report,
+    variants,
+    selectedVariant: 0,
+    aiCoach,
+    [format]: {
+      team,
+      plan: localizeAdviceText(report.plan || "已生成可验证的构筑路线。"),
+      watch: (report.risks || []).map(localizeAdviceText),
+    },
+  };
+}
+
+function selectStrictBuildVariant(index = 0) {
+  const advice = state.aiLastAdvice;
+  const format = advice?.format;
+  const variant = advice?.variants?.[index];
+  if (!advice || !format || !variant) return;
+  advice.selectedVariant = index;
+  advice[format] = {
+    ...advice[format],
+    team: variant.team,
+    plan: variant.plan,
+    watch: variant.risks,
+  };
+  advice.report = {
+    ...advice.report,
+    plan: variant.plan,
+    synergies: variant.synergies,
+    risks: variant.risks,
+    mega: variant.mega || advice.report.mega,
+  };
+  const output = $("#ai-output");
+  if (output) output.innerHTML = renderStrictBuildResult(advice);
+}
+
+function hydrateAIBuildMethod() {
+  const select = $("#ai-build-method");
+  if (!select) return;
+  const saved = localStorage.getItem(AI_BUILD_METHOD_KEY);
+  select.value = ["sample", "ai-designed", "evolution"].includes(saved) ? saved : "sample";
+}
+
+async function requestStrictTeamCoach(payload = {}, build = {}) {
+  saveAIConfig();
+  const aiConfig = loadAIConfig();
+  if (!hasUsableAIConfig(aiConfig)) return null;
+  const res = await fetch(aiApiUrl("/api/team-coach"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      aiConfig,
+      userGoal: payload.userGoal,
+      promptMode: $("#ai-prompt-mode")?.value || "quick",
+      format: build.format,
+      team: build.team,
+      buildReport: build.buildReport,
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) throw new Error(data.error || "AI 战术服务未返回有效结果。");
+  return {
+    ...data.coach,
+    model: data.model,
+    provider: data.provider,
+  };
+}
+
+async function requestAIDesignedDraft(payload = {}) {
+  saveAIConfig();
+  const aiConfig = loadAIConfig();
+  if (!hasUsableAIConfig(aiConfig)) throw new Error("AI 原创设计需要先在“AI 服务配置”中填写 API Key、Base URL 和模型。");
+  const res = await fetch(aiApiUrl("/api/team-design"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      ...payload,
+      aiConfig,
+      variationSeed: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
+      promptMode: $("#ai-prompt-mode")?.value || "quick",
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok || !data.draft) {
+    const error = new Error(data.error || "AI 没有返回可验证的六人草案。");
+    error.code = data.code || "";
+    error.diagnostics = Array.isArray(data.diagnostics) ? data.diagnostics : [];
+    throw error;
+  }
+  return data.draft;
+}
+
+async function requestEngineGuidedBuild(payload = {}) {
+  const res = await fetch(aiApiUrl("/api/team-build"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      ...payload,
+      buildMethod: "engine-guided",
+      forceGenerated: true,
+      aiDraft: undefined,
+      variationSeed: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) {
+    const error = new Error(data.error || "本地严格构筑没有返回可用队伍。");
+    error.diagnostics = Array.isArray(data.diagnostics) ? data.diagnostics : [];
+    throw error;
+  }
+  return data;
+}
+
+async function requestEmergencySampleBuild(payload = {}) {
+  const res = await fetch(aiApiUrl("/api/team-build"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ...payload, buildMethod: "sample", forceGenerated: false, aiDraft: undefined }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) throw new Error(data.error || "当前目标格式找不到可用完整样本。");
+  data.buildReport ||= {};
+  data.buildReport.emergencySampleFallback = true;
+  return data;
+}
+
+function verifiedLibraryFallback(payload = {}) {
+  const format = payload.format === "double" ? "double" : "single";
+  const constraints = payload.goalConstraints || {};
+  const themes = new Set(constraints.themes || []);
+  const configText = (config = {}) => [config.slug, config.name, config.item, config.ability, ...(config.moves || [])].join(" ").toLowerCase();
+  const weatherSources = (configs) => {
+    const text = configs.map(configText).join(" ");
+    return {
+      rain: /(降雨|drizzle|求雨|rain[-\s]?dance|大嘴鸥|pelipper|蚊香蛙皇|politoed)/i.test(text),
+      sun: /(日照|drought|大晴天|sunny[-\s]?day|煤炭龟|torkoal|九尾|ninetales|固拉多|groudon)/i.test(text),
+      sand: /(扬沙|sand[-\s]?stream|沙暴|sandstorm|班基拉斯|tyranitar|河马兽|hippowdon|庞岩怪|gigalith)/i.test(text),
+      snow: /(降雪|snow[-\s]?warning|雪景|snowscape|暴雪王|abomasnow|阿罗拉.*九尾|ninetales.*alola)/i.test(text),
+    };
+  };
+  const hasTheme = (configs, theme) => {
+    const text = configs.map(configText).join(" ");
+    if (theme === "tailwind") return /顺风|tailwind|おいかぜ/i.test(text);
+    if (theme === "rain") return /(降雨|drizzle|求雨|rain[-\s]?dance|大嘴鸥|pelipper|蚊香蛙皇|politoed)/i.test(text) && /(悠游自如|swift-swim|打雷|thunder|暴风|hurricane|水炮|hydro-pump|波动冲|wave-crash|电光束|electro-shot)/i.test(text);
+    if (theme === "sun") return /(日照|drought|大晴天|sunny[-\s]?day|煤炭龟|torkoal|九尾|ninetales)/i.test(text) && /(叶绿素|chlorophyll|太阳之力|solar-power|日光束|solar-beam|热风|heat-wave|喷火|eruption)/i.test(text);
+    if (theme === "trick-room") return /(戏法空间|trick[-\s]?room)/i.test(text) && /煤炭龟|torkoal|月月熊|ursaluna|布莉姆温|hatterene|低速|slow/i.test(text);
+    if (theme === "sand") return /(扬沙|sand-stream|沙暴|sandstorm|班基拉斯|tyranitar|河马兽|hippowdon)/i.test(text) && /(拨沙|sand-rush|沙之力|sand-force|龙头地鼠|excadrill)/i.test(text);
+    if (theme === "snow") return /(降雪|snow-warning|雪景|snowscape|暴雪王|abomasnow|阿罗拉.*九尾|ninetales.*alola)/i.test(text) && /(拨雪|slush-rush|极光幕|aurora-veil|暴风雪|blizzard)/i.test(text);
+    if (theme === "pass-chain") return /(接棒|baton[-\s]?pass)/i.test(text) && /(剑舞|swords-dance|诡计|nasty-plot|冥想|calm-mind|铁壁|iron-defense|腹鼓|belly-drum)/i.test(text);
+    return true;
+  };
+  const sampleIsCoherent = (configs) => {
+    if (configs.length < 6 || configs.some((config) => !config.item || !config.ability || (config.moves || []).length < 4)) return false;
+    const keys = configs.map((config) => normalizedItemName(config.slug || config.name));
+    const items = configs.map((config) => normalizedItemName(config.item));
+    if (new Set(keys).size !== configs.length || new Set(items).size !== configs.length) return false;
+    const weather = weatherSources(configs);
+    const requestedWeather = ["rain", "sun", "sand", "snow"].filter((theme) => themes.has(theme));
+    const activeWeather = Object.entries(weather).filter(([, active]) => active).map(([theme]) => theme);
+    if (requestedWeather.length === 1 && activeWeather.some((theme) => theme !== requestedWeather[0])) return false;
+    if (!requestedWeather.length && activeWeather.length > 1) return false;
+    const text = configs.map(configText).join(" ");
+    if (themes.has("rain") && /(chlorophyll|solar-power|solar-beam|sand-rush|sand-force|slush-rush|aurora-veil)/i.test(text)) return false;
+    if (themes.has("sun") && /(swift-swim|thunder|hurricane|electro-shot|sand-rush|sand-force|slush-rush|aurora-veil)/i.test(text)) return false;
+    if (themes.has("sand") && /(swift-swim|chlorophyll|solar-power|slush-rush|aurora-veil)/i.test(text)) return false;
+    if (themes.has("snow") && /(swift-swim|chlorophyll|solar-power|sand-rush|sand-force)/i.test(text)) return false;
+    if (themes.has("tailwind")) {
+      const setters = configs.filter((config) => /顺风|tailwind|おいかぜ/i.test(configText(config))).length;
+      if (!setters || setters > 2) return false;
+    }
+    if (format === "double") {
+      const safety = configs.filter((config) => /守住|protect|击掌奇袭|fake-out|广域防守|wide-guard|看我嘛|follow-me|愤怒粉|rage-powder/i.test(configText(config))).length;
+      if (safety < 2) return false;
+    }
+    return true;
+  };
+  const required = Array.isArray(constraints.requiredPokemon) ? constraints.requiredPokemon : [];
+  const forbidden = new Set((constraints.forbiddenPokemon || []).map((item) => normalizedItemName(item.slug || item.name || item.id)));
+  const team = state.teamLibrary
+    .filter((entry) => entry.season === "M-3" && entry.format === format && (entry.configurations || []).length >= 6)
+    .filter((entry) => {
+      const configs = entry.configurations || [];
+      if (!sampleIsCoherent(configs)) return false;
+      if (configs.some((config) => forbidden.has(normalizedItemName(config.slug || config.name)))) return false;
+      if (!required.every((item) => configs.some((config) => normalizedItemName(config.slug || config.name) === normalizedItemName(item.slug || item.name || item.id)))) return false;
+      return [...themes].every((theme) => hasTheme(configs, theme));
+    })
+    .sort((a, b) => Number(b.rate || 0) - Number(a.rate || 0) || Number(a.rank || 9999) - Number(b.rank || 9999))[0];
+  if (!team) return null;
+  const members = (team.configurations || []).slice(0, 6).map((config, index) => ({
+    id: String(config.id || config.slug || config.name || ""),
+    slug: config.slug || "",
+    name: config.name || config.slug || `成员 ${index + 1}`,
+    item: config.item || "",
+    ability: config.ability || "",
+    nature: config.nature || "",
+    evs: config.stats || "",
+    level: "50",
+    moves: (config.moves || []).slice(0, 4),
+    role: index === 0 ? "体系启动/首发位" : index === 5 ? "终盘/补位" : "热门样本成员",
+    note: "来自当前 M-3 同格式完整热门队样本。",
+    evidence: { teamId: team.id, title: team.title || "完整热门样本", source: team.source || "热门队伍", season: "M-3", format },
+  }));
+  const labels = { rain: "雨天", sun: "晴天", sand: "沙暴", snow: "雪天", "trick-room": "戏法空间", tailwind: "顺风", "pass-chain": "强化接棒" };
+  const themeLabel = [...themes].map((theme) => labels[theme] || theme).join(" + ") || "平衡/半攻";
+  return {
+    ok: true,
+    format,
+    season: "M-3",
+    team: members,
+    buildReport: {
+      plan: `已找到满足 ${themeLabel} 硬条件的完整热门样本；开局由体系启动位拿节奏，中盘按样本配置轮转，终盘保留输出位收割。`,
+      synergies: [`完整样本提供 ${themeLabel} 的启动与收益闭环。`, "六只成员、道具、特性和招式均来自同一 M-3 同格式队伍样本。"],
+      risks: ["这是可验证完整样本；应用后可再用“围绕当前队伍”做最小调整。"],
+      mega: { primary: "", secondary: "", reason: "按完整热门样本保留 Mega 资源；不额外拼入 Mega。" },
+      changes: null,
+    },
+  };
+}
+
+function renderStrictBuildResult(advice = {}) {
+  const format = advice.format || state.format;
+  const block = advice[format] || {};
+  const report = advice.report || {};
+  const synergies = (report.synergies || []).map(localizeAdviceText);
+  const mega = report.mega || {};
+  const changes = report.changes;
+  const aiCoach = advice.aiCoach;
+  const aiDesign = report.aiDesign;
+  const feedback = report.feedback;
+  const variants = advice.variants || [];
+  const evolution = report.evolution;
+  const sourceLabel = advice.buildMethod === "sample" ? "热门完整样本：整队配置原样复用" : advice.buildMethod === "ai-designed" ? "AI 原创设计：逐只配置经严格验证" : advice.buildMethod === "engine-guided" ? "AI 目标 + 严格定稿：避免返回不可用阵容" : advice.buildMethod === "evolution" ? "进化搜索：多代选择、交叉与突变后严格验证" : "严格构筑：逐只配置经验证";
+  const compact = isUiLevel("intermediate") && !isUiLevel("advanced");
+  return `
+    <div class="ai-result strict-build-result">
+      <div class="ai-result-head">
+        <div class="ai-result-summary">
+          <p>${escapeHtml(advice.summary)}</p>
+          <span class="ai-structure-score is-good">严格验证通过</span>
+          <span class="ai-build-source">${escapeHtml(sourceLabel)}</span>
+          ${feedback?.priorities?.length ? `<span class="ai-build-source">已吸收实战反馈：${escapeHtml(feedback.priorities.join("、"))}</span>` : ""}
+        </div>
+        <div class="ai-result-actions">
+          <button class="btn-primary compact" type="button" data-ai-apply="${escapeHtml(format)}">应用${escapeHtml(formatLabel(format))}队伍</button>
+          <button class="btn-outline neutral compact" type="button" data-open-showdown>一键导入 Showdown</button>
+          <button class="btn-outline neutral compact" type="button" data-ai-battle-eval ${state.aiBattleBusy ? "disabled" : ""}>${state.aiBattleBusy ? "模拟中..." : "本地精确评测"}</button>
+          <button class="btn-outline neutral compact" type="button" data-battle-review-open>对局回顾</button>
+          <button class="btn-outline neutral compact" type="button" data-ai-retry>重新构筑</button>
+        </div>
+      </div>
+      <section class="ai-format-card is-active">
+        <div class="ai-format-head">
+          <div><h3>${escapeHtml(formatLabel(format))}构筑路线</h3><p>${escapeHtml(block.plan || "")}</p></div>
+        </div>
+        <div class="ai-team-grid ${compact ? "is-compact" : ""}">${(block.team || []).map((item, index) => renderAdviceCard(item, index, format)).join("")}</div>
+      </section>
+      <div class="strict-build-report">
+        ${variants.length > 1 ? `<section class="strict-variant-picker"><h3>可比较方案</h3><div>${variants.map((variant, index) => `<button class="btn-outline neutral compact ${advice.selectedVariant === index ? "is-active" : ""}" type="button" data-ai-variant="${index}"><strong>方案 ${index + 1}</strong><span>${escapeHtml(variant.team.map((member) => member.name).join("、"))}</span></button>`).join("")}</div></section>` : ""}
+        ${evolution ? `<section><h3>进化搜索</h3><p>${escapeHtml(`已完成 ${evolution.generations || 0} 代选择、交叉与突变；最终种群 ${evolution.population || 0} 支。`)}</p></section>` : ""}
+        ${aiDesign ? `<section class="ai-design-report"><h3>AI 原创草案</h3><p>${escapeHtml(aiDesign.rationale || "AI 先选择队伍主轴，再由严格引擎校验配置与结构。")}</p>${(aiDesign.proposed || []).length ? `<p>AI 模型选择：${escapeHtml(aiDesign.proposed.map(localizePokemonName).join("、"))}</p>` : `<p>AI 草案未命中当前格式验证候选，已由严格引擎自主构筑，不把无效名称混入队伍。</p>`}${(aiDesign.engineAdded || []).length ? `<p>引擎补全草案：${escapeHtml((aiDesign.engineAdded || []).map(localizePokemonName).join("、"))}</p>` : ""}<p>最终保留 AI 选择：${escapeHtml((aiDesign.retained || []).map(localizePokemonName).join("、") || "无")}${(aiDesign.adjusted || []).length ? `；结构校正：${escapeHtml(aiDesign.adjusted.map(localizePokemonName).join("、"))}` : ""}</p>${aiDesign.completionNote ? `<p>${escapeHtml(aiDesign.completionNote)}</p>` : ""}</section>` : ""}
+        ${aiCoach ? `<section class="ai-coach-report"><h3>AI 对局方案</h3><p>${escapeHtml(aiCoach.plan || "模型已完成队伍解读。")}</p>${(aiCoach.leads || []).length ? `<h4>首发 / 选出</h4><ul>${aiCoach.leads.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}${(aiCoach.synergies || []).length ? `<h4>AI 联动判断</h4><ul>${aiCoach.synergies.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}${(aiCoach.risks || []).length ? `<h4>AI 风险处理</h4><ul>${aiCoach.risks.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}<small>由 ${escapeHtml(aiCoach.provider || "AI")} / ${escapeHtml(aiCoach.model || "已配置模型")} 生成；成员与配置仍以严格验证结果为准。</small></section>` : ""}
+        ${synergies.length ? `<section><h3>队友联动</h3><ul>${synergies.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>` : ""}
+        <section><h3>Mega 规划</h3><p>${escapeHtml(localizeAdviceText(mega.reason || "未安排 Mega。"))}</p>${mega.primary ? `<p>主 Mega：${escapeHtml(localizePokemonName(mega.primary))}${mega.secondary ? `；备选：${escapeHtml(localizePokemonName(mega.secondary))}` : ""}</p>` : ""}</section>
+        ${(block.watch || []).length ? `<section><h3>关键风险</h3><ul>${block.watch.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>` : ""}
+        ${changes ? `<section><h3>改队记录</h3><p>保留：${escapeHtml((changes.kept || []).map(localizePokemonName).join("、") || "无")}；替换：${escapeHtml((changes.replaced || []).map(localizePokemonName).join("、") || "无")}</p></section>` : ""}
+      </div>
+      ${renderBattleEvalBlock(format)}
+    </div>`;
+}
+
+function renderStrictBuildFailure(data = {}) {
+  const diagnostics = Array.isArray(data.diagnostics) ? data.diagnostics : [data.error || "当前验证数据无法满足这组硬性要求。"];
+  return `<div class="ai-diagnostic"><strong>无法按硬性要求构筑</strong><p>系统没有用近似宝可梦、跨格式配置或泛用热门队填空。</p><ul>${diagnostics.map((item) => `<li>${escapeHtml(localizeAdviceText(item))}</li>`).join("")}</ul></div>`;
+}
+
+async function generateStrictTeam(mode = "new-team") {
+  const output = $("#ai-output");
+  if (!output || state.aiBusy) return;
+  const payload = strictBuildPayload(mode);
+  state.aiBusy = true;
+  output.className = "ai-output is-loading";
+  output.textContent = payload.buildMethod === "ai-designed" ? "AI 正在从当前 M-3 合法候选中设计队伍主轴..." : payload.buildMethod === "evolution" ? "正在进行严格进化搜索：选择、交叉、突变与淘汰..." : "正在核对当前 M-3、目标格式与硬性要求...";
+  try {
+    let data = null;
+    if (payload.buildMethod === "ai-designed" && !(payload.goalConstraints.unavailablePokemon || []).length) {
+      try {
+        payload.aiDraft = await requestAIDesignedDraft(payload);
+      } catch (aiError) {
+        output.textContent = "AI 草案未通过验证，正在按同一目标生成严格可用队伍...";
+        try {
+          data = await requestEngineGuidedBuild(payload);
+        } catch {
+          output.textContent = "严格搜索未完成，正在载入同一格式的完整可用样本...";
+          data = await requestEmergencySampleBuild(payload);
+        }
+      }
+    }
+    if (!data) {
+      const res = await fetch(aiApiUrl("/api/team-build"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      data = await res.json().catch(() => ({}));
+    }
+    if (!data.ok) {
+      if (payload.buildMethod !== "sample") {
+        output.textContent = "严格搜索未完成，正在载入同一格式的完整可用样本...";
+        data = await requestEmergencySampleBuild(payload);
+      } else {
+        output.className = "ai-output is-error";
+        output.innerHTML = renderStrictBuildFailure(data);
+        return;
+      }
+    }
+    let aiCoach = null;
+    try {
+      if (hasUsableAIConfig(loadAIConfig())) {
+        output.textContent = "严格队伍已验证，AI 正在生成对局路线与改队取舍...";
+        aiCoach = await requestStrictTeamCoach(payload, data);
+      }
+    } catch (coachError) {
+      console.warn("AI team coach unavailable", coachError);
+    }
+    const advice = strictBuildAdvice(data, aiCoach);
+    state.aiLastAdvice = advice;
+    state.aiLastContext = {
+      format: data.format,
+      buildIntent: payload.intent,
+      userGoal: payload.userGoal,
+      intent: { goalConstraints: payload.goalConstraints },
+      battleEvaluation: { fixedOpponentTeams: { [data.format]: fixedOpponentTeamsFor(data.format, 5) } },
+    };
+    rememberStrictBuildVariation({ format: data.format, intent: payload.intent, userGoal: payload.userGoal }, advice[data.format]?.team || []);
+    state.aiAdviceView = data.format;
+    state.aiBattleEval = {};
+    output.className = "ai-output has-structured-result";
+    output.innerHTML = renderStrictBuildResult(advice);
+    updateDocumentState();
+  } catch (err) {
+    output.className = "ai-output is-error";
+    if (String(err.code || "").startsWith("AI_DRAFT_")) {
+      output.innerHTML = renderStrictBuildFailure({ error: err.message, diagnostics: err.diagnostics?.length ? err.diagnostics : [err.message] });
+    } else {
+      output.textContent = `严格构筑服务不可用：${err.message || "请确认本地服务已启动。"}`;
+    }
+  } finally {
+    state.aiBusy = false;
+  }
+}
+
 async function generateAIAdvice(mode) {
+  return generateStrictTeam(mode === "complete-team" ? "complete-team" : "new-team");
+
   const output = $("#ai-output");
   if (!output) return;
   if (state.aiBusy) return;
@@ -7656,12 +8520,13 @@ function renderMetrics() {
   const rankedTeam = state.team.filter((mon) => !mon.isExternalMember && Number.isFinite(Number(mon.rank)));
   const avgRank = rankedTeam.length ? rankedTeam.reduce((sum, mon) => sum + Number(mon.rank || 0), 0) / rankedTeam.length : null;
   const top20 = rankedTeam.filter((mon) => Number(mon.rank) <= 20).length;
-  const speed = Math.max(...state.team.map((mon) => effectiveSpeed(mon).value));
+  const knownSpeeds = resolvedTeamSpeedProfiles();
+  const speed = knownSpeeds.length ? Math.max(...knownSpeeds.map(({ speed: profile }) => profile.value)) : null;
   const knowledge = battleKnowledge();
   $("#avg-rank").textContent = avgRank === null ? "-" : avgRank.toFixed(1);
   $("#meta-score").textContent = knowledge.score >= 76 ? "高" : knowledge.score >= 54 ? "中" : "低";
   $("#meta-score").title = `规则状态评分 ${knowledge.score}/100；风险：${knowledge.risks.join("、") || "暂无明显风险"}`;
-  $("#speed-line").textContent = String(speed || "-");
+  $("#speed-line").textContent = speed === null ? "待配置" : String(speed);
   const matchup = getMatchupReport(8);
   $("#matchup-score").textContent = String(matchup.score || "-");
   $("#matchup-score").title = matchup.summary;
@@ -7922,7 +8787,9 @@ function renderRoles() {
 
 function getSpeedThreats() {
   if (!state.team.length) return [];
-  const ownMax = Math.max(...state.team.map((mon) => effectiveSpeed(mon).value));
+  const knownSpeeds = resolvedTeamSpeedProfiles();
+  if (!knownSpeeds.length) return [];
+  const ownMax = Math.max(...knownSpeeds.map(({ speed }) => speed.value));
   return state.data.pokemon
     .filter((mon) => !state.team.some((own) => own.id === mon.id))
     .map((mon) => ({ mon, eff: effectiveSpeed(mon) }))
@@ -7956,11 +8823,12 @@ function renderSpeedlineTable() {
     target.innerHTML = `<p class="empty">暂无速度线数据。运行 npm run fetch:knowledge 后会显示 PokeCamp 速度线。</p>`;
     return;
   }
-  const ownMax = state.team.length ? Math.max(...state.team.map((mon) => effectiveSpeed(mon).value)) : 0;
+  const knownSpeeds = resolvedTeamSpeedProfiles();
+  const ownMax = knownSpeeds.length ? Math.max(...knownSpeeds.map(({ speed }) => speed.value)) : null;
   target.innerHTML = rows
     .map((row) => {
-      const status = ownMax >= row.actualSpeed ? "ahead" : ownMax && ownMax >= row.actualSpeed - 10 ? "close" : "behind";
-      const label = status === "ahead" ? "已压过" : status === "close" ? "接近" : "需控速";
+      const status = ownMax === null ? "unknown" : ownMax >= row.actualSpeed ? "ahead" : ownMax >= row.actualSpeed - 10 ? "close" : "behind";
+      const label = status === "ahead" ? "已压过" : status === "close" ? "接近" : status === "unknown" ? "待配置" : "需控速";
       const presetText = `极速 ${row.actualSpeed} · 满速 ${level50Speed(row.baseSpeed, { nature: 1 })}`;
       return `
         <article class="speedline-row is-${status}">
@@ -8216,6 +9084,7 @@ function bindEvents() {
   $("#refresh-data")?.addEventListener("click", refreshData);
   $("#import-team-btn")?.addEventListener("click", importSelectedTeam);
   $("#copy-showdown")?.addEventListener("click", copyShowdownText);
+  $("#open-showdown")?.addEventListener("click", () => openShowdownForBattle(showdownTeamText()));
   $("#copy-packed")?.addEventListener("click", copyPackedText);
   $("#validate-showdown")?.addEventListener("click", validateShowdownText);
   $("#download-showdown")?.addEventListener("click", downloadShowdownText);
@@ -8239,8 +9108,9 @@ function bindEvents() {
   $("#ai-save-config")?.addEventListener("click", saveAIConfig);
   $("#ai-test-config")?.addEventListener("click", testAIConfig);
   $("#ai-clear-config")?.addEventListener("click", clearAIConfig);
-  $("#ai-build-config")?.addEventListener("click", () => generateAIAdvice("config"));
-  $("#ai-complete-team")?.addEventListener("click", () => generateAIAdvice("complete-team"));
+  $("#ai-build-method")?.addEventListener("change", (event) => localStorage.setItem(AI_BUILD_METHOD_KEY, ["sample", "ai-designed", "evolution"].includes(event.target.value) ? event.target.value : "sample"));
+  $("#ai-build-config")?.addEventListener("click", () => generateStrictTeam("new-team"));
+  $("#ai-complete-team")?.addEventListener("click", () => generateStrictTeam("complete-team"));
   $("#battle-review-btn")?.addEventListener("click", () => openBattleReview());
   $("#rule-allow-duplicate-items")?.addEventListener("change", saveRulePrefs);
   $("#rule-ignore-tera")?.addEventListener("change", saveRulePrefs);
@@ -8261,6 +9131,9 @@ function bindEvents() {
         }
       } else if (action === "counter-target") {
         $("#ai-build-intent") && ($("#ai-build-intent").value = "counter-target");
+        $("#ai-build-config")?.click();
+      } else if (action === "new-team") {
+        $("#ai-build-intent") && ($("#ai-build-intent").value = "new-team");
         $("#ai-build-config")?.click();
       } else {
         openPalette();
@@ -8347,12 +9220,16 @@ function bindEvents() {
       state.aiAdviceView = viewFormat;
       rerenderAIAdvice();
     }
+    const variantIndex = event.target.closest("[data-ai-variant]")?.dataset.aiVariant;
+    if (variantIndex != null) selectStrictBuildVariant(Number(variantIndex));
     const adviceRef = adviceItemFromEvent(event);
     if (adviceRef && event.target.closest("[data-ai-apply-one]")) applyAdvicePokemon(adviceRef.item, adviceRef.format, false);
     if (adviceRef && event.target.closest("[data-ai-replace-one]")) applyAdvicePokemon(adviceRef.item, adviceRef.format, true);
     if (adviceRef && event.target.closest("[data-ai-copy-one]")) navigator.clipboard?.writeText(advicePokemonText(adviceRef.item));
     if (event.target.closest("[data-ai-battle-eval]")) runBattleEvalForAdvice();
-    if (event.target.closest("[data-ai-retry]")) generateAIAdvice("new-team");
+    if (event.target.closest("[data-open-showdown]")) openShowdownForBattle();
+    if (event.target.closest("[data-showdown-replay-import]")) importShowdownReplay();
+    if (event.target.closest("[data-ai-retry]")) generateStrictTeam("retry");
   });
 }
 
@@ -8360,8 +9237,9 @@ async function init() {
   applyPreferences();
   loadRulePrefs();
   hydrateAIConfigForm();
+  hydrateAIBuildMethod();
   hydrateRulePrefs();
-  await loadLocalData();
+  await Promise.all([loadLocalData(), loadZhHansTerms()]);
   await hydrateBattleHistory();
   const defaultFormat = state.rawData.defaultFormat || (state.rawData.formats.single ? "single" : Object.keys(state.rawData.formats)[0]);
   state.format = defaultFormat;
