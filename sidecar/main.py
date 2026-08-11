@@ -1,10 +1,28 @@
 import asyncio
 import json
+import os
 import sys
 import threading
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+SHOWDOWN_NO_PROXY_HOSTS = (
+    "sim3.psim.us",
+    "play.pokemonshowdown.com",
+    ".psim.us",
+    ".pokemonshowdown.com",
+)
+existing_no_proxy = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
+no_proxy = ",".join(filter(None, (existing_no_proxy, *SHOWDOWN_NO_PROXY_HOSTS)))
+os.environ["NO_PROXY"] = no_proxy
+os.environ["no_proxy"] = no_proxy
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
 
 from poke_env import AccountConfiguration, ShowdownServerConfiguration
 from poke_env.concurrency import handle_threaded_coroutines
@@ -34,6 +52,20 @@ STATE = {
     "lastError": "",
     "connectionStatus": "DISCONNECTED",
     "queueStatus": "IDLE",
+    "searchConfirmed": False,
+    "serverSearchPayload": "",
+    "activeBattleId": "",
+    "lastServerEvent": "",
+    "serverMessage": "",
+    "requestCount": 0,
+    "turnEventCount": 0,
+    "decisionCount": 0,
+    "fallbackCount": 0,
+    "lastDecisionTurn": 0,
+    "lastDecisionAt": None,
+    "lastDecisionError": "",
+    "lastRequestSummary": "",
+    "lastSentMessage": "",
     "startedAt": None,
     "connectedAt": None,
     "searchStartedAt": None,
@@ -95,7 +127,54 @@ class StructuredPlayer(Player):
             enumerate(members, start=1),
             key=lambda item: (-self.pokemon_preview_score(item[1], opponents), item[0]),
         )
-        return "/team " + "".join(str(index) for index, _ in ranked)
+        team_size = int(getattr(battle, "max_team_size", 0) or len(ranked))
+        return "/team " + "".join(str(index) for index, _ in ranked[:team_size])
+
+    async def _handle_battle_request(
+        self,
+        battle,
+        from_teampreview_request=False,
+        maybe_default_order=False,
+    ):
+        turn = int(getattr(battle, "turn", 0) or 0)
+        try:
+            if any(getattr(battle, "force_switch", []) or []):
+                choice = self.choose_doubles_move(battle)
+                message = choice.message or "/choose default"
+                await self.ps_client.send_message(message, battle.battle_tag)
+                state = public_state()
+                update_state(
+                    decisionCount=int(state.get("decisionCount", 0)) + 1,
+                    lastDecisionTurn=turn,
+                    lastDecisionAt=now(),
+                    lastDecisionError="",
+                )
+                return
+            await super()._handle_battle_request(
+                battle,
+                from_teampreview_request=from_teampreview_request,
+                maybe_default_order=maybe_default_order,
+            )
+            state = public_state()
+            update_state(
+                decisionCount=int(state.get("decisionCount", 0)) + 1,
+                lastDecisionTurn=turn,
+                lastDecisionAt=now(),
+                lastDecisionError="",
+            )
+        except Exception as error:
+            state = public_state()
+            update_state(
+                lastDecisionTurn=turn,
+                lastDecisionAt=now(),
+                lastDecisionError=f"{error.__class__.__name__}: {error}",
+            )
+            if getattr(battle, "teampreview", False):
+                message = self.teampreview(battle)
+            else:
+                message = self.choose_random_move(battle).message
+            await self.ps_client.send_message(message, battle.battle_tag)
+            update_state(fallbackCount=int(state.get("fallbackCount", 0)) + 1)
 
     @staticmethod
     def move_score(move, mon=None, target=0):
@@ -250,6 +329,20 @@ async def run_ladder(payload):
         lastError="",
         connectionStatus="CONNECTING",
         queueStatus="IDLE",
+        searchConfirmed=False,
+        serverSearchPayload="",
+        activeBattleId="",
+        lastServerEvent="",
+        serverMessage="",
+        requestCount=0,
+        turnEventCount=0,
+        decisionCount=0,
+        fallbackCount=0,
+        lastDecisionTurn=0,
+        lastDecisionAt=None,
+        lastDecisionError="",
+        lastRequestSummary="",
+        lastSentMessage="",
         startedAt=now(),
         connectedAt=None,
         searchStartedAt=None,
@@ -266,6 +359,79 @@ async def run_ladder(payload):
         start_timer_on_battle_start=True,
     )
     ACTIVE_PLAYER = player
+    handle_message = player.ps_client._handle_message
+
+    async def tracked_handle_message(message):
+        for line in str(message).splitlines():
+            parts = line.split("|")
+            if len(parts) > 1 and parts[1] == "request":
+                state = public_state()
+                request_summary = {}
+                try:
+                    request = json.loads(parts[2] or "{}")
+                    request_summary = {
+                        "keys": sorted(request.keys()),
+                        "teamPreview": bool(request.get("teamPreview")),
+                        "wait": bool(request.get("wait")),
+                        "forceSwitch": request.get("forceSwitch", []),
+                        "activeSlots": len(request.get("active", []) or []),
+                        "moveSlots": [len(slot.get("moves", []) or []) for slot in request.get("active", []) or []],
+                        "switchSlots": [len(slot.get("switches", []) or []) for slot in request.get("active", []) or []],
+                    }
+                except Exception:
+                    request_summary = {"parseError": True}
+                update_state(
+                    requestCount=int(state.get("requestCount", 0)) + 1,
+                    lastRequestSummary=json.dumps(request_summary, ensure_ascii=True),
+                )
+            elif len(parts) > 1 and parts[1] == "turn":
+                state = public_state()
+                update_state(turnEventCount=int(state.get("turnEventCount", 0)) + 1)
+            if len(parts) > 2 and parts[1] == "updatesearch":
+                raw_search_payload = parts[2] or "{}"
+                try:
+                    search_state = json.loads(raw_search_payload)
+                    searching = search_state.get("searching", [])
+                    games = search_state.get("games") or {}
+                except Exception:
+                    searching = []
+                    games = {}
+                confirmed = payload["showdownFormatId"] in searching
+                if games:
+                    update_state(
+                        status="BATTLE",
+                        searchConfirmed=False,
+                        queueStatus="IN_BATTLE",
+                        serverSearchPayload=raw_search_payload[:500],
+                        activeBattleId=next(iter(games)),
+                        battleStartedAt=now(),
+                        lastServerEvent="BATTLE_MATCHED",
+                    )
+                else:
+                    update_state(
+                        searchConfirmed=confirmed,
+                        queueStatus="SEARCH_CONFIRMED" if confirmed else "SEARCH_SENT",
+                        serverSearchPayload=raw_search_payload[:500],
+                        lastServerEvent="UPDATESEARCH",
+                    )
+            elif len(parts) > 1 and parts[1] == "popup":
+                server_message = " ".join(part for part in parts[2:] if part).strip()
+                update_state(lastServerEvent="POPUP", serverMessage=server_message[:1000])
+        await handle_message(message)
+
+    player.ps_client._handle_message = tracked_handle_message
+    send_message = player.ps_client.send_message
+
+    async def tracked_send_message(message, room="", message_2=None):
+        if room and str(room).startswith("battle-"):
+            if not str(message).strip():
+                state = public_state()
+                message = "/choose default"
+                update_state(fallbackCount=int(state.get("fallbackCount", 0)) + 1)
+            update_state(lastSentMessage=str(message)[:500])
+        return await send_message(message, room, message_2)
+
+    player.ps_client.send_message = tracked_send_message
     try:
         await asyncio.wait_for(
             handle_threaded_coroutines(player.ps_client.logged_in.wait()),
@@ -281,7 +447,7 @@ async def run_ladder(payload):
 
         async def tracked_search_ladder_game(format_id, packed_team):
             await search_ladder_game(format_id, packed_team)
-            update_state(status="SEARCHING", queueStatus="SEARCHING", searchStartedAt=now())
+            update_state(status="SEARCHING", queueStatus="SEARCH_SENT", searchStartedAt=now())
 
         player.ps_client.search_ladder_game = tracked_search_ladder_game
         await player.ladder(payload["games"])
@@ -393,7 +559,7 @@ def loop_worker():
 
 
 def respond(request_id, ok=True, result=None, error="", code=""):
-    print(json.dumps({"id": request_id, "ok": ok, "result": result, "error": error, "code": code}, ensure_ascii=False), flush=True)
+    print(json.dumps({"id": request_id, "ok": ok, "result": result, "error": error, "code": code}), flush=True)
 
 
 def main():

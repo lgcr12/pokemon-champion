@@ -588,7 +588,7 @@ async function handleAgentApi(req, res) {
       openTeamSheets: snapshot.rules.includes("Open Team Sheets"),
       username: credential.username,
       password: credential.password,
-      team: prepared.packedTeam,
+      team: prepared.showdownTeamText,
       teamVersion: String(body.teamVersion || "manual"),
       games,
     });
@@ -2739,6 +2739,7 @@ function prepareBattleTeam(text = "", format = "single", label = "队伍", rules
     };
   }
   const packedText = Teams.pack(repaired.slice(0, 6));
+  const showdownTeamText = Teams.export(repaired.slice(0, 6));
   const validation = validateShowdownTeam(packedText, format, rulesetId);
   return {
     ok: true,
@@ -2747,6 +2748,7 @@ function prepareBattleTeam(text = "", format = "single", label = "队伍", rules
     problems: [...skipped, ...(validation.problems || [])],
     teamSize: repaired.length,
     packedTeam: packedText,
+    showdownTeamText,
     ...rulesetMetadata(validation),
   };
 }
