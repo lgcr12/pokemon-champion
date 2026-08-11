@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { ruleRegistry, RuleRegistryError } from "./server/rules-registry.mjs";
 import { showdownAccount } from "./server/showdown-account.mjs";
 import { agentController } from "./server/agent-controller.mjs";
@@ -19,6 +19,8 @@ const RULE_SYNC_INTERVAL_MS = Number(process.env.RULE_SYNC_INTERVAL_MS || 24 * 6
 const BATTLE_HISTORY_PATH = join(ROOT, "data", "battle-history.json");
 const TEAM_DATA_PATH = join(ROOT, "data", "team-data.json");
 const CHAMPION_DATA_PATH = join(ROOT, "data", "champion-data.json");
+const BATTLE_KNOWLEDGE_DATA_PATH = join(ROOT, "data", "battle-knowledge.json");
+const ZH_HANS_TERMS_PATH = join(ROOT, "data", "zh-hans-terms.json");
 const POCKET_AG_COACH_RULES_PATH = join(ROOT, "skills", "pocket-ag-coach", "references", "coach-rules.json");
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || "https://api.openai.com";
@@ -920,82 +922,234 @@ const CANDIDATE_CATEGORY_LABELS = {
   endgame: "终盘",
 };
 
-function candidateCategories(configurations = [], species = {}) {
-  const text = configurations.flatMap((item) => [item.ability, item.item, ...(item.moves || [])]).join(" ").toLowerCase();
+const CANDIDATE_TYPE_LABELS = {
+  Normal: "一般", Fire: "火", Water: "水", Electric: "电", Grass: "草", Ice: "冰",
+  Fighting: "格斗", Poison: "毒", Ground: "地面", Flying: "飞行", Psychic: "超能力",
+  Bug: "虫", Rock: "岩石", Ghost: "幽灵", Dragon: "龙", Dark: "恶", Steel: "钢", Fairy: "妖精",
+};
+
+const CANDIDATE_NATURE_LABELS = {
+  Hardy: "勤奋", Lonely: "怕寂寞", Brave: "勇敢", Adamant: "固执", Naughty: "顽皮",
+  Bold: "大胆", Docile: "坦率", Relaxed: "悠闲", Impish: "淘气", Lax: "乐天",
+  Timid: "胆小", Hasty: "急躁", Serious: "认真", Jolly: "爽朗", Naive: "天真",
+  Modest: "内敛", Mild: "慢吞吞", Quiet: "冷静", Bashful: "害羞", Rash: "马虎",
+  Calm: "温和", Gentle: "温顺", Sassy: "自大", Careful: "慎重", Quirky: "浮躁",
+};
+
+function readCandidateReferenceData() {
+  const fallback = { terms: { moves: {}, abilities: {}, items: {}, pokemon: {} }, knowledge: { pokemon: {} } };
+  try { fallback.terms = JSON.parse(readFileSync(ZH_HANS_TERMS_PATH, "utf8")); } catch {}
+  try { fallback.knowledge = JSON.parse(readFileSync(BATTLE_KNOWLEDGE_DATA_PATH, "utf8")); } catch {}
+  return fallback;
+}
+
+const candidateReferenceData = readCandidateReferenceData();
+
+function candidateTerm(category, value = "") {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const dictionary = candidateReferenceData.terms?.[category] || {};
+  const lower = text.toLowerCase();
+  const hyphenated = lower.replace(/[\s_]+/g, "-");
+  const translated = dictionary[text] || dictionary[lower] || dictionary[hyphenated] || dictionary[strictKey(text)];
+  if (translated) return translated;
+  if (category === "items") {
+    const megaMatch = strictKey(text).match(/^([a-z0-9]+)ite([xy])?$/);
+    if (megaMatch) {
+      const pokemonName = candidateReferenceData.terms?.pokemon?.[megaMatch[1]];
+      if (pokemonName) return `${pokemonName}进化石${megaMatch[2]?.toUpperCase() || ""}`;
+    }
+  }
+  return text;
+}
+
+function canonicalCandidateValue(category, value = "", modDex = Dex) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const aliases = candidateReferenceData.terms?.aliases?.[category] || {};
+  const alias = aliases[text.toLowerCase()] || aliases[strictKey(text)] || text;
+  const entry = modDex?.[category]?.get?.(alias);
+  return entry?.exists ? entry.name : alias;
+}
+
+function canonicalCandidateConfiguration(configuration = {}, modDex = Dex) {
+  return {
+    ...configuration,
+    item: canonicalCandidateValue("items", configuration.item, modDex),
+    ability: canonicalCandidateValue("abilities", configuration.ability, modDex),
+    nature: modDex.natures.get(configuration.nature)?.name || configuration.nature || "",
+    moves: (configuration.moves || []).map((move) => canonicalCandidateValue("moves", move, modDex)).filter(Boolean),
+  };
+}
+
+function candidateSpecies(modDex, value = "", meta = {}) {
+  const raw = String(value || meta.slug || meta.name || "").trim();
+  const candidates = [
+    raw,
+    raw.replace(/-female$/i, "-F").replace(/-male$/i, "-M"),
+    ...showdownSpeciesVariants(raw),
+    legalShowdownSpeciesName(raw, meta),
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    const species = modDex.species.get(candidate);
+    if (species?.exists) return species;
+  }
+  return modDex.species.get(raw);
+}
+
+function candidateCategories(configuration = {}, species = {}, modDex = Dex) {
+  const moveIds = (configuration.moves || []).map(strictKey);
+  const abilityId = strictKey(configuration.ability);
   const categories = new Set();
-  if (/drizzle|drought|sand stream|snow warning|rain dance|sunny day|sandstorm|snowscape/.test(text)) categories.add("weather");
-  if (/tailwind|icy wind|electroweb|thunder wave|rock tomb|scary face|bulldoze/.test(text)) categories.add("speed");
-  if (/trick room/.test(text)) categories.add("trickroom");
-  if (/fake out|follow me|rage powder|helping hand|wide guard|quick guard|parting shot|encore|taunt|spore|reflect|light screen|ally switch|life dew/.test(text)) categories.add("support");
-  if (/sucker punch|extreme speed|aqua jet|grassy glide|dragon dance|swords dance|nasty plot|quiver dance|bulk up|calm mind|shell smash/.test(text)) categories.add("endgame");
-  const offensiveStats = Number(species.baseStats?.atk || 0) + Number(species.baseStats?.spa || 0) + Number(species.baseStats?.spe || 0);
-  if (offensiveStats >= 260 || !categories.size) categories.add("offense");
+  if (["drizzle", "drought", "sandstream", "snowwarning", "orichalcumpulse", "hadronengine"].includes(abilityId) || moveIds.some((id) => ["raindance", "sunnyday", "sandstorm", "snowscape"].includes(id))) categories.add("weather");
+  if (moveIds.some((id) => ["tailwind", "icywind", "electroweb", "thunderwave", "rocktomb", "scaryface", "bulldoze", "stringshot", "glaciate"].includes(id))) categories.add("speed");
+  if (moveIds.includes("trickroom")) categories.add("trickroom");
+  if (["intimidate", "prankster", "friendguard", "armortail", "hospitality", "shadowtag", "arenatrap", "imposter"].includes(abilityId) || moveIds.some((id) => ["transform", "fakeout", "followme", "ragepowder", "helpinghand", "wideguard", "quickguard", "partingshot", "uturn", "voltswitch", "flipturn", "encore", "taunt", "spore", "reflect", "lightscreen", "allyswitch", "lifedew", "coaching", "willowisp", "snarl", "charm", "imprison", "batonpass"].includes(id))) categories.add("support");
+  if (moveIds.some((id) => ["suckerpunch", "extremespeed", "aquajet", "grassyglide", "iceshard", "shadowsneak", "dragon dance", "dragondance", "swordsdance", "nastyplot", "quiverdance", "bulkup", "calmmind", "shellsmash"].includes(id))) categories.add("endgame");
+  const damagingMoves = (configuration.moves || []).filter((move) => modDex.moves.get(move)?.category && modDex.moves.get(move).category !== "Status").length;
+  if (damagingMoves >= 2) categories.add("offense");
+  if (!categories.size) categories.add("support");
   return [...categories];
 }
 
-function candidateIsLegal(species, snapshot) {
-  const cacheKey = `${snapshot.rulesetId}|${species.id}`;
-  if (rulesCandidatePoolCache.has(cacheKey)) return rulesCandidatePoolCache.get(cacheKey);
-  let legal = false;
-  try {
-    const learnset = Dex.species.getLearnsetData(species.id)?.learnset || {};
-    const move = Object.entries(learnset).find(([, sources]) => (sources || []).some((source) => String(source).startsWith("9")))?.[0];
-    const set = {
-      name: species.name,
-      species: species.name,
-      ability: Object.values(species.abilities || {})[0],
-      moves: move ? [move] : [],
-      level: 50,
-      nature: "Serious",
-    };
-    const problems = TeamValidator.get(snapshot.showdownFormatId).validateSet(set) || [];
-    legal = !problems.some((problem) => !/exactly 0 Stat Points/i.test(problem));
-  } catch {}
-  rulesCandidatePoolCache.set(cacheKey, legal);
-  return legal;
+function candidateRole(categories = [], species = {}, configuration = {}) {
+  const moveIds = (configuration.moves || []).map(strictKey);
+  const abilityId = strictKey(configuration.ability);
+  if (abilityId === "imposter" || moveIds.includes("transform")) return "复制应变";
+  if (moveIds.includes("batonpass")) return "强化接力";
+  const labels = [];
+  if (categories.includes("weather")) labels.push("天气启动");
+  if (categories.includes("trickroom")) labels.push("空间启动");
+  if (categories.includes("speed")) labels.push("速度控制");
+  if (moveIds.some((id) => ["followme", "ragepowder", "wideguard", "quickguard"].includes(id))) labels.push("掩护辅助");
+  else if (abilityId === "intimidate" || moveIds.some((id) => ["fakeout", "partingshot", "uturn", "voltswitch", "flipturn"].includes(id))) labels.push("轮转辅助");
+  else if (categories.includes("support")) labels.push("辅助干扰");
+  if (categories.includes("endgame")) labels.push((configuration.moves || []).some((move) => ["Sucker Punch", "Extreme Speed", "Aqua Jet", "Grassy Glide", "Ice Shard", "Shadow Sneak"].includes(Dex.moves.get(move)?.name)) ? "先制终盘" : "强化终盘");
+  if (categories.includes("offense") && labels.length < 2) {
+    const atk = Number(species.baseStats?.atk || 0);
+    const spa = Number(species.baseStats?.spa || 0);
+    labels.push(atk > spa * 1.15 ? "物理输出" : spa > atk * 1.15 ? "特殊输出" : "混合输出");
+  }
+  return [...new Set(labels)].slice(0, 2).join(" / ") || "通用配置";
+}
+
+function localizedCandidateSet(configuration, species, modDex, { source = "实战样本", usageCount = 1 } = {}) {
+  const categories = candidateCategories(configuration, species, modDex);
+  const moves = (configuration.moves || []).map((move) => modDex.moves.get(move)?.name || move).filter(Boolean).slice(0, 4);
+  const ability = modDex.abilities.get(configuration.ability)?.name || configuration.ability || "";
+  const item = modDex.items.get(configuration.item)?.name || configuration.item || "";
+  const nature = modDex.natures.get(configuration.nature)?.name || configuration.nature || "";
+  return {
+    id: createHash("sha1").update([species.id, item, ability, nature, configuration.stats || configuration.evs || "", ...moves].join("|")).digest("hex").slice(0, 12),
+    role: candidateRole(categories, species, { ...configuration, moves }),
+    categories,
+    item,
+    itemLabel: candidateTerm("items", item),
+    ability,
+    abilityLabel: candidateTerm("abilities", ability),
+    nature,
+    natureLabel: CANDIDATE_NATURE_LABELS[nature] || nature,
+    stats: configuration.stats || configuration.evs || "",
+    moves,
+    moveLabels: moves.map((move) => candidateTerm("moves", move)),
+    source,
+    usageCount,
+  };
+}
+
+function fallbackCandidateConfiguration(species, snapshot, modDex) {
+  const baseSpecies = modDex.species.get(species.baseSpecies || species.name);
+  const knowledge = candidateReferenceData.knowledge?.pokemon?.[species.id] || candidateReferenceData.knowledge?.pokemon?.[baseSpecies.id] || {};
+  const models = Object.entries(knowledge.smogon || {});
+  const preferredModel = models.find(([key]) => snapshot.battleType === "double" ? /double|vgc/i.test(key) : /ou|uu|battle/i.test(key))?.[1] || models[0]?.[1] || {};
+  const requiredItems = species.requiredItems || species.requiredItem ? [...(species.requiredItems || []), species.requiredItem].filter(Boolean) : [];
+  const abilities = [...(preferredModel.abilities || []).map((entry) => entry.name), ...Object.values(baseSpecies.abilities || {})].filter(Boolean);
+  const items = [...requiredItems, ...(preferredModel.items || []).map((entry) => entry.name), "Leftovers", "Focus Sash"].filter((item) => item && strictKey(item) !== "nothing");
+  let learnset = {};
+  try { learnset = modDex.species.getLearnsetData(baseSpecies.id)?.learnset || {}; } catch {}
+  const currentMoves = Object.entries(learnset).filter(([, sources]) => (sources || []).some((source) => String(source).startsWith("9"))).map(([move]) => move);
+  const preferredMoves = (preferredModel.moves || []).map((entry) => entry.name);
+  const movePool = [...preferredMoves, "Protect", ...currentMoves]
+    .map((move) => modDex.moves.get(move)?.name || "")
+    .filter((move, index, array) => move && array.indexOf(move) === index);
+  const physical = Number(baseSpecies.baseStats?.atk || 0) >= Number(baseSpecies.baseStats?.spa || 0);
+  const nature = physical ? "Jolly" : "Timid";
+  const stats = physical ? "H2/A32/S32" : "H2/C32/S32";
+  for (const ability of abilities.slice(0, 4)) {
+    for (const item of items.slice(0, 8)) {
+      for (let start = 0; start < Math.min(8, Math.max(1, movePool.length - 3)); start += 1) {
+        const moves = movePool.slice(start, start + 4);
+        if (moves.length < 4) continue;
+        const configuration = { slug: baseSpecies.id, item, ability, nature, stats, moves };
+        if (strictShowdownCandidateIsLegal(configuration, snapshot.battleType, snapshot.rulesetId)) return configuration;
+      }
+    }
+  }
+  return null;
 }
 
 function rulesCandidatePool(snapshot) {
   const cacheKey = `pool|${snapshot.rulesetId}`;
   if (rulesCandidatePoolCache.has(cacheKey)) return rulesCandidatePoolCache.get(cacheKey);
   const format = snapshot.battleType === "double" ? "double" : "single";
-  const ranked = readChampionDataFile()?.formats?.[format]?.pokemon || [];
+  const formatData = readChampionDataFile()?.formats?.[format] || {};
+  const ranked = formatData.pokemon || [];
+  const modDex = Dex.mod(Dex.formats.get(snapshot.showdownFormatId).mod || "base");
   const configurations = readTeamDataFile()
     .filter((team) => team.format === format)
     .flatMap((team) => team.configurations || []);
-  const configurationsBySpecies = new Map();
+  const configurationGroups = new Map();
+  const megaItemIds = new Set(modDex.species.all().flatMap((species) => [...(species.requiredItems || []), species.requiredItem].filter(Boolean).map(strictKey)));
   for (const config of configurations) {
-    const speciesName = legalShowdownSpeciesName(config.slug || config.name, config);
-    const key = Dex.species.get(speciesName).id;
-    if (!key) continue;
-    if (!configurationsBySpecies.has(key)) configurationsBySpecies.set(key, []);
-    configurationsBySpecies.get(key).push(config);
+    const normalizedConfig = canonicalCandidateConfiguration(config, modDex);
+    const species = candidateSpecies(modDex, normalizedConfig.slug || normalizedConfig.name, normalizedConfig);
+    if (!species?.exists || !strictShowdownCandidateIsLegal(normalizedConfig, format, snapshot.rulesetId)) continue;
+    const familyId = modDex.species.get(species.baseSpecies || species.name).id || species.id;
+    const configKey = [familyId, strictKey(normalizedConfig.item), strictKey(normalizedConfig.ability), ...(normalizedConfig.moves || []).map(strictKey).sort()].join("|");
+    const existing = configurationGroups.get(configKey);
+    if (existing) existing.usageCount += 1;
+    else configurationGroups.set(configKey, { speciesId: species.id, familyId, configuration: normalizedConfig, usageCount: 1 });
   }
-  const seen = new Set();
   const pool = ranked.flatMap((entry) => {
-    const speciesName = legalShowdownSpeciesName(entry.slug || entry.id || entry.name, entry);
-    const species = Dex.species.get(speciesName);
-    if (!species?.exists || seen.has(species.id) || !candidateIsLegal(species, snapshot)) return [];
-    seen.add(species.id);
-    const configs = configurationsBySpecies.get(species.id) || [];
-    const preferred = configs[0] || {};
-    const categories = candidateCategories(configs, species);
-    const role = categories.map((category) => CANDIDATE_CATEGORY_LABELS[category]).slice(0, 2).join(" / ");
+    const species = candidateSpecies(modDex, entry.slug || entry.name, entry);
+    if (!species?.exists) return [];
+    const baseSpecies = modDex.species.get(species.baseSpecies || species.name);
+    const familyId = baseSpecies.id || species.id;
+    const requiredItemIds = new Set([...(species.requiredItems || []), species.requiredItem].filter(Boolean).map(strictKey));
+    const observed = [...configurationGroups.values()].filter((group) => {
+      if (group.familyId !== familyId) return false;
+      const itemId = strictKey(group.configuration.item);
+      if (requiredItemIds.size) return requiredItemIds.has(itemId);
+      if (species.id !== baseSpecies.id) return group.speciesId === species.id;
+      return group.speciesId === baseSpecies.id && !megaItemIds.has(itemId);
+    });
+    let sets = observed
+      .sort((a, b) => b.usageCount - a.usageCount)
+      .map((group) => localizedCandidateSet(group.configuration, species, modDex, { usageCount: group.usageCount }));
+    if (!sets.length) {
+      const fallback = fallbackCandidateConfiguration(species, snapshot, modDex);
+      if (fallback) sets = [localizedCandidateSet(fallback, species, modDex, { source: "规则生成", usageCount: 0 })];
+    }
+    if (!sets.length) return [];
+    const categories = [...new Set(sets.flatMap((set) => set.categories))];
+    const distinctRoles = [...new Set(sets.map((set) => set.role))];
     return [{
-      id: species.id,
+      id: strictKey(entry.slug || species.id),
+      showdownSpecies: species.name,
+      teamSpecies: requiredItemIds.size ? baseSpecies.name : species.name,
       name: species.name,
       localizedName: entry.name || species.name,
       dex: String(species.num || entry.id || ""),
       sprite: species.num > 0 ? species.num : Number(entry.id || 0),
       spriteUrl: entry.sprite || "",
       types: species.types || [],
-      role: role || "输出",
+      typeLabels: (species.types || []).map((type) => CANDIDATE_TYPE_LABELS[type] || type),
+      role: distinctRoles.length === 1 ? distinctRoles[0] : categories.map((category) => CANDIDATE_CATEGORY_LABELS[category]).slice(0, 3).join(" · "),
       categories,
       rank: Number(entry.rank || 0),
-      meta: entry.rank ? `环境 #${entry.rank}` : "当前规则可用",
-      item: showdownLegalValue(preferred.item, "", "items") || "Leftovers",
-      ability: showdownLegalValue(preferred.ability, "", "abilities") || Object.values(species.abilities || {})[0] || "",
-      moves: (preferred.moves || []).map((move) => showdownLegalValue(move, "", "moves")).filter(Boolean).slice(0, 4),
+      meta: entry.rank ? `${formatData.season || "环境"} #${entry.rank}` : "当前规则可用",
+      sets,
+      setTotal: sets.length,
       legal: true,
     }];
   });
@@ -1010,18 +1164,30 @@ async function handleRulesCandidatesApi(req, res) {
   const query = String(url.searchParams.get("query") || "").trim().toLowerCase();
   const category = String(url.searchParams.get("category") || "all");
   const offset = Math.max(0, Number(url.searchParams.get("offset") || 0));
-  const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit") || 36)));
-  const filtered = rulesCandidatePool(snapshot).filter((item) => {
-    const matchesCategory = category === "all" || item.categories.includes(category);
-    const haystack = [item.name, item.localizedName, item.role, item.meta, ...(item.types || []), ...(item.categories || [])].join(" ").toLowerCase();
-    return matchesCategory && (!query || haystack.includes(query));
+  const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit") || 24)));
+  const pool = rulesCandidatePool(snapshot);
+  const sourceTotal = readChampionDataFile()?.formats?.[format]?.pokemon?.length || pool.length;
+  const filtered = pool.flatMap((item) => {
+    const itemText = [item.name, item.localizedName, item.role, item.meta, ...(item.types || []), ...(item.typeLabels || [])].join(" ").toLowerCase();
+    const matchingSets = item.sets.filter((set) => {
+      const matchesCategory = category === "all" || set.categories.includes(category);
+      const setText = [set.role, set.item, set.itemLabel, set.ability, set.abilityLabel, set.nature, set.natureLabel, ...(set.moves || []), ...(set.moveLabels || [])].join(" ").toLowerCase();
+      return matchesCategory && (!query || itemText.includes(query) || setText.includes(query));
+    });
+    return matchingSets.length ? [{ ...item, sets: matchingSets }] : [];
   });
+  const configurationTotal = pool.reduce((sum, item) => sum + item.sets.length, 0);
+  const matchedConfigurationTotal = filtered.reduce((sum, item) => sum + item.sets.length, 0);
   sendJson(res, 200, {
     ok: true,
     ...rulesetMetadata(snapshot),
     items: filtered.slice(offset, offset + limit),
     total: filtered.length,
-    poolTotal: rulesCandidatePool(snapshot).length,
+    poolTotal: pool.length,
+    sourceTotal,
+    excludedTotal: Math.max(0, sourceTotal - pool.length),
+    configurationTotal,
+    matchedConfigurationTotal,
     offset,
     limit,
     hasMore: offset + limit < filtered.length,
@@ -1357,7 +1523,8 @@ function strictShowdownCandidateIsLegal(candidate = {}, format = "single", rules
   const ability = showdownLegalValue(candidate.ability, "", "abilities");
   const nature = showdownLegalValue(candidate.nature, "", "natures");
   const moves = (candidate.moves || []).map((move) => showdownLegalValue(move, "", "moves")).filter(Boolean).slice(0, 4);
-  if (!species || !item || !ability || moves.length < 4) {
+  const minimumMoves = strictKey(species) === "ditto" ? 1 : 4;
+  if (!species || !item || !ability || moves.length < minimumMoves) {
     strictCandidateLegalityCache.set(key, false);
     return false;
   }

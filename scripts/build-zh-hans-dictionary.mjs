@@ -6,6 +6,7 @@ const OUTPUT = resolve(ROOT, "data", "zh-hans-terms.json");
 const BASE = "https://raw.githubusercontent.com/PokeAPI/pokeapi/master/data/v2/csv";
 const CACHE_DIR = process.env.POKEAPI_CSV_DIR || "";
 const ZH_HANS_LANGUAGE_ID = "12";
+const ALIAS_LANGUAGE_IDS = new Set(["1", "11"]);
 
 function parseCsvLine(line = "") {
   const values = [];
@@ -67,16 +68,42 @@ function compact(value = "") {
 
 function buildCategory(identifiers, names, idField) {
   const byId = new Map(identifiers.map((entry) => [entry.id, entry.identifier]));
+  const chineseById = new Map(names.filter((entry) => entry.local_language_id === ZH_HANS_LANGUAGE_ID && entry.name).map((entry) => [entry[idField], entry.name]));
   const dictionary = {};
-  for (const entry of names) {
-    if (entry.local_language_id !== ZH_HANS_LANGUAGE_ID || !entry.name) continue;
-    const identifier = byId.get(entry[idField]);
-    if (!identifier) continue;
-    dictionary[identifier.toLowerCase()] = entry.name;
-    dictionary[compact(identifier)] = entry.name;
+  const aliases = {};
+  for (const [entityId, identifier] of byId) {
+    const chinese = chineseById.get(entityId);
+    if (!chinese) continue;
+    dictionary[identifier.toLowerCase()] = chinese;
+    dictionary[compact(identifier)] = chinese;
   }
-  return dictionary;
+  for (const entry of names) {
+    const identifier = byId.get(entry[idField]);
+    const chinese = chineseById.get(entry[idField]);
+    if (!identifier || !entry.name || !ALIAS_LANGUAGE_IDS.has(entry.local_language_id)) continue;
+    aliases[entry.name.toLowerCase()] = identifier;
+    if (!chinese) continue;
+    dictionary[entry.name.toLowerCase()] = chinese;
+  }
+  return { dictionary, aliases };
 }
+
+const moveOverrides = {
+  "dire-claw": "克命爪", "wave-crash": "波动冲", "last-respects": "扫墓", "matcha-gotcha": "刷刷茶炮",
+  "ceaseless-edge": "秘剑·千重涛", "torch-song": "闪焰高歌", "kowtow-cleave": "仆刀", "lumina-crash": "琉光冲激",
+  "bitter-blade": "悔念剑", "twin-beam": "双光束", "gigaton-hammer": "巨力锤", "chilly-reception": "冷笑话",
+  "ice-spinner": "冰旋", "aqua-cutter": "水波刀", "shed-tail": "断尾", "triple-arrows": "三连箭",
+  "flower-trick": "千变万花", "stone-axe": "岩斧", shelter: "闭关", "jet-punch": "喷射拳",
+  "bitter-malice": "冤冤相报", "make-it-rain": "淘金潮", trailblaze: "起草", "population-bomb": "鼠数儿",
+  "rage-fist": "愤怒之拳", "headlong-rush": "突飞猛扑", "raging-bull": "怒牛", "infernal-parade": "群魔乱舞",
+  "aqua-step": "流水旋舞", "armor-cannon": "铠农炮", "salt-cure": "盐腌", "tidy-up": "大扫除",
+};
+
+const itemOverrides = {
+  "fairy-feather": "妖精之羽",
+  dragoninite: "快龙进化石",
+  glimmoranite: "晶光花进化石",
+};
 
 const moves = await fetchCsv("moves");
 const moveNames = await fetchCsv("move_names");
@@ -87,13 +114,26 @@ const itemNames = await fetchCsv("item_names");
 const species = await fetchCsv("pokemon_species");
 const speciesNames = await fetchCsv("pokemon_species_names");
 
+const moveCategory = buildCategory(moves, moveNames, "move_id");
+const abilityCategory = buildCategory(abilities, abilityNames, "ability_id");
+const itemCategory = buildCategory(items, itemNames, "item_id");
+const pokemonCategory = buildCategory(species, speciesNames, "pokemon_species_id");
+Object.assign(moveCategory.dictionary, moveOverrides, Object.fromEntries(Object.entries(moveOverrides).map(([key, value]) => [compact(key), value])));
+Object.assign(itemCategory.dictionary, itemOverrides, Object.fromEntries(Object.entries(itemOverrides).map(([key, value]) => [compact(key), value])));
+
 const output = {
   source: "PokeAPI CSV zh-Hans",
   generatedAt: new Date().toISOString(),
-  moves: buildCategory(moves, moveNames, "move_id"),
-  abilities: buildCategory(abilities, abilityNames, "ability_id"),
-  items: buildCategory(items, itemNames, "item_id"),
-  pokemon: buildCategory(species, speciesNames, "pokemon_species_id"),
+  moves: moveCategory.dictionary,
+  abilities: abilityCategory.dictionary,
+  items: itemCategory.dictionary,
+  pokemon: pokemonCategory.dictionary,
+  aliases: {
+    moves: moveCategory.aliases,
+    abilities: abilityCategory.aliases,
+    items: itemCategory.aliases,
+    pokemon: pokemonCategory.aliases,
+  },
 };
 
 await mkdir(resolve(ROOT, "data"), { recursive: true });

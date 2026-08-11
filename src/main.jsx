@@ -8,6 +8,7 @@ import {
   Bot,
   BrainCircuit,
   Check,
+  ChevronDown,
   ChevronRight,
   CircleStop,
   CloudRain,
@@ -38,12 +39,12 @@ import "./styles.css";
 const SPRITE = "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork";
 
 const initialTeam = [
-  { id: "pelipper", name: "Pelipper", dex: "279", role: "天气启动", item: "Damp Rock", ability: "Drizzle", types: ["水", "飞行"], sprite: 279, locked: true, tone: "water", moves: ["Hurricane", "Tailwind", "Wide Guard", "Protect"] },
-  { id: "archaludon", name: "Archaludon", dex: "1018", role: "主输出", item: "Assault Vest", ability: "Stamina", types: ["钢", "龙"], sprite: 1018, locked: false, tone: "steel", moves: ["Electro Shot", "Flash Cannon", "Draco Meteor", "Body Press"] },
-  { id: "whimsicott", name: "Whimsicott", dex: "547", role: "速度控制", item: "Focus Sash", ability: "Prankster", types: ["草", "妖精"], sprite: 547, locked: false, tone: "grass", moves: ["Tailwind", "Encore", "Moonblast", "Protect"] },
-  { id: "flutter-mane", name: "Flutter Mane", dex: "987", role: "高速收割", item: "Booster Energy", ability: "Protosynthesis", types: ["幽灵", "妖精"], sprite: 987, locked: false, tone: "ghost", moves: ["Moonblast", "Shadow Ball", "Icy Wind", "Protect"] },
-  { id: "incineroar", name: "Incineroar", dex: "727", role: "安全中转", item: "Safety Goggles", ability: "Intimidate", types: ["火", "恶"], sprite: 727, locked: false, tone: "fire", moves: ["Fake Out", "Flare Blitz", "Parting Shot", "Protect"] },
-  { id: "rillaboom", name: "Rillaboom", dex: "812", role: "备用路线", item: "Miracle Seed", ability: "Grassy Surge", types: ["草"], sprite: 812, locked: false, tone: "grass", moves: ["Fake Out", "Grassy Glide", "Wood Hammer", "Protect"] },
+  { id: "pelipper", name: "Pelipper", dex: "279", role: "天气启动", item: "Damp Rock", itemLabel: "潮湿岩石", ability: "Drizzle", abilityLabel: "降雨", types: ["水", "飞行"], sprite: 279, locked: true, tone: "water", moves: ["Hurricane", "Tailwind", "Wide Guard", "Protect"], moveLabels: ["暴风", "顺风", "广域防守", "守住"] },
+  { id: "archaludon", name: "Archaludon", dex: "1018", role: "主输出", item: "Assault Vest", itemLabel: "突击背心", ability: "Stamina", abilityLabel: "持久力", types: ["钢", "龙"], sprite: 1018, locked: false, tone: "steel", moves: ["Electro Shot", "Flash Cannon", "Draco Meteor", "Body Press"], moveLabels: ["电光束", "加农光炮", "流星群", "扑击"] },
+  { id: "whimsicott", name: "Whimsicott", dex: "547", role: "速度控制", item: "Focus Sash", itemLabel: "气势披带", ability: "Prankster", abilityLabel: "恶作剧之心", types: ["草", "妖精"], sprite: 547, locked: false, tone: "grass", moves: ["Tailwind", "Encore", "Moonblast", "Protect"], moveLabels: ["顺风", "再来一次", "月亮之力", "守住"] },
+  { id: "flutter-mane", name: "Flutter Mane", dex: "987", role: "高速收割", item: "Booster Energy", itemLabel: "驱劲能量", ability: "Protosynthesis", abilityLabel: "古代活性", types: ["幽灵", "妖精"], sprite: 987, locked: false, tone: "ghost", moves: ["Moonblast", "Shadow Ball", "Icy Wind", "Protect"], moveLabels: ["月亮之力", "暗影球", "冰冻之风", "守住"] },
+  { id: "incineroar", name: "Incineroar", dex: "727", role: "安全中转", item: "Safety Goggles", itemLabel: "防尘护目镜", ability: "Intimidate", abilityLabel: "威吓", types: ["火", "恶"], sprite: 727, locked: false, tone: "fire", moves: ["Fake Out", "Flare Blitz", "Parting Shot", "Protect"], moveLabels: ["击掌奇袭", "闪焰冲锋", "抛下狠话", "守住"] },
+  { id: "rillaboom", name: "Rillaboom", dex: "812", role: "备用路线", item: "Miracle Seed", itemLabel: "奇迹种子", ability: "Grassy Surge", abilityLabel: "青草制造者", types: ["草"], sprite: 812, locked: false, tone: "grass", moves: ["Fake Out", "Grassy Glide", "Wood Hammer", "Protect"], moveLabels: ["击掌奇袭", "青草滑梯", "木槌", "守住"] },
 ];
 
 const navItems = [
@@ -67,7 +68,7 @@ async function apiRequest(path, options = {}) {
 
 function teamToShowdown(team = []) {
   return team.map((member) => [
-    `${member.name} @ ${member.item}`,
+    `${member.species || member.name} @ ${member.item}`,
     `Ability: ${member.ability}`,
     "Level: 50",
     ...(member.moves || []).map((move) => `- ${move}`),
@@ -145,10 +146,27 @@ function Dashboard({ team, onNavigate, agentState, onToggleAgent, onOpenAccount,
 
 function BatchRow({ item }) { const won = Number(item.wins || 0) >= Number(item.losses || 0); return <div className="match-row"><span className={`result ${won ? "result-w" : "result-l"}`}>{won ? "W" : "L"}</span><div><strong>{item.policyVersion || "unknown policy"}</strong><small>{item.finishedAt ? new Date(item.finishedAt).toLocaleString() : item.rulesetId}</small></div><b className={won ? "positive" : "negative"}>{item.wins || 0}-{item.losses || 0}</b></div>; }
 
+function CandidateEntry({ candidate, expanded, onToggle, onAdd }) {
+  return <article className={`candidate-entry ${expanded ? "is-expanded" : ""}`}>
+    <button className="candidate-row" onClick={onToggle} aria-expanded={expanded}>
+      <div className={`candidate-avatar tone-${candidate.types?.[0]?.toLowerCase() || "steel"}`}><Sprite id={candidate.sprite} size="sm" /></div>
+      <div className="candidate-identity"><strong>{candidate.localizedName}<small>{candidate.name}</small></strong><span>{candidate.role}</span></div>
+      <div className="candidate-count"><b>{candidate.sets?.length || 0}</b><small>套玩法</small></div>
+      <ChevronDown size={15} />
+    </button>
+    {expanded && <div className="candidate-sets">{candidate.sets.map((set) => <div className="candidate-set" key={set.id}>
+      <div className="candidate-set-head"><div><strong>{set.role}</strong><span>{set.source}{set.usageCount ? ` · ${set.usageCount} 份样本` : ""}</span></div><button className="candidate-set-add" onClick={() => onAdd(candidate, set)} title="使用这套配置" aria-label={`使用 ${candidate.localizedName} 的 ${set.role} 配置`}><Plus size={15} /></button></div>
+      <div className="candidate-set-meta"><span><b>特性</b>{set.abilityLabel}</span><span><b>道具</b>{set.itemLabel}</span><span><b>性格</b>{set.natureLabel || "未记录"}</span></div>
+      <div className="candidate-set-moves">{set.moveLabels.map((move, moveIndex) => <span key={`${set.id}-${moveIndex}`}>{move}</span>)}</div>
+    </div>)}</div>}
+  </article>;
+}
+
 function Forge({ team, setTeam, onNavigate }) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("all");
-  const [candidateState, setCandidateState] = useState({ items: [], total: 0, poolTotal: 0, hasMore: false, rulesetId: "", loading: true, error: "" });
+  const [candidateState, setCandidateState] = useState({ items: [], total: 0, poolTotal: 0, sourceTotal: 0, excludedTotal: 0, configurationTotal: 0, matchedConfigurationTotal: 0, hasMore: false, rulesetId: "", loading: true, error: "" });
+  const [expandedCandidate, setExpandedCandidate] = useState("");
   const [selected, setSelected] = useState(team[0]?.id);
   const [saveState, setSaveState] = useState("idle");
   const [validationMessage, setValidationMessage] = useState("");
@@ -158,12 +176,16 @@ function Forge({ team, setTeam, onNavigate }) {
     if (!append) setCandidateState((current) => ({ ...current, items: [], loading: true, error: "" }));
     else setCandidateState((current) => ({ ...current, loading: true, error: "" }));
     try {
-      const params = new URLSearchParams({ format: "double", query, category, offset: String(offset), limit: "36" });
+      const params = new URLSearchParams({ format: "double", query, category, offset: String(offset), limit: "24" });
       const data = await apiRequest(`/api/rules/candidates?${params}`);
       setCandidateState((current) => ({
         items: append ? [...current.items, ...(data.items || [])] : data.items || [],
         total: data.total || 0,
         poolTotal: data.poolTotal || 0,
+        sourceTotal: data.sourceTotal || data.poolTotal || 0,
+        excludedTotal: data.excludedTotal || 0,
+        configurationTotal: data.configurationTotal || 0,
+        matchedConfigurationTotal: data.matchedConfigurationTotal || 0,
         hasMore: Boolean(data.hasMore),
         rulesetId: data.rulesetId || "",
         loading: false,
@@ -174,6 +196,7 @@ function Forge({ team, setTeam, onNavigate }) {
     }
   };
   useEffect(() => {
+    setExpandedCandidate("");
     const timer = window.setTimeout(() => loadCandidates(), 180);
     return () => window.clearTimeout(timer);
   }, [query, category]);
@@ -206,9 +229,8 @@ function Forge({ team, setTeam, onNavigate }) {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [team]);
-  const addCandidate = (candidate) => {
-    const commonMoves = candidate.moves?.length ? candidate.moves : ["Protect"];
-    const next = { ...candidate, tone: candidate.types?.[0]?.toLowerCase() || "steel", item: candidate.item || "Leftovers", ability: candidate.ability || "待配置", locked: false, moves: commonMoves };
+  const addCandidate = (candidate, set) => {
+    const next = { id: candidate.id, name: candidate.name, species: candidate.teamSpecies || candidate.name, localizedName: candidate.localizedName, dex: candidate.dex, sprite: candidate.sprite, tone: candidate.types?.[0]?.toLowerCase() || "steel", types: candidate.typeLabels || candidate.types || [], role: set.role, item: set.item, itemLabel: set.itemLabel, ability: set.ability, abilityLabel: set.abilityLabel, nature: set.nature, natureLabel: set.natureLabel, stats: set.stats, locked: false, moves: set.moves, moveLabels: set.moveLabels, configurationId: set.id };
     setTeam((current) => {
       if (current.some((item) => item.id === candidate.id)) return current;
       const selectedIndex = current.findIndex((item) => item.id === selected && !item.locked);
@@ -220,8 +242,8 @@ function Forge({ team, setTeam, onNavigate }) {
     setSelected(candidate.id);
   };
   return <div className="page forge-page"><div className="page-title-row"><div><span className="eyebrow">TEAM FORGE</span><h1>配队工坊</h1><p>从体系和职责开始构筑，而不是从六个单体开始拼接。</p></div><div className="toolbar-actions"><button className="secondary-button"><RefreshCw size={16} />重新分析</button><button className="primary-button" onClick={validateAndSave} disabled={saveState === "validating"}><Check size={16} />{saveState === "validating" ? "校验中" : saveState === "saved" ? "已通过" : saveState === "invalid" ? "校验失败" : "校验并保存"}</button></div></div><div className="sr-only" role="status" aria-live="polite">{validationMessage}</div>{validationMessage && <div className={`boundary-note ${saveState === "invalid" ? "is-error" : ""}`}>{saveState === "invalid" ? <AlertTriangle size={15} /> : <ShieldCheck size={15} />}{validationMessage}</div>}<div className="forge-layout">
-    <aside className="panel candidate-panel"><SectionHeader eyebrow="CANDIDATE POOL" title="候选库" action={<StatusPill tone="blue">{candidateState.poolTotal || "--"} available</StatusPill>} /><label className="search-field"><Search size={16} /><input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索中英文名、属性或职责" /></label><div className="filter-row">{[["all", "全部"], ["weather", "天气"], ["speed", "控速"], ["trickroom", "空间"], ["support", "辅助"], ["offense", "输出"], ["endgame", "终盘"]].map(([value, label]) => <button key={value} className={`filter-chip ${category === value ? "is-active" : ""}`} onClick={() => setCategory(value)}>{label}</button>)}</div><div className="candidate-summary"><span>找到 <b>{candidateState.total}</b> 只</span><small>{candidateState.rulesetId || "正在读取当前规则"}</small></div><div className="candidate-list">{candidateState.items.map((candidate) => <button className="candidate-row" key={candidate.id} onClick={() => addCandidate(candidate)}><div className={`candidate-avatar tone-${candidate.types?.[0]?.toLowerCase() || "steel"}`}><Sprite id={candidate.sprite} size="sm" /></div><div><strong>{candidate.localizedName}<small>{candidate.name}</small></strong><span>{candidate.role} · {candidate.types?.join(" / ")}</span></div><small>{candidate.meta}</small><Plus size={15} /></button>)}{candidateState.loading && <div className="candidate-state">正在读取当前规则候选...</div>}{!candidateState.loading && candidateState.error && <div className="candidate-state is-error">{candidateState.error}</div>}{!candidateState.loading && !candidateState.error && !candidateState.items.length && <div className="candidate-state">没有匹配的宝可梦</div>}</div>{candidateState.hasMore && <button className="candidate-load-more" onClick={() => loadCandidates({ append: true })} disabled={candidateState.loading}>加载更多 <span>{candidateState.items.length} / {candidateState.total}</span></button>}</aside>
-    <main className="forge-main"><section className="panel workspace-panel"><SectionHeader eyebrow="TEAM WORKSPACE" title="Rain Electro Burst" action={<div className="team-health"><span className="dot dot-green" />结构健康 <b>86</b></div>} /><div className="slot-grid">{team.map((member, index) => <button key={`${member.id}-${index}`} className={`team-slot ${selected === member.id ? "is-selected" : ""}`} onClick={() => setSelected(member.id)} onKeyDown={(event) => { if (event.key === " " || event.key === "Enter") { event.preventDefault(); setSelected(member.id); toggleLock(member.id); } }} aria-pressed={member.locked} aria-label={`${member.name}，槽位 ${index + 1}，${member.locked ? "已锁定" : "未锁定"}`}><div className="slot-top"><span>SLOT {String(index + 1).padStart(2, "0")}</span>{member.locked ? <Lock size={13} /> : <span className="ai-badge">AI</span>}</div><div className={`slot-art tone-${member.tone}`}><Sprite id={member.sprite} /></div><div className="slot-body"><strong>{member.name}</strong><span>{member.role}</span><small>{member.ability} · {member.item}</small></div><div className="move-pills">{member.moves.map((move, moveIndex) => <span key={`${move}-${moveIndex}`}>{move}</span>)}</div></button>)}</div></section><TacticalFlow team={team} /></main>
+    <aside className="panel candidate-panel"><SectionHeader eyebrow="CANDIDATE POOL" title="候选库" action={<StatusPill tone="blue">{candidateState.poolTotal || "--"} / {candidateState.sourceTotal || "--"} 合法</StatusPill>} /><label className="search-field"><Search size={16} /><input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索宝可梦、招式、特性或道具" /></label><div className="filter-row">{[["all", "全部"], ["weather", "天气"], ["speed", "控速"], ["trickroom", "空间"], ["support", "辅助"], ["offense", "输出"], ["endgame", "终盘"]].map(([value, label]) => <button key={value} className={`filter-chip ${category === value ? "is-active" : ""}`} onClick={() => setCategory(value)}>{label}</button>)}</div><div className="candidate-summary"><span><b>{candidateState.total}</b> 种 · <b>{candidateState.matchedConfigurationTotal}</b> 套玩法</span><small>{candidateState.rulesetId || "正在读取当前规则"}</small></div>{candidateState.excludedTotal > 0 && <div className="candidate-source-note">原始池 {candidateState.sourceTotal} 种，已剔除 {candidateState.excludedTotal} 个当前规则非法条目</div>}<div className="candidate-list">{candidateState.items.map((candidate) => <CandidateEntry candidate={candidate} expanded={expandedCandidate === candidate.id} onToggle={() => setExpandedCandidate((current) => current === candidate.id ? "" : candidate.id)} onAdd={addCandidate} key={candidate.id} />)}{candidateState.loading && <div className="candidate-state">正在读取当前规则候选...</div>}{!candidateState.loading && candidateState.error && <div className="candidate-state is-error">{candidateState.error}</div>}{!candidateState.loading && !candidateState.error && !candidateState.items.length && <div className="candidate-state">没有匹配的合法配置</div>}</div>{candidateState.hasMore && <button className="candidate-load-more" onClick={() => loadCandidates({ append: true })} disabled={candidateState.loading}>加载更多 <span>{candidateState.items.length} / {candidateState.total}</span></button>}</aside>
+    <main className="forge-main"><section className="panel workspace-panel"><SectionHeader eyebrow="TEAM WORKSPACE" title="Rain Electro Burst" action={<div className="team-health"><span className="dot dot-green" />结构健康 <b>86</b></div>} /><div className="slot-grid">{team.map((member, index) => <button key={`${member.id}-${index}`} className={`team-slot ${selected === member.id ? "is-selected" : ""}`} onClick={() => setSelected(member.id)} onKeyDown={(event) => { if (event.key === " " || event.key === "Enter") { event.preventDefault(); setSelected(member.id); toggleLock(member.id); } }} aria-pressed={member.locked} aria-label={`${member.name}，槽位 ${index + 1}，${member.locked ? "已锁定" : "未锁定"}`}><div className="slot-top"><span>SLOT {String(index + 1).padStart(2, "0")}</span>{member.locked ? <Lock size={13} /> : <span className="ai-badge">AI</span>}</div><div className={`slot-art tone-${member.tone}`}><Sprite id={member.sprite} /></div><div className="slot-body"><strong>{member.localizedName || member.name}</strong><span>{member.role}</span><small>{member.abilityLabel || member.ability} · {member.itemLabel || member.item}</small></div><div className="move-pills">{member.moves.map((move, moveIndex) => <span key={`${move}-${moveIndex}`}>{member.moveLabels?.[moveIndex] || move}</span>)}</div></button>)}</div></section><TacticalFlow team={team} /></main>
     <aside className="panel analysis-panel"><SectionHeader eyebrow="STRUCTURAL ENGINE" title="实时分析" action={<Activity size={17} className="text-green" />} /><div className="analysis-block"><span className="analysis-label">主胜利路线</span><strong>天气启动 → 电光炮台</strong><p>Pelipper 创造雨天，Archaludon 用 Electro Shot 把天气回合转成输出压力。</p></div><div className="analysis-block"><span className="analysis-label">速度阶梯</span><div className="speed-ladder"><span><b>277</b> Flutter Mane</span><span><b>205</b> Archaludon</span><span><b>136</b> Pelipper</span></div></div><div className="analysis-block"><span className="analysis-label">防守覆盖</span><div className="coverage-grid">{["火", "水", "草", "电", "地面", "冰", "格斗", "妖精"].map((type, index) => <div key={type}><span>{type}</span><i className={index % 3 === 0 ? "weak" : index % 2 === 0 ? "resist" : "neutral"} /></div>)}</div></div><div className="warning-note"><AlertTriangle size={15} /><span>对手控速时保留 Whimsicott，不要过早暴露 Flutter Mane。</span></div></aside>
   </div></div>;
 }
