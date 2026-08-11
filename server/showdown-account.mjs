@@ -7,6 +7,9 @@ import { CredentialVault } from "./credential-vault.mjs";
 const ACCOUNT_ROOT = process.env.SHOWDOWN_ACCOUNT_ROOT || resolve(".cache", "showdown-account");
 const STATE_PATH = join(ACCOUNT_ROOT, "state.json");
 const PROFILE_PATH = join(ACCOUNT_ROOT, "browser");
+const DEFAULT_PROFILE_PATH = join(PROFILE_PATH, "Default");
+const PREFERENCES_PATH = join(DEFAULT_PROFILE_PATH, "Preferences");
+const PASSWORD_STORE_FILES = ["Login Data", "Login Data-journal", "Login Data For Account", "Login Data For Account-journal"];
 const USER_API = "https://pokemonshowdown.com/users";
 const PLAY_URL = "https://play.pokemonshowdown.com/";
 const STATES = new Set(["UNCONFIGURED", "CHECKING_NAME", "REGISTERING", "WAITING_FOR_HUMAN_VERIFICATION", "VERIFYING_ACCOUNT", "READY", "LOCKED", "FAILED"]);
@@ -155,13 +158,31 @@ export class ShowdownAccountManager {
 
   async ensureBrowser() {
     if (this.context) return this.context;
-    await mkdir(PROFILE_PATH, { recursive: true });
+    await this.hardenBrowserProfile();
     this.context = await chromium.launchPersistentContext(PROFILE_PATH, {
       headless: false,
       viewport: { width: 1120, height: 760 },
+      args: ["--disable-save-password-bubble"],
     });
     this.context.on("close", () => { this.context = null; });
     return this.context;
+  }
+
+  async hardenBrowserProfile() {
+    await mkdir(DEFAULT_PROFILE_PATH, { recursive: true });
+    for (const filename of PASSWORD_STORE_FILES) {
+      await rm(join(DEFAULT_PROFILE_PATH, filename), { force: true });
+    }
+    let preferences = {};
+    try {
+      preferences = JSON.parse(await readFile(PREFERENCES_PATH, "utf8"));
+    } catch {}
+    preferences.credentials_enable_service = false;
+    preferences.profile = {
+      ...(preferences.profile || {}),
+      password_manager_enabled: false,
+    };
+    await writeFile(PREFERENCES_PATH, JSON.stringify(preferences), "utf8");
   }
 
   async registrationPage() {
@@ -347,6 +368,25 @@ export class ShowdownAccountManager {
       this.workflow = this.runRegistration().finally(() => { this.workflow = null; });
     }
     return this.publicState();
+  }
+
+  async rotatePendingCredential() {
+    if (!this.state.username) throw Object.assign(new Error("尚未开始账号注册。"), { status: 409, code: "ACCOUNT_UNCONFIGURED" });
+    if (this.state.status === "READY" || await registered(this.state.username)) {
+      throw Object.assign(new Error("账号已经注册，不能使用待注册凭据轮换。"), { status: 409, code: "ACCOUNT_ALREADY_REGISTERED" });
+    }
+    if (this.context) await this.context.close().catch(() => {});
+    this.context = null;
+    await this.hardenBrowserProfile();
+    await this.vault.save(generatePassword());
+    this.credentialStored = true;
+    this.lastRejectedCaptcha = "";
+    await this.update({
+      status: "WAITING_FOR_HUMAN_VERIFICATION",
+      verificationCode: "BROWSER_ACTION_REQUIRED",
+      message: "待注册凭据已安全轮换，正在重新打开官方验证窗口。",
+    });
+    return this.focus();
   }
 
   async credential() {
