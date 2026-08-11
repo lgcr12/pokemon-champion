@@ -10,6 +10,8 @@ const { ShowdownAccountManager } = await import(`../server/showdown-account.mjs?
 const manager = new ShowdownAccountManager();
 manager.state.username = "ChampionForgeQA";
 await manager.vault.save("fixture-secret-A7!");
+manager.credentialStored = true;
+assert.equal(manager.publicState().credentialStored, true);
 
 const browser = await chromium.launch({ headless: true });
 try {

@@ -69,6 +69,7 @@ export class ShowdownAccountManager {
     this.context = null;
     this.workflow = null;
     this.lastRejectedCaptcha = "";
+    this.credentialStored = false;
     this.state = {
       status: "UNCONFIGURED",
       username: "",
@@ -80,11 +81,12 @@ export class ShowdownAccountManager {
   }
 
   async initialize() {
+    this.credentialStored = await this.vault.exists().catch(() => false);
     try {
       const saved = JSON.parse(await readFile(STATE_PATH, "utf8"));
       this.state = { ...this.state, ...saved };
       if (!STATES.has(this.state.status)) this.state.status = "FAILED";
-      if (this.state.status === "READY" && !(await this.vault.exists())) {
+      if (this.state.status === "READY" && !this.credentialStored) {
         await this.update({ status: "FAILED", message: "账号凭据缺失，请删除本地配置后重新注册。" });
       }
       if (this.state.status === "WAITING_FOR_HUMAN_VERIFICATION" && !this.state.verificationCode) {
@@ -106,7 +108,7 @@ export class ShowdownAccountManager {
       candidates: this.state.candidates || [],
       updatedAt: this.state.updatedAt,
       browserOpen: Boolean(this.context),
-      credentialStored: this.state.status === "READY" || this.state.status === "WAITING_FOR_HUMAN_VERIFICATION" || this.state.status === "REGISTERING" || this.state.status === "VERIFYING_ACCOUNT" || this.state.status === "FAILED",
+      credentialStored: this.credentialStored,
     };
   }
 
@@ -138,6 +140,7 @@ export class ShowdownAccountManager {
     if (!toUserid(selected) || selected.length > 18) throw Object.assign(new Error("用户名必须包含字母或数字，且不超过 18 个字符。"), { status: 400, code: "INVALID_USERNAME" });
     if (await registered(selected)) throw Object.assign(new Error("该 Showdown 用户名已被注册。"), { status: 409, code: "USERNAME_TAKEN", candidates: options });
     await this.vault.save(generatePassword());
+    this.credentialStored = true;
     await this.update({ status: "REGISTERING", username: selected, candidates: options, verificationCode: "", message: "正在打开 Showdown 官方注册页面。" });
     this.workflow = this.runRegistration().finally(() => { this.workflow = null; });
     return this.publicState();
@@ -348,6 +351,7 @@ export class ShowdownAccountManager {
     if (this.context) await this.context.close().catch(() => {});
     this.context = null;
     await this.vault.clear();
+    this.credentialStored = false;
     await rm(PROFILE_PATH, { recursive: true, force: true });
     await rm(STATE_PATH, { force: true });
     this.lastRejectedCaptcha = "";
