@@ -1,8 +1,12 @@
 import { strictBuildTeam } from "../server.mjs";
+import { ruleRegistry } from "../server/rules-registry.mjs";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const { Dex } = require("pokemon-showdown");
+
+await ruleRegistry.initialize();
+const activeRulesets = ruleRegistry.publicState().active;
 
 function hasOverstackedType(team = []) {
   const counts = new Map();
@@ -32,7 +36,8 @@ const reports = cases.map(({ name, body, expectOk }) => {
   if (result.ok !== expectOk) failures.push(`${name}: 预期 ok=${expectOk}，实际 ok=${result.ok}`);
   if (result.ok) {
     if (result.team.length !== 6) failures.push(`${name}: 没有六只成员`);
-    if (!result.team.every((member) => member.evidence?.season === "M-3" && member.evidence?.format === body.format)) failures.push(`${name}: 存在非 M-3 同格式配置证据`);
+    if (!result.rulesetId || !result.showdownFormatId || !activeRulesets.some((item) => item.rulesetId === result.rulesetId)) failures.push(`${name}: missing active ruleset metadata`);
+    if (!result.team.every((member) => member.evidence?.season === "M-3" && member.evidence?.format === body.format && member.evidence?.rulesetId === result.rulesetId)) failures.push(`${name}: missing current ruleset evidence`);
     if ((result.buildReport?.synergies || []).length < 2) failures.push(`${name}: 少于两条队友联动`);
     if ((result.buildReport?.mega?.secondary ? 2 : result.buildReport?.mega?.primary ? 1 : 0) > 2) failures.push(`${name}: Mega 规划超过两个`);
     if (body.requiredSlug && !result.team.some((member) => member.slug === body.requiredSlug)) failures.push(`${name}: 缺少指定核心 ${body.requiredSlug}`);

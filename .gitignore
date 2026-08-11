@@ -9,6 +9,7 @@ server.err.log
 __pycache__/
 *.py[cod]
 data/*.json
+data/rules/registry.json
 !data/.gitkeep
 !data/zh-hans-terms.json
 skills/pocket-ag-coach/references/audio/

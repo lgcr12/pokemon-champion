@@ -7,15 +7,13 @@ import { createRequire } from "node:module";
 import { extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import { ruleRegistry, RuleRegistryError } from "./server/rules-registry.mjs";
 
 const ROOT = resolve(".");
 const require = createRequire(import.meta.url);
 const { BattleStream, Dex, TeamValidator, Teams, getPlayerStreams } = require("pokemon-showdown");
 const PORT = Number(process.env.PORT || 4174);
-const CHAMPIONS_FORMAT_IDS = {
-  single: "gen9championsbssregmb",
-  double: "gen9championsvgc2026regmb",
-};
+const RULE_SYNC_INTERVAL_MS = Number(process.env.RULE_SYNC_INTERVAL_MS || 24 * 60 * 60 * 1000);
 const BATTLE_HISTORY_PATH = join(ROOT, "data", "battle-history.json");
 const TEAM_DATA_PATH = join(ROOT, "data", "team-data.json");
 const CHAMPION_DATA_PATH = join(ROOT, "data", "champion-data.json");
@@ -481,6 +479,35 @@ async function readJson(req) {
   return raw ? JSON.parse(raw) : {};
 }
 
+async function handleRulesApi(req, res) {
+  if (req.method === "POST") {
+    const state = await ruleRegistry.sync();
+    sendJson(res, 200, { ok: true, ...state });
+    return;
+  }
+  const state = ruleRegistry.publicState();
+  if (req.url === "/api/rules/history") {
+    sendJson(res, 200, {
+      ok: true,
+      status: state.status,
+      canOperate: state.canOperate,
+      history: state.history,
+      lastSyncAt: state.lastSyncAt,
+    });
+    return;
+  }
+  sendJson(res, 200, {
+    ok: true,
+    status: state.status,
+    canOperate: state.canOperate,
+    active: state.active,
+    differences: state.differences,
+    lastSyncAt: state.lastSyncAt,
+    sourceUrl: state.sourceUrl,
+    showdownCommit: state.showdownCommit,
+  });
+}
+
 function buildPrompt(payload) {
   const emptyTeamRequest = Boolean(payload.intent?.emptyTeamRequest);
   const rebuildFromGoal = Boolean(payload.intent?.rebuildFromGoal);
@@ -686,19 +713,46 @@ JSON 结构：
   return payload.promptMode === "quick" ? prompt.replace(/输出要求：[\s\S]*?\nJSON 结构：/, `${quickOutputRequirements}\n\nJSON 结构：`) : prompt;
 }
 
-function showdownFormatFor(format = "single") {
-  const value = String(format || "").toLowerCase();
-  return value.includes("double") || value.includes("vgc") ? CHAMPIONS_FORMAT_IDS.double : CHAMPIONS_FORMAT_IDS.single;
+function rulesetMetadata(snapshot = {}) {
+  return {
+    rulesetId: snapshot.rulesetId || "",
+    showdownFormatId: snapshot.showdownFormatId || "",
+    battleType: snapshot.battleType || "",
+    regulation: snapshot.regulation || "",
+    formatHash: snapshot.formatHash || "",
+    legalPoolHash: snapshot.legalPoolHash || "",
+    showdownCommit: snapshot.showdownCommit || "",
+  };
 }
 
-function championsRulesEngine(format = "single") {
-  const id = showdownFormatFor(format);
+function showdownFormatFor(format = "single", rulesetId = "") {
+  const snapshot = rulesetId ? ruleRegistry.get(rulesetId) : ruleRegistry.activeFor(format);
+  return snapshot?.showdownFormatId || "";
+}
+
+function championsRulesEngine(format = "single", rulesetId = "") {
+  let snapshot;
+  try {
+    snapshot = ruleRegistry.operational({ format, rulesetId });
+  } catch (error) {
+    return {
+      ok: false,
+      code: error.code || "RULE_REGISTRY_NOT_ACTIVE",
+      status: error.status || 503,
+      error: error.message,
+      details: error.details || {},
+    };
+  }
+  const id = snapshot.showdownFormatId;
   const rules = Dex.formats.get(id);
   if (!rules?.exists) {
     return {
       ok: false,
+      code: "EXACT_RULES_UNAVAILABLE",
+      status: 503,
       id,
-      error: `本地 Pokemon Showdown 引擎未包含 ${format === "double" ? "Champions VGC 2026 M-B" : "Champions BSS M-B"} 规则，无法进行精确测试。请更新依赖后重试。`,
+      error: `本地 Pokemon Showdown 引擎未包含 ${snapshot.name || id} 规则，无法进行精确测试。请更新依赖后重试。`,
+      ...rulesetMetadata(snapshot),
     };
   }
   return {
@@ -708,6 +762,7 @@ function championsRulesEngine(format = "single") {
     mod: rules.mod,
     gameType: rules.gameType,
     exact: true,
+    ...rulesetMetadata(snapshot),
   };
 }
 
@@ -723,13 +778,15 @@ function showdownLegalValue(value = "", fallback = "", category = "") {
   return text;
 }
 
-function validateShowdownTeam(text = "", format = "single") {
-  const formatId = showdownFormatFor(format);
+function validateShowdownTeam(text = "", format = "single", rulesetId = "") {
+  const snapshot = ruleRegistry.operational({ format, rulesetId });
+  const formatId = snapshot.showdownFormatId;
   const team = Teams.import(text);
   if (!team?.length) {
     return {
       ok: false,
       format: formatId,
+      ...rulesetMetadata(snapshot),
       problems: ["没有解析到有效的 Showdown 队伍文本。"],
       teamSize: 0,
     };
@@ -739,18 +796,23 @@ function validateShowdownTeam(text = "", format = "single") {
   return {
     ok: problems.length === 0,
     format: formatId,
+    ...rulesetMetadata(snapshot),
     problems,
     teamSize: team.length,
   };
 }
 
-function readTeamDataFile() {
+function readTeamDataDocument() {
   try {
-    const data = JSON.parse(readFileSync(TEAM_DATA_PATH, "utf8"));
-    return Array.isArray(data?.teams) ? data.teams : [];
+    return JSON.parse(readFileSync(TEAM_DATA_PATH, "utf8"));
   } catch {
-    return [];
+    return { season: "", availableSeasons: [], teams: [] };
   }
+}
+
+function readTeamDataFile() {
+  const data = readTeamDataDocument();
+  return Array.isArray(data?.teams) ? data.teams : [];
 }
 
 function readChampionDataFile() {
@@ -1069,8 +1131,8 @@ function strictGoalConstraints(payload = {}, available = []) {
   };
 }
 
-function strictShowdownCandidateIsLegal(candidate = {}, format = "single") {
-  const key = [format, candidate.slug, candidate.item, candidate.ability, candidate.nature, candidate.evs, ...(candidate.moves || [])].join("|");
+function strictShowdownCandidateIsLegal(candidate = {}, format = "single", rulesetId = "") {
+  const key = [rulesetId, format, candidate.slug, candidate.item, candidate.ability, candidate.nature, candidate.evs, ...(candidate.moves || [])].join("|");
   if (strictCandidateLegalityCache.has(key)) return strictCandidateLegalityCache.get(key);
   const species = legalShowdownSpeciesName(candidate.slug || candidate.id || candidate.name, candidate);
   const item = showdownLegalValue(candidate.item, "", "items");
@@ -1087,17 +1149,20 @@ function strictShowdownCandidateIsLegal(candidate = {}, format = "single") {
   if (nature) lines.push(`${nature} Nature`);
   moves.forEach((move) => lines.push(`- ${move}`));
   const parsed = Teams.import(lines.join("\n"))[0];
-  const validator = TeamValidator.get(showdownFormatFor(format));
+  const validator = TeamValidator.get(showdownFormatFor(format, rulesetId));
   const problems = parsed ? (validator.validateSet(parsed) || []) : ["无法解析候选配置。"];
   const legal = !problems.some((problem) => !/is level 50, but this format allows level 100/i.test(problem));
   strictCandidateLegalityCache.set(key, legal);
   return legal;
 }
 
-function strictCandidateGraph(format = "single") {
-  const season = "M-3";
+function strictCandidateGraph(format = "single", rulesetId = "") {
+  const snapshot = ruleRegistry.operational({ format, rulesetId });
+  const teamData = readTeamDataDocument();
+  const season = snapshot.regulation;
+  const dataSeason = String(teamData.season || teamData.availableSeasons?.[0] || "");
   const champion = readChampionDataFile();
-  const sourceTeams = readTeamDataFile().filter((team) => team.season === season && team.format === format);
+  const sourceTeams = (Array.isArray(teamData.teams) ? teamData.teams : []).filter((team) => team.season === dataSeason && team.format === format && (!team.rulesetId || team.rulesetId === snapshot.rulesetId));
   const knownPokemon = Object.values(champion?.formats || {}).flatMap((formatData) => formatData?.pokemon || []);
   const knownByKey = new Map(knownPokemon.map((mon) => [strictKey(mon.slug || mon.id || mon.name), mon]));
   const availableByKey = new Map((champion?.formats?.[format]?.pokemon || []).map((mon) => [strictKey(mon.slug || mon.id || mon.name), mon]));
@@ -1135,19 +1200,19 @@ function strictCandidateGraph(format = "single") {
         speed: Number(mon.stats?.速度 || mon.stats?.speed || strictBaseSpeedFor(config.slug || mon.slug)),
         rank: Number(mon.rank || 9999),
         types: strictTypesFor(config.slug || mon.slug),
-        evidence: { teamId: team.id, title: team.title || "M-3 热门样本", source: team.source || "热门队伍", season, format },
+        evidence: { teamId: team.id, title: team.title || `${dataSeason} 热门样本`, source: team.source || "热门队伍", season: dataSeason, regulation: snapshot.regulation, rulesetId: snapshot.rulesetId, format },
       };
       candidate.tags = strictTags(candidate, format);
       candidate.defense = Object.fromEntries(STRICT_ATTACK_TYPES.map((attackType) => [attackType, strictTypeMultiplier(candidate, attackType)]));
       candidate.mega = strictIsMegaItem(candidate.item);
-      if (!strictShowdownCandidateIsLegal(candidate, format)) continue;
+      if (!strictShowdownCandidateIsLegal(candidate, format, snapshot.rulesetId)) continue;
       const list = bySpecies.get(strictKey(candidate.slug)) || [];
       const signature = JSON.stringify([candidate.item, candidate.ability, candidate.moves]);
       if (!list.some((item) => JSON.stringify([item.item, item.ability, item.moves]) === signature)) list.push(candidate);
       bySpecies.set(strictKey(candidate.slug), list);
     }
   }
-  return { season, available, bySpecies, candidates: [...bySpecies.values()].flat() };
+  return { season, dataSeason, ruleset: snapshot, available, bySpecies, candidates: [...bySpecies.values()].flat() };
 }
 
 function strictMemberScore(member, team = [], format = "single", constraints = {}) {
@@ -1364,7 +1429,7 @@ function strictBuildPlan(team = [], format = "single", constraints = {}) {
 }
 
 function strictFullSampleCandidate(graph, format, constraints = {}) {
-  const configuredTeams = readTeamDataFile().filter((entry) => entry.season === graph.season && entry.format === format && (entry.configurations || []).length >= 6);
+  const configuredTeams = readTeamDataFile().filter((entry) => entry.season === graph.dataSeason && entry.format === format && (!entry.rulesetId || entry.rulesetId === graph.ruleset?.rulesetId) && (entry.configurations || []).length >= 6);
   const requestedWeather = ["rain", "sun", "sand", "snow"].filter((theme) => (constraints.themes || []).includes(theme));
   const candidateForConfig = (config = {}) => {
     const variants = graph.bySpecies.get(strictKey(config.slug || config.name || config.id)) || [];
@@ -1427,6 +1492,8 @@ function strictRiskReport(team = [], format = "single", constraints = {}) {
 function strictBuildResult(team = [], format = "single", graph = {}, constraints = {}, intent = "new-team", current = [], source = null, aiDraft = null, alternatives = []) {
   const validation = strictTeamValidation(team, format, constraints);
   const synergies = strictSynergyReport(team, format, constraints);
+  const ruleset = graph.ruleset || {};
+  const dataLabel = graph.dataSeason ? `数据赛季 ${graph.dataSeason}` : "当前数据";
   const mega = validation.mega;
   const isPassChain = (constraints.themes || []).includes("pass-chain");
   const passer = isPassChain ? team.find((member) => strictThemeInfo(member, "pass-chain").source) : null;
@@ -1436,6 +1503,8 @@ function strictBuildResult(team = [], format = "single", graph = {}, constraints
     ok: true,
     format,
     season: graph.season,
+    dataSeason: graph.dataSeason || "",
+    ...rulesetMetadata(ruleset),
     buildMethod: aiDraft?.mode === "engine-guided" ? "engine-guided" : aiDraft ? "ai-designed" : source ? "sample" : "strict",
     team: team.map((member) => ({
       id: member.id,
@@ -1449,12 +1518,12 @@ function strictBuildResult(team = [], format = "single", graph = {}, constraints
       moves: member.moves,
       role: member === passer ? "强化接棒/首发位" : member === receiver ? "强化接收/终盘位" : member === safety ? "安全回合/保护位" : member.tags.has("speed") ? "控速/节奏位" : member.tags.has("pivot") ? "轮换中转位" : member.tags.has("defensive") ? "联防中转位" : member.tags.has("wincon") ? "突破/终盘位" : "结构补位",
       note: source
-        ? "来自当前 M-3 同格式完整热门样本。"
+        ? `来自当前 ${ruleset.regulation || graph.season} 同格式完整热门样本（${dataLabel}）。`
         : aiDraft
-          ? "该成员配置经当前 M-3 同格式样本验证；六人组合不是完整热门队原样复用。"
+          ? `该成员配置经当前 ${ruleset.regulation || graph.season} 同格式样本验证；六人组合不是完整热门队原样复用。`
           : member.mega
             ? "Mega 候选；本局只作为已规划的 Mega 资源使用。"
-            : "配置来自当前 M-3 同格式热门样本。",
+            : `配置来自当前 ${ruleset.regulation || graph.season} 同格式热门样本。`,
       evidence: member.evidence,
     })),
     buildReport: {
@@ -1492,7 +1561,7 @@ function strictBuildResult(team = [], format = "single", graph = {}, constraints
           level: "50",
           moves: member.moves,
           role: member.tags.has("speed") ? "控速/节奏位" : member.tags.has("pivot") ? "轮换中转位" : member.tags.has("defensive") ? "联防中转位" : member.tags.has("wincon") ? "突破/终盘位" : "结构补位",
-          note: "该成员配置经当前 M-3 同格式样本验证；六人组合不是完整热门队原样复用。",
+          note: `该成员配置经当前 ${ruleset.regulation || graph.season} 同格式样本验证；六人组合不是完整热门队原样复用。`,
           evidence: member.evidence,
         })),
         plan: strictBuildPlan(alternativeTeam, format, constraints),
@@ -1506,7 +1575,8 @@ function strictBuildResult(team = [], format = "single", graph = {}, constraints
 
 function strictBuildTeam(payload = {}) {
   const format = payload.format === "double" ? "double" : "single";
-  const graph = strictCandidateGraph(format);
+  const rulesetId = String(payload.rulesetId || "").trim();
+  const graph = strictCandidateGraph(format, rulesetId);
   const constraints = strictGoalConstraints(payload, graph.available);
   const variantsFor = (ref = "", exactOnly = false) => {
     const exact = graph.bySpecies.get(strictKey(ref));
@@ -1545,7 +1615,7 @@ function strictBuildTeam(payload = {}) {
     const fallbackVariant = variants.find((member) => !locked.some((own) => strictKey(own.item) === strictKey(member.item))) || variants[0];
     if (configuredVariant || fallbackVariant) locked.push(configuredVariant || fallbackVariant);
   }
-  if ((intent === "complete-team" || intent === "moveset-only") && locked.length !== current.length) return { ok: false, code: "BUILD_UNSATISFIED", format, diagnostics: ["当前队伍中存在没有 M-3 同格式验证配置的成员，锁定模式不能偷偷替换。"] };
+  if ((intent === "complete-team" || intent === "moveset-only") && locked.length !== current.length) return { ok: false, code: "BUILD_UNSATISFIED", format, rulesetId: graph.ruleset.rulesetId, diagnostics: [`当前队伍中存在没有 ${graph.season} 同格式验证配置的成员，锁定模式不能偷偷替换。`] };
   if (intent === "moveset-only" && locked.length !== 6) return { ok: false, code: "BUILD_UNSATISFIED", format, diagnostics: ["只改配置需要先拥有完整的六只队伍。"] };
 
   // An engine-guided draft was already selected from a complete, validated
@@ -1857,14 +1927,22 @@ function strictBuildTeam(payload = {}) {
 
 async function handleStrictTeamBuild(req, res) {
   const payload = await readJson(req).catch(() => ({}));
-  const engineGuided = payload.buildMethod === "engine-guided";
+  const format = payload.format === "double" ? "double" : "single";
+  const snapshot = ruleRegistry.operational({ format, rulesetId: String(payload.rulesetId || "").trim() });
+  const rulesetPayload = {
+    ...payload,
+    format,
+    rulesetId: snapshot.rulesetId,
+    battleHistory: Array.isArray(payload.battleHistory) ? payload.battleHistory.filter((item) => item?.rulesetId === snapshot.rulesetId) : [],
+  };
+  const engineGuided = rulesetPayload.buildMethod === "engine-guided";
   let result = strictBuildTeam(engineGuided
-    ? { ...payload, buildMethod: "strict", forceGenerated: true, aiDraft: undefined }
-    : payload);
+    ? { ...rulesetPayload, buildMethod: "strict", forceGenerated: true, aiDraft: undefined }
+    : rulesetPayload);
   if (engineGuided && !result.ok) {
     // Last-resort availability path: an explicit same-format complete sample
     // is better than leaving a valid user request on an error screen.
-    result = strictBuildTeam({ ...payload, buildMethod: "sample", forceGenerated: false, aiDraft: undefined });
+    result = strictBuildTeam({ ...rulesetPayload, buildMethod: "sample", forceGenerated: false, aiDraft: undefined });
     if (result.ok) result.buildReport.emergencySampleFallback = true;
   }
   if (engineGuided && result.ok) {
@@ -1876,10 +1954,11 @@ async function handleStrictTeamBuild(req, res) {
       adjusted: result.team.map((member) => member.name),
       rationale: "AI 服务没有给出可用六人草案，已按同一目标直接生成严格可用队伍。",
       completionNote: result.buildReport.emergencySampleFallback
-        ? "原创严格搜索未找到完整闭环，已使用同一 M-3 目标格式的完整样本作为最后兜底。"
-        : "这是本地 M-3 目标格式候选池的原创严格构筑，不是完整热门样本复用。",
+        ? `原创严格搜索未找到完整闭环，已使用同一 ${snapshot.regulation} 目标格式的完整样本作为最后兜底。`
+        : `这是本地 ${snapshot.regulation} 目标格式候选池的原创严格构筑，不是完整热门样本复用。`,
     };
   }
+  result = { ...rulesetMetadata(snapshot), ...result, rulesetId: snapshot.rulesetId, showdownFormatId: snapshot.showdownFormatId, regulation: snapshot.regulation };
   sendJson(res, result.ok ? 200 : 422, result);
 }
 
@@ -1904,7 +1983,7 @@ async function writeBattleHistoryFile(items = []) {
 }
 
 function battleHistoryEntryKey(item = {}) {
-  return [item.key || "", item.format || "", item.teamSignature || "", item.updatedAt || ""].join("|");
+  return [item.key || "", item.rulesetId || "", item.format || "", item.teamSignature || "", item.updatedAt || ""].join("|");
 }
 
 async function handleBattleHistory(req, res) {
@@ -1924,12 +2003,16 @@ async function handleBattleHistory(req, res) {
     sendJson(res, 200, { ok: true, items });
     return;
   }
-  const incoming = Array.isArray(body.items) ? body.items : body.entry ? [body.entry] : [];
+  const incoming = (Array.isArray(body.items) ? body.items : body.entry ? [body.entry] : []).map((item) => {
+    const format = item?.format === "double" ? "double" : "single";
+    const snapshot = ruleRegistry.operational({ format, rulesetId: String(item?.rulesetId || body.rulesetId || "").trim() });
+    return { ...item, ...rulesetMetadata(snapshot), format };
+  });
   const existing = await readBattleHistoryFile();
   const merged = [];
   const seen = new Set();
   for (const item of [...incoming, ...existing].filter(Boolean).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))) {
-    const stableKey = [item.key || "", item.format || "", item.teamSignature || ""].join("|");
+    const stableKey = [item.key || "", item.rulesetId || "", item.format || "", item.teamSignature || ""].join("|");
     const key = stableKey.trim() ? stableKey : battleHistoryEntryKey(item);
     if (seen.has(key)) continue;
     seen.add(key);
@@ -1952,10 +2035,8 @@ function showdownReplayLogUrl(value = "") {
 }
 
 function replayMatchesRulesEngine(tier = "", rulesEngine = {}) {
-  const text = String(tier || "").toLowerCase();
-  if (rulesEngine.id === CHAMPIONS_FORMAT_IDS.double) return /champions.*vgc\s*2026\s*reg\s*m-b/.test(text);
-  if (rulesEngine.id === CHAMPIONS_FORMAT_IDS.single) return /champions.*bss\s*reg\s*m-b/.test(text);
-  return false;
+  const normalizeTier = (value) => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  return Boolean(normalizeTier(tier) && normalizeTier(tier) === normalizeTier(rulesEngine.name));
 }
 
 function parseShowdownReplayLog(log = "", playerName = "", playerSide = "") {
@@ -2000,9 +2081,10 @@ function parseShowdownReplayLog(log = "", playerName = "", playerSide = "") {
 
 async function handleShowdownReplay(req, res) {
   const body = await readJson(req).catch(() => ({}));
-  const rulesEngine = championsRulesEngine(body.format === "double" ? "double" : "single");
+  const format = body.format === "double" ? "double" : "single";
+  const rulesEngine = championsRulesEngine(format, String(body.rulesetId || "").trim());
   if (!rulesEngine.ok) {
-    sendJson(res, 503, { ok: false, code: "EXACT_RULES_UNAVAILABLE", error: rulesEngine.error, rulesEngine });
+    sendJson(res, rulesEngine.status || 503, { ok: false, code: rulesEngine.code || "EXACT_RULES_UNAVAILABLE", error: rulesEngine.error, rulesEngine });
     return;
   }
   const replay = showdownReplayLogUrl(body.url);
@@ -2039,7 +2121,11 @@ async function handleShowdownReplay(req, res) {
       contextKey: String(body.contextKey || ""),
       type: "public-showdown-replay",
       sourceUrl: replay.url,
-      format: body.format === "double" ? "double" : "single",
+      format,
+      rulesetId: rulesEngine.rulesetId,
+      showdownFormatId: rulesEngine.showdownFormatId,
+      regulation: rulesEngine.regulation,
+      formatHash: rulesEngine.formatHash,
       sourceFormat: report.tier,
       rulesEngine,
       eligibleForBuildFeedback: formatMatches && Boolean(report.candidateSide),
@@ -2194,12 +2280,12 @@ async function handleShowdownImportBridge(req, res) {
     return;
   }
   const format = String(body.format || "single").includes("double") ? "double" : "single";
-  const rulesEngine = championsRulesEngine(format);
+  const rulesEngine = championsRulesEngine(format, String(body.rulesetId || "").trim());
   if (!rulesEngine.ok) {
-    sendJson(res, 503, { ok: false, code: "EXACT_RULES_UNAVAILABLE", error: rulesEngine.error });
+    sendJson(res, rulesEngine.status || 503, { ok: false, code: rulesEngine.code || "EXACT_RULES_UNAVAILABLE", error: rulesEngine.error });
     return;
   }
-  const prepared = prepareBattleTeam(body.teamText || "", format, "待导入队伍");
+  const prepared = prepareBattleTeam(body.teamText || "", format, "待导入队伍", rulesEngine.rulesetId);
   if (!prepared.ok || !prepared.strictLegal) {
     sendJson(res, 422, {
       ok: false,
@@ -2214,13 +2300,14 @@ async function handleShowdownImportBridge(req, res) {
   showdownImportBridge.set(nextToken, {
     packedTeam: prepared.packedTeam,
     formatId: rulesEngine.id,
+    rulesetId: rulesEngine.rulesetId,
     name: String(body.name || "Champion Lab Team").trim().slice(0, 48) || "Champion Lab Team",
     expiresAt,
   });
   sendJson(res, 200, { ok: true, token: nextToken, expiresAt, rulesEngine });
 }
 
-function prepareBattleTeam(text = "", format = "single", label = "队伍") {
+function prepareBattleTeam(text = "", format = "single", label = "队伍", rulesetId = "") {
   const team = Teams.import(normalizeChampionShowdownText(text));
   if (!team?.length) {
     return {
@@ -2263,7 +2350,7 @@ function prepareBattleTeam(text = "", format = "single", label = "队伍") {
     };
   }
   const packedText = Teams.pack(repaired.slice(0, 6));
-  const validation = validateShowdownTeam(packedText, format);
+  const validation = validateShowdownTeam(packedText, format, rulesetId);
   return {
     ok: true,
     label,
@@ -2271,6 +2358,7 @@ function prepareBattleTeam(text = "", format = "single", label = "队伍") {
     problems: [...skipped, ...(validation.problems || [])],
     teamSize: repaired.length,
     packedTeam: packedText,
+    ...rulesetMetadata(validation),
   };
 }
 
@@ -2959,12 +3047,12 @@ function calibrateBattleResults(results = []) {
 async function handleBattleEval(req, res) {
   const body = await readJson(req).catch(() => ({}));
   const format = String(body.format || "single").includes("double") ? "double" : "single";
-  const rulesEngine = championsRulesEngine(format);
+  const rulesEngine = championsRulesEngine(format, String(body.rulesetId || "").trim());
   if (!rulesEngine.ok) {
-    sendJson(res, 503, { ok: false, code: "EXACT_RULES_UNAVAILABLE", error: rulesEngine.error, rulesEngine });
+    sendJson(res, rulesEngine.status || 503, { ok: false, code: rulesEngine.code || "EXACT_RULES_UNAVAILABLE", error: rulesEngine.error, rulesEngine });
     return;
   }
-  const own = prepareBattleTeam(body.teamText || "", format, "候选队伍");
+  const own = prepareBattleTeam(body.teamText || "", format, "候选队伍", rulesEngine.rulesetId);
   if (!own.ok) {
     sendJson(res, 400, { ok: false, error: own.problems[0], problems: own.problems });
     return;
@@ -2997,11 +3085,13 @@ async function handleBattleEval(req, res) {
   }
 
   for (const opponent of opponents) {
-    const opponentTeam = prepareBattleTeam(opponent.showdownText || "", format, opponent.title || opponent.id || "固定靶队");
+    const opponentTeam = prepareBattleTeam(opponent.showdownText || "", format, opponent.title || opponent.id || "固定靶队", rulesEngine.rulesetId);
     if (!opponentTeam.ok) {
       results.push({
         opponentId: opponent.id || "",
         opponentTitle: opponent.title || "固定靶队",
+        rulesetId: rulesEngine.rulesetId,
+        showdownFormatId: rulesEngine.showdownFormatId,
         result: "skipped",
         failureReasons: opponentTeam.problems,
         actions: {
@@ -3023,6 +3113,8 @@ async function handleBattleEval(req, res) {
       results.push({
         opponentId: opponent.id || "",
         opponentTitle: opponent.title || "固定靶队",
+        rulesetId: rulesEngine.rulesetId,
+        showdownFormatId: rulesEngine.showdownFormatId,
         result: "skipped",
         formatId: rulesEngine.id,
         strictLegal: false,
@@ -3053,6 +3145,7 @@ async function handleBattleEval(req, res) {
         const battle = await runLocalBattle({
           format,
           formatId,
+          rulesetId: rulesEngine.rulesetId,
           p1Team: pairing.p1Team,
           p2Team: pairing.p2Team,
           p1Name: pairing.p1Name,
@@ -3063,6 +3156,9 @@ async function handleBattleEval(req, res) {
         results.push({
           opponentId: opponent.id || "",
           opponentTitle: opponent.title || "固定靶队",
+          rulesetId: rulesEngine.rulesetId,
+          showdownFormatId: rulesEngine.showdownFormatId,
+          regulation: rulesEngine.regulation,
           rate: Number(opponent.rate || 0),
           game: game * 2 + (pairing.sideLabel === "候选先手" ? 1 : 2),
           sideLabel: pairing.sideLabel,
@@ -3096,6 +3192,10 @@ async function handleBattleEval(req, res) {
     mode: opponentSource === "hot" ? "local-showdown-hot-meta" : "local-showdown-fixed-meta",
     agentVersion: "tactical-single-double-v2",
     format,
+    rulesetId: rulesEngine.rulesetId,
+    showdownFormatId: rulesEngine.showdownFormatId,
+    regulation: rulesEngine.regulation,
+    formatHash: rulesEngine.formatHash,
     rulesEngine,
     games: played.length,
     wins,
@@ -5629,11 +5729,20 @@ function teamCoachPrompt(payload = {}) {
     `招式:${(member.moves || []).join(" / ")}`,
     `职责:${member.role || "未提供"}`,
   ].join("；")).join("\n");
-  return `你是宝可梦竞技配队教练。以下六人队已经由本地系统按 M-3、${payload.format === "double" ? "双打" : "单打"}、可验证招式/道具/特性严格校验。\n\n用户目标：${payload.userGoal || "未额外指定"}\n\n已验证队伍：\n${teamText}\n\n只给战术解读，绝不能替换宝可梦、道具、特性或招式，不能编造配置。请用简体中文严格返回 JSON：\n{"plan":"开局到终盘的可执行路线","leads":["首发或选出建议，须点名现有成员"],"synergies":["基于现有成员、特性或招式的联动"],"risks":["明确威胁和处理顺序"]}\n每个数组 2 到 4 条。`;
+  return `你是宝可梦竞技配队教练。以下六人队已经由本地系统按 ${payload.regulation || payload.rulesetId || "当前规则"}、${payload.format === "double" ? "双打" : "单打"}、可验证招式/道具/特性严格校验。\n\n用户目标：${payload.userGoal || "未额外指定"}\n\n已验证队伍：\n${teamText}\n\n只给战术解读，绝不能替换宝可梦、道具、特性或招式，不能编造配置。请用简体中文严格返回 JSON：\n{"plan":"开局到终盘的可执行路线","leads":["首发或选出建议，须点名现有成员"],"synergies":["基于现有成员、特性或招式的联动"],"risks":["明确威胁和处理顺序"]}\n每个数组 2 到 4 条。`;
 }
 
 async function handleTeamCoach(req, res) {
-  const payload = await readJson(req);
+  const input = await readJson(req);
+  const format = input.format === "double" ? "double" : "single";
+  const snapshot = ruleRegistry.operational({ format, rulesetId: String(input.rulesetId || "").trim() });
+  const payload = {
+    ...input,
+    format,
+    rulesetId: snapshot.rulesetId,
+    regulation: snapshot.regulation,
+    battleHistory: Array.isArray(input.battleHistory) ? input.battleHistory.filter((item) => item?.rulesetId === snapshot.rulesetId) : [],
+  };
   const team = Array.isArray(payload.team) ? payload.team : [];
   if (team.length !== 6) {
     sendJson(res, 400, { error: "AI 战术解读需要一支已验证的六人队。" });
@@ -5658,6 +5767,7 @@ async function handleTeamCoach(req, res) {
       ok: true,
       model: aiConfig.model,
       provider: aiConfig.source,
+      ...rulesetMetadata(snapshot),
       coach: parseTeamCoachJson(extractOutputText(data)),
     });
   } catch (err) {
@@ -5668,8 +5778,8 @@ async function handleTeamCoach(req, res) {
   }
 }
 
-function aiDesignCatalogue(format = "single", limit = 96) {
-  const graph = strictCandidateGraph(format);
+function aiDesignCatalogue(format = "single", limit = 96, rulesetId = "") {
+  const graph = strictCandidateGraph(format, rulesetId);
   const byFamily = new Map();
   for (const candidate of graph.candidates) {
     const key = strictFamilyKey(candidate.slug);
@@ -5855,7 +5965,7 @@ function completeAIDesignDraft(draft = {}, graph = {}, constraints = {}) {
     engineAdded: [],
     slots: Object.fromEntries(Object.entries(draft.slots || {}).map(([slot, candidate]) => [slot, candidate.slug || candidate.name || candidate])),
     variationSeed: String(draft.variationSeed || ""),
-    rationale: draft.rationale || "AI 已按职责槽位选择六人，严格引擎只验证当前 M-3 配置与结构，不会替换成员。",
+    rationale: draft.rationale || `AI 已按职责槽位选择六人，严格引擎只验证当前 ${graph.ruleset?.regulation || "规则"} 配置与结构，不会替换成员。`,
     completionNote: "AI 选择的六只成员会原样进入严格配置验证；结构不通过会要求 AI 重选，而不是自动换成热门样本。",
   };
 }
@@ -5869,7 +5979,7 @@ function teamDesignPrompt(payload = {}, slots = []) {
   const setupRule = requiresSetup ? "强化队硬要求：至少两名实际携带强化招式的成员，另有保护强化回合的协作位和强化后终盘收割位。" : "";
   const variation = String(payload.variationSeed || "").slice(0, 80);
   const retryRule = avoided.length ? `上一版队伍：${avoided.join("、")}。本次必须至少替换两名非硬性核心成员，不能原样重复。` : "";
-  return `你是宝可梦竞技配队设计师。请为当前 M-3 ${payload.format === "double" ? "双打" : "单打"}设计一支原创六人队。\n用户目标：${payload.userGoal || "平衡/半攻"}\n必须包含：${required}\n体系：${themes}\n${setupRule}\n${retryRule}\n本次构筑变体编号：${variation || "默认"}。\n\n本地严格引擎已根据当前格式和硬性要求生成六个职责槽位。每个槽位只能从自己的 slug 候选中选一只；六个选择不得重复。不要自行添加宝可梦、不要输出道具或招式。\n${aiDesignContractPrompt(slots)}\n\n只需返回严格 JSON：{"pokemon":["slug1","slug2","slug3","slug4","slug5","slug6"],"rationale":"一句说明主胜利路线、联防和速度规划"}。可选地附加 slots；即使不附加，系统也会根据 pokemon 自动匹配职责槽位。`;
+  return `你是宝可梦竞技配队设计师。请为当前 ${payload.regulation || payload.rulesetId || "规则"} ${payload.format === "double" ? "双打" : "单打"}设计一支原创六人队。\n用户目标：${payload.userGoal || "平衡/半攻"}\n必须包含：${required}\n体系：${themes}\n${setupRule}\n${retryRule}\n本次构筑变体编号：${variation || "默认"}。\n\n本地严格引擎已根据当前格式和硬性要求生成六个职责槽位。每个槽位只能从自己的 slug 候选中选一只；六个选择不得重复。不要自行添加宝可梦、不要输出道具或招式。\n${aiDesignContractPrompt(slots)}\n\n只需返回严格 JSON：{"pokemon":["slug1","slug2","slug3","slug4","slug5","slug6"],"rationale":"一句说明主胜利路线、联防和速度规划"}。可选地附加 slots；即使不附加，系统也会根据 pokemon 自动匹配职责槽位。`;
 }
 
 function aiDraftConstraintViolations(draft = {}, graph = {}, constraints = {}, slots = []) {
@@ -5878,7 +5988,7 @@ function aiDraftConstraintViolations(draft = {}, graph = {}, constraints = {}, s
     .map((item) => graph.candidates?.find((candidate) => strictFamilyKey(candidate.slug) === strictFamilyKey(item.slug || item.name || item)))
     .filter(Boolean);
   const violations = [];
-  if (selected.length !== 6) violations.push("必须返回恰好六名当前 M-3 目标格式可验证成员。");
+  if (selected.length !== 6) violations.push(`必须返回恰好六名当前 ${graph.ruleset?.regulation || "目标"} 格式可验证成员。`);
   const selectedFamilies = new Set(selected.map((member) => strictFamilyKey(member.slug)));
   if (selectedFamilies.size !== 6) violations.push("六个成员必须互不重复。");
   const selectedKeys = new Set(selected.map((member) => strictFamilyKey(member.slug)));
@@ -5933,12 +6043,20 @@ function engineGuidedAIDraft(payload = {}, format = "single", parsedDraft = {}, 
 }
 
 async function handleTeamDesign(req, res) {
-  const payload = await readJson(req);
-  const format = payload.format === "double" ? "double" : "single";
-  const graph = strictCandidateGraph(format);
+  const input = await readJson(req);
+  const format = input.format === "double" ? "double" : "single";
+  const snapshot = ruleRegistry.operational({ format, rulesetId: String(input.rulesetId || "").trim() });
+  const payload = {
+    ...input,
+    format,
+    rulesetId: snapshot.rulesetId,
+    regulation: snapshot.regulation,
+    battleHistory: Array.isArray(input.battleHistory) ? input.battleHistory.filter((item) => item?.rulesetId === snapshot.rulesetId) : [],
+  };
+  const graph = strictCandidateGraph(format, snapshot.rulesetId);
   const constraints = strictGoalConstraints(payload, graph.available);
   if (constraints.unavailable.length) {
-    sendJson(res, 422, { error: "用户指定的核心不在当前 M-3 目标格式可用池。" });
+    sendJson(res, 422, { error: `用户指定的核心不在当前 ${snapshot.regulation} 目标格式可用池。`, ...rulesetMetadata(snapshot) });
     return;
   }
   const aiConfig = resolveRequestAIConfig(payload);
@@ -5946,7 +6064,7 @@ async function handleTeamDesign(req, res) {
     sendJson(res, 501, { error: "AI 原创设计需要先填写 API Key、Base URL 和模型。" });
     return;
   }
-  const lookupCatalogue = aiDesignCatalogue(format, 2000);
+  const lookupCatalogue = aiDesignCatalogue(format, 2000, snapshot.rulesetId);
   for (const required of constraints.requiredPokemon || []) {
     const candidate = graph.candidates.find((item) => strictFamilyKey(item.slug) === strictFamilyKey(required.slug || required.name || required.id));
     if (!candidate) continue;
@@ -5955,7 +6073,7 @@ async function handleTeamDesign(req, res) {
   }
   const slots = aiDesignSlotContract({ ...graph, format }, constraints, format);
   if (slots.length !== 6) {
-    sendJson(res, 422, { code: "AI_SLOT_CONTRACT_UNAVAILABLE", error: "当前 M-3 目标格式无法为这组硬性要求生成完整的六个职责槽位。" });
+    sendJson(res, 422, { code: "AI_SLOT_CONTRACT_UNAVAILABLE", error: `当前 ${snapshot.regulation} 目标格式无法为这组硬性要求生成完整的六个职责槽位。`, ...rulesetMetadata(snapshot) });
     return;
   }
   try {
@@ -5995,7 +6113,7 @@ async function handleTeamDesign(req, res) {
     if (draftViolations.length) {
       const engineDraft = engineGuidedAIDraft(payload, format, parsedDraft, "未形成完整可识别的六人职责结构");
       if (engineDraft) {
-        sendJson(res, 200, { ok: true, format, model: aiConfig.model, provider: aiConfig.source, draft: engineDraft });
+        sendJson(res, 200, { ok: true, format, model: aiConfig.model, provider: aiConfig.source, ...rulesetMetadata(snapshot), draft: engineDraft });
         return;
       }
       sendJson(res, 422, {
@@ -6014,7 +6132,7 @@ async function handleTeamDesign(req, res) {
     if (!draft) {
       const engineDraft = engineGuidedAIDraft(payload, format, parsedDraft, "没有给出完整的六名不重复成员");
       if (engineDraft) {
-        sendJson(res, 200, { ok: true, format, model: aiConfig.model, provider: aiConfig.source, draft: engineDraft });
+        sendJson(res, 200, { ok: true, format, model: aiConfig.model, provider: aiConfig.source, ...rulesetMetadata(snapshot), draft: engineDraft });
         return;
       }
       sendJson(res, 422, { code: "AI_DRAFT_INCOMPLETE", error: "AI 原创草案没有给出完整的六名不重复成员。" });
@@ -6061,7 +6179,7 @@ async function handleTeamDesign(req, res) {
       }
       draft = engineDraft;
     }
-    sendJson(res, 200, { ok: true, format, model: aiConfig.model, provider: aiConfig.source, draft });
+    sendJson(res, 200, { ok: true, format, model: aiConfig.model, provider: aiConfig.source, ...rulesetMetadata(snapshot), draft });
   } catch (err) {
     const timeoutSeconds = Math.round(aiTimeoutMs(payload) / 1000);
     sendJson(res, 502, { error: err.name === "AbortError" ? `AI 原创设计超过 ${timeoutSeconds} 秒未返回。` : `AI 原创设计连接失败：${err.message || "请检查配置。"}` });
@@ -6069,7 +6187,16 @@ async function handleTeamDesign(req, res) {
 }
 
 async function handleAI(req, res) {
-  const payload = await readJson(req);
+  const input = await readJson(req);
+  const format = input.format === "double" ? "double" : "single";
+  const snapshot = ruleRegistry.operational({ format, rulesetId: String(input.rulesetId || "").trim() });
+  const payload = {
+    ...input,
+    format,
+    rulesetId: snapshot.rulesetId,
+    regulation: snapshot.regulation,
+    battleHistory: Array.isArray(input.battleHistory) ? input.battleHistory.filter((item) => item?.rulesetId === snapshot.rulesetId) : [],
+  };
   const preflightViolations = hardGoalPreflightViolations(payload);
   if (preflightViolations.length) {
     sendJson(res, 422, {
@@ -6130,6 +6257,7 @@ async function handleAI(req, res) {
   sendJson(res, 200, {
     model: aiConfig.model,
     provider: aiConfig.source,
+    ...rulesetMetadata(snapshot),
     text,
     advice,
     parsed: Boolean(parsedAdvice),
@@ -6378,17 +6506,30 @@ export {
   strictBuildTeam,
 };
 
-function startServer() {
+async function startServer() {
+  const registryState = await ruleRegistry.initialize();
+  const ruleSyncTimer = setInterval(() => {
+    ruleRegistry.sync().catch((error) => console.error(`Rules registry sync failed: ${error.message}`));
+  }, Math.max(60_000, RULE_SYNC_INTERVAL_MS));
+  ruleSyncTimer.unref();
   createServer(async (req, res) => {
     try {
       if (req.method === "OPTIONS" && req.url?.startsWith("/api/")) {
         res.writeHead(204, {
           "access-control-allow-origin": "*",
-          "access-control-allow-methods": "GET,POST,OPTIONS",
+          "access-control-allow-methods": "GET,POST,DELETE,OPTIONS",
           "access-control-allow-headers": "content-type, authorization",
           "access-control-max-age": "86400",
         });
         res.end();
+        return;
+      }
+      if (req.method === "GET" && (req.url === "/api/rules/active" || req.url === "/api/rules/history")) {
+        await handleRulesApi(req, res);
+        return;
+      }
+      if (req.method === "POST" && req.url === "/api/rules/sync") {
+        await handleRulesApi(req, res);
         return;
       }
       if (req.method === "POST" && req.url === "/api/team-advice") {
@@ -6417,7 +6558,8 @@ function startServer() {
       }
       if (req.method === "POST" && req.url === "/api/validate-team") {
         const body = await readJson(req).catch(() => ({}));
-        sendJson(res, 200, validateShowdownTeam(body.text || "", body.format || "single"));
+        const format = body.format === "double" ? "double" : "single";
+        sendJson(res, 200, validateShowdownTeam(body.text || "", format, String(body.rulesetId || "").trim()));
         return;
       }
       if (req.method === "POST" && req.url === "/api/battle-eval") {
@@ -6447,16 +6589,24 @@ function startServer() {
       res.writeHead(405);
       res.end("Method not allowed");
     } catch (err) {
-      sendJson(res, 500, { error: err.message || "Server error" });
+      if (err instanceof RuleRegistryError) {
+        sendJson(res, err.status || 409, { ok: false, code: err.code, error: err.message, details: err.details || {} });
+        return;
+      }
+      sendJson(res, 500, { ok: false, error: err.message || "Server error" });
     }
   }).listen(PORT, "127.0.0.1", () => {
     console.log(`Champion Lab AI server running at http://127.0.0.1:${PORT}`);
+    console.log(`Rules registry: ${registryState.status}; active formats: ${registryState.active.map((item) => item.showdownFormatId).join(", ") || "none"}`);
     console.log(`AI requests use browser-provided config; default model hint: ${OPENAI_MODEL || "unset"}`);
     ensureInitialData();
   });
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
-  startServer();
+  startServer().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
 }
 

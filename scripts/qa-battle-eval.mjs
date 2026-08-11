@@ -105,6 +105,7 @@ const strictBattleResponse = await fetch(`${baseUrl}/api/battle-eval`, {
   headers: { "content-type": "application/json" },
   body: JSON.stringify({
     format: "double",
+    rulesetId: build.rulesetId,
     teamText: strictTeamText,
     opponents: [{ id: "strict-mirror", title: "严格构筑镜像靶队", showdownText: strictTeamText }],
     opponentSource: "fixed",
@@ -115,8 +116,9 @@ const strictBattleResponse = await fetch(`${baseUrl}/api/battle-eval`, {
 const strictBattle = await strictBattleResponse.json().catch(() => ({}));
 const strictActionErrors = (strictBattle.results || []).flatMap((result) => result.actions?.errors || []);
 const strictRecoveries = (strictBattle.results || []).flatMap((result) => result.actions?.recoveries || []);
-if (!buildResponse.ok || !build.ok || (build.team || []).length !== 6) failures.push("strict builder did not return a six-member M-3 rain Archaludon team");
+if (!buildResponse.ok || !build.ok || !build.rulesetId || (build.team || []).length !== 6) failures.push("strict builder did not return a six-member ruleset-bound rain Archaludon team");
 if (!strictBattleResponse.ok || !strictBattle.ok || Number(strictBattle.games || 0) !== 2) failures.push("strict M-3 team did not complete both mirrored simulations");
+if (strictBattle.rulesetId !== build.rulesetId) failures.push("battle evaluation did not preserve the build rulesetId");
 if (strictActionErrors.length || strictRecoveries.length) failures.push(`strict M-3 simulation had target or action recovery errors: ${[...strictActionErrors, ...strictRecoveries].join(" | ")}`);
 if (strictBattle.rulesEngine?.id !== "gen9championsvgc2026regmb" || !strictBattle.rulesEngine?.exact) {
   failures.push(`strict M-3 simulation did not use exact Champions M-B rules: ${strictBattle.rulesEngine?.id || "missing"}`);
@@ -125,7 +127,7 @@ if (strictBattle.rulesEngine?.id !== "gen9championsvgc2026regmb" || !strictBattl
 const bridgeResponse = await fetch(`${baseUrl}/api/showdown-bridge`, {
   method: "POST",
   headers: { "content-type": "application/json" },
-  body: JSON.stringify({ format: "double", name: "QA Bridge", teamText: strictTeamText }),
+  body: JSON.stringify({ format: "double", rulesetId: build.rulesetId, name: "QA Bridge", teamText: strictTeamText }),
 });
 const bridge = await bridgeResponse.json().catch(() => ({}));
 const bridgeFetch = bridge.token
@@ -147,10 +149,11 @@ const feedbackBuildResponse = await fetch(`${baseUrl}/api/team-build`, {
   headers: { "content-type": "application/json" },
   body: JSON.stringify({
     format: "double",
+    rulesetId: build.rulesetId,
     intent: "new-team",
     userGoal: "双打雨天铝钢桥龙",
     goalConstraints: { themes: ["rain"], requiredPokemon: [{ slug: "archaludon", name: "铝钢桥龙" }] },
-    battleHistory: [{ winRate: 0, feedbackSignals: "missing-speed-control;missing-protect", avoid: "实战负于控速队" }],
+    battleHistory: [{ rulesetId: build.rulesetId, winRate: 0, feedbackSignals: "missing-speed-control;missing-protect", avoid: "实战负于控速队" }],
   }),
 });
 const feedbackBuild = await feedbackBuildResponse.json().catch(() => ({}));
