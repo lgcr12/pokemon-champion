@@ -39,12 +39,12 @@ import "./styles.css";
 const SPRITE = "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork";
 
 const initialTeam = [
-  { id: "pelipper", name: "Pelipper", dex: "279", role: "天气启动", item: "Damp Rock", itemLabel: "潮湿岩石", ability: "Drizzle", abilityLabel: "降雨", types: ["水", "飞行"], sprite: 279, locked: true, tone: "water", moves: ["Hurricane", "Tailwind", "Wide Guard", "Protect"], moveLabels: ["暴风", "顺风", "广域防守", "守住"] },
-  { id: "archaludon", name: "Archaludon", dex: "1018", role: "主输出", item: "Assault Vest", itemLabel: "突击背心", ability: "Stamina", abilityLabel: "持久力", types: ["钢", "龙"], sprite: 1018, locked: false, tone: "steel", moves: ["Electro Shot", "Flash Cannon", "Draco Meteor", "Body Press"], moveLabels: ["电光束", "加农光炮", "流星群", "扑击"] },
-  { id: "whimsicott", name: "Whimsicott", dex: "547", role: "速度控制", item: "Focus Sash", itemLabel: "气势披带", ability: "Prankster", abilityLabel: "恶作剧之心", types: ["草", "妖精"], sprite: 547, locked: false, tone: "grass", moves: ["Tailwind", "Encore", "Moonblast", "Protect"], moveLabels: ["顺风", "再来一次", "月亮之力", "守住"] },
-  { id: "flutter-mane", name: "Flutter Mane", dex: "987", role: "高速收割", item: "Booster Energy", itemLabel: "驱劲能量", ability: "Protosynthesis", abilityLabel: "古代活性", types: ["幽灵", "妖精"], sprite: 987, locked: false, tone: "ghost", moves: ["Moonblast", "Shadow Ball", "Icy Wind", "Protect"], moveLabels: ["月亮之力", "暗影球", "冰冻之风", "守住"] },
-  { id: "incineroar", name: "Incineroar", dex: "727", role: "安全中转", item: "Safety Goggles", itemLabel: "防尘护目镜", ability: "Intimidate", abilityLabel: "威吓", types: ["火", "恶"], sprite: 727, locked: false, tone: "fire", moves: ["Fake Out", "Flare Blitz", "Parting Shot", "Protect"], moveLabels: ["击掌奇袭", "闪焰冲锋", "抛下狠话", "守住"] },
-  { id: "rillaboom", name: "Rillaboom", dex: "812", role: "备用路线", item: "Miracle Seed", itemLabel: "奇迹种子", ability: "Grassy Surge", abilityLabel: "青草制造者", types: ["草"], sprite: 812, locked: false, tone: "grass", moves: ["Fake Out", "Grassy Glide", "Wood Hammer", "Protect"], moveLabels: ["击掌奇袭", "青草滑梯", "木槌", "守住"] },
+  { id: "pelipper", name: "Pelipper", localizedName: "大嘴鸥", dex: "279", role: "天气启动 / 速度控制", item: "Focus Sash", itemLabel: "气势披带", ability: "Drizzle", abilityLabel: "降雨", stats: "H1/C32/S32", types: ["水", "飞行"], sprite: 279, locked: true, tone: "water", moves: ["Weather Ball", "Hurricane", "Tailwind", "Protect"], moveLabels: ["气象球", "暴风", "顺风", "守住"] },
+  { id: "archaludon", name: "Archaludon", localizedName: "铝钢桥龙", dex: "1018", role: "雨天炮台", item: "Leftovers", itemLabel: "吃剩的东西", ability: "Stamina", abilityLabel: "持久力", stats: "H25/B3/C6/D25/S7", types: ["钢", "龙"], sprite: 1018, locked: false, tone: "steel", moves: ["Flash Cannon", "Dragon Pulse", "Electro Shot", "Protect"], moveLabels: ["加农光炮", "龙之波动", "电光束", "守住"] },
+  { id: "sinistcha", name: "Sinistcha", localizedName: "来悲粗茶", dex: "1013", role: "空间启动 / 掩护辅助", item: "Colbur Berry", itemLabel: "刺耳果", ability: "Hospitality", abilityLabel: "款待", stats: "H32/B2/C1/D30/S1", types: ["草", "幽灵"], sprite: 1013, locked: false, tone: "grass", moves: ["Matcha Gotcha", "Trick Room", "Protect", "Rage Powder"], moveLabels: ["刷刷茶炮", "戏法空间", "守住", "愤怒粉"] },
+  { id: "incineroar", name: "Incineroar", localizedName: "炽焰咆哮虎", dex: "727", role: "轮转辅助", item: "Chople Berry", itemLabel: "莲蒲果", ability: "Intimidate", abilityLabel: "威吓", stats: "H32/B11/D20/S3", types: ["火", "恶"], sprite: 727, locked: false, tone: "fire", moves: ["Flare Blitz", "Throat Chop", "Fake Out", "Parting Shot"], moveLabels: ["闪焰冲锋", "地狱突刺", "击掌奇袭", "抛下狠话"] },
+  { id: "basculegion", name: "Basculegion", localizedName: "幽尾玄鱼", dex: "902", role: "高速终盘", item: "Choice Scarf", itemLabel: "讲究围巾", ability: "Adaptability", abilityLabel: "适应力", stats: "A32/B1/S32", types: ["水", "幽灵"], sprite: 902, locked: false, tone: "water", moves: ["Flip Turn", "Aqua Jet", "Wave Crash", "Last Respects"], moveLabels: ["快速折返", "水流喷射", "波动冲", "扫墓"] },
+  { id: "venusaur", name: "Venusaur", localizedName: "妙蛙花", dex: "3", role: "Mega 耐久输出", item: "Venusaurite", itemLabel: "妙蛙花进化石", ability: "Chlorophyll", abilityLabel: "叶绿素", stats: "H32/B9/C10/D8/S7", types: ["草", "毒"], sprite: 3, locked: false, tone: "grass", moves: ["Sludge Bomb", "Leech Seed", "Earth Power", "Protect"], moveLabels: ["污泥炸弹", "寄生种子", "大地之力", "守住"] },
 ];
 
 const navItems = [
@@ -66,11 +66,19 @@ async function apiRequest(path, options = {}) {
   return data;
 }
 
+function championStatsToShowdown(value = "") {
+  const aliases = { h: "HP", a: "Atk", b: "Def", c: "SpA", d: "SpD", s: "Spe" };
+  const entries = [...String(value || "").matchAll(/(?:^|[\s/,])([habcds])\s*(\d{1,3})(?=$|[\s/,])/gi)];
+  return entries.length ? entries.map((match) => `${match[2]} ${aliases[match[1].toLowerCase()]}`).join(" / ") : String(value || "").trim();
+}
+
 function teamToShowdown(team = []) {
   return team.map((member) => [
     `${member.species || member.name} @ ${member.item}`,
     `Ability: ${member.ability}`,
     "Level: 50",
+    ...(member.stats ? [`EVs: ${championStatsToShowdown(member.stats)}`] : []),
+    ...(member.nature ? [`${member.nature} Nature`] : []),
     ...(member.moves || []).map((move) => `- ${move}`),
   ].join("\n")).join("\n\n");
 }
@@ -160,6 +168,15 @@ function CandidateEntry({ candidate, expanded, onToggle, onAdd }) {
       <div className="candidate-set-moves">{set.moveLabels.map((move, moveIndex) => <span key={`${set.id}-${moveIndex}`}>{move}</span>)}</div>
     </div>)}</div>}
   </article>;
+}
+
+function agentStartProblemSummary(problems = []) {
+  const text = problems.join(" ");
+  if (/exactly 0 Stat Points/i.test(text)) return "队伍中有成员缺少数值分配。";
+  if (/does not exist in Gen|is banned|tagged .* banned/i.test(text)) return "队伍包含当前规则不可用的宝可梦、道具或形态。";
+  if (/can't learn/i.test(text)) return "队伍包含当前规则下无法学习的招式。";
+  if (/same item|Item Clause/i.test(text)) return "队伍违反道具重复限制。";
+  return problems[0] || "请先在配队工坊通过规则校验。";
 }
 
 function Forge({ team, setTeam, onNavigate }) {
@@ -377,25 +394,32 @@ function App() {
   const [registry, setRegistry] = useState({ status: "LOADING", active: [] });
   const [accountOpen, setAccountOpen] = useState(false);
   const [announcement, setAnnouncement] = useState("");
+  const [announcementTone, setAnnouncementTone] = useState("info");
   const [isKilled, setIsKilled] = useState(false);
   const activeRuleset = registry.active?.find((item) => item.battleType === "double") || registry.active?.[0];
   const stopAgent = async () => {
     await apiRequest("/api/agent/stop", { method: "POST", body: "{}" }).catch(() => {});
     setAgentState("paused");
     setAnnouncement("Agent 已紧急停止");
+    setAnnouncementTone("success");
     setIsKilled(true);
     window.setTimeout(() => setIsKilled(false), 220);
   };
   const toggleAgent = async () => {
     if (agentState === "active" || agentState === "starting") return stopAgent();
     setAgentState("starting");
+    setAnnouncement("正在校验队伍并连接 Showdown 排位...");
+    setAnnouncementTone("info");
     try {
       await apiRequest("/api/agent/start", { method: "POST", body: JSON.stringify({ format: activeRuleset?.battleType || "double", rulesetId: activeRuleset?.rulesetId, teamText: teamToShowdown(team), games: 1, teamVersion: "forge-ui", acknowledgeAutomationPolicy: true }) });
       setAgentState("active");
       setAnnouncement("Agent 已开始单连接排位");
+      setAnnouncementTone("success");
     } catch (error) {
       setAgentState("paused");
-      setAnnouncement(`Agent 未启动：${error.message}`);
+      const problemSummary = agentStartProblemSummary(error.data?.details?.problems || []);
+      setAnnouncement(`Agent 未启动：${error.message} ${problemSummary}`);
+      setAnnouncementTone("error");
       setAccountOpen(error.data?.code === "ACCOUNT_NOT_READY");
     }
   };
@@ -440,7 +464,7 @@ function App() {
     rules: <Rules />,
     models: <Models />,
   }[page]), [agentState, page, registry, team]);
-  return <div className={`app-shell ${agentState === "paused" ? "agent-paused" : ""}`}><div className="app-bg-layer" aria-hidden="true" /><div className="sr-only" aria-live="assertive">{announcement}</div><header className="topbar"><div className="brand"><div className="brand-mark"><span /></div><strong>Champion Forge</strong><span className="desktop-only brand-sub">Competitive Agent Workbench</span></div><div className="top-status"><StatusPill tone={registry.status === "ACTIVE" ? "blue" : "yellow"} icon={BookOpen}>{activeRuleset?.name?.replace(/^\[Gen \d+ Champions\]\s*/, "") || registry.status}</StatusPill><StatusPill tone={registry.canOperate ? "green" : "yellow"} icon={Activity}>{registry.canOperate ? "RULES SYNCED" : "RULES BLOCKED"}</StatusPill><StatusPill tone={agentState === "active" ? "green" : "muted"} icon={Bot}>{agentState === "active" ? <span className="agent-breath">Agent active</span> : agentState === "starting" ? "Agent starting" : "Agent paused"}</StatusPill></div><div className="top-actions"><button className="top-account" onClick={() => setAccountOpen(true)} aria-label="账号设置"><span className="account-avatar"><Bot size={15} /></span><span className="desktop-only">专用账号</span></button><button className={`kill-switch ${isKilled ? "kill-flash" : ""}`} onClick={stopAgent} aria-label="紧急停止 Agent"><CircleStop size={15} /> <span className="desktop-only">KILL SWITCH</span><kbd>Ctrl ⇧ K</kbd></button><button className="mobile-menu icon-button" aria-label="打开菜单"><Menu size={19} /></button></div></header><div className="shell-body"><aside className="sidebar" aria-label="主导航"><div className="nav-group">{navItems.map(([id, label, Icon]) => <button key={id} className={`nav-item ${page === id ? "is-active" : ""}`} onClick={() => setPage(id)} aria-current={page === id ? "page" : undefined}><Icon size={18} /><span>{label}</span>{page === id && <i />}</button>)}</div><div className="sidebar-foot"><button className="nav-item" onClick={() => setAccountOpen(true)}><Settings size={18} /><span>设置</span></button><div className="sync-card"><div><span className={`dot ${registry.canOperate ? "dot-green" : "dot-yellow"}`} />规则同步</div><strong>{registry.canOperate ? "当前快照有效" : registry.status}</strong><small>{activeRuleset?.regulation || "等待同步"}</small></div></div></aside><main className="main-content">{content}</main></div>{accountOpen && <AccountWizard onClose={() => setAccountOpen(false)} />}</div>;
+  return <div className={`app-shell ${agentState === "paused" ? "agent-paused" : ""}`}><div className="app-bg-layer" aria-hidden="true" /><div className="sr-only" aria-live="assertive">{announcement}</div><header className="topbar"><div className="brand"><div className="brand-mark"><span /></div><strong>Champion Forge</strong><span className="desktop-only brand-sub">Competitive Agent Workbench</span></div><div className="top-status"><StatusPill tone={registry.status === "ACTIVE" ? "blue" : "yellow"} icon={BookOpen}>{activeRuleset?.name?.replace(/^\[Gen \d+ Champions\]\s*/, "") || registry.status}</StatusPill><StatusPill tone={registry.canOperate ? "green" : "yellow"} icon={Activity}>{registry.canOperate ? "RULES SYNCED" : "RULES BLOCKED"}</StatusPill><StatusPill tone={agentState === "active" ? "green" : "muted"} icon={Bot}>{agentState === "active" ? <span className="agent-breath">Agent active</span> : agentState === "starting" ? "Agent starting" : "Agent paused"}</StatusPill></div><div className="top-actions"><button className="top-account" onClick={() => setAccountOpen(true)} aria-label="账号设置"><span className="account-avatar"><Bot size={15} /></span><span className="desktop-only">专用账号</span></button><button className={`kill-switch ${isKilled ? "kill-flash" : ""}`} onClick={stopAgent} aria-label="紧急停止 Agent"><CircleStop size={15} /> <span className="desktop-only">KILL SWITCH</span><kbd>Ctrl ⇧ K</kbd></button><button className="mobile-menu icon-button" aria-label="打开菜单"><Menu size={19} /></button></div></header>{announcement && <div className={`app-notice notice-${announcementTone}`} role="status">{announcementTone === "error" ? <AlertTriangle size={16} /> : announcementTone === "success" ? <Check size={16} /> : <Bot size={16} />}<span>{announcement}</span><button className="icon-button" onClick={() => setAnnouncement("")} aria-label="关闭状态提示"><X size={15} /></button></div>}<div className="shell-body"><aside className="sidebar" aria-label="主导航"><div className="nav-group">{navItems.map(([id, label, Icon]) => <button key={id} className={`nav-item ${page === id ? "is-active" : ""}`} onClick={() => setPage(id)} aria-current={page === id ? "page" : undefined}><Icon size={18} /><span>{label}</span>{page === id && <i />}</button>)}</div><div className="sidebar-foot"><button className="nav-item" onClick={() => setAccountOpen(true)}><Settings size={18} /><span>设置</span></button><div className="sync-card"><div><span className={`dot ${registry.canOperate ? "dot-green" : "dot-yellow"}`} />规则同步</div><strong>{registry.canOperate ? "当前快照有效" : registry.status}</strong><small>{activeRuleset?.regulation || "等待同步"}</small></div></div></aside><main className="main-content">{content}</main></div>{accountOpen && <AccountWizard onClose={() => setAccountOpen(false)} />}</div>;
 }
 
 createRoot(document.getElementById("root")).render(<App />);

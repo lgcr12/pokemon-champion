@@ -280,6 +280,11 @@ kbd { padding: 2px 4px; background: rgb(127 29 29 / .75); border-radius: 3px; fo
 .candidate-summary b { color: var(--ink); }
 .candidate-summary small { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 9px 'JetBrains Mono', monospace; }
 .candidate-source-note { margin: 0 16px 9px; color: #92400e; font-size: 10px; line-height: 1.4; }
+.app-notice { min-height: 42px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 7px 18px 7px max(18px, calc((100vw - 1440px) / 2 + 18px)); border-bottom: 1px solid; font-size: 12px; font-weight: 650; animation: stagger-enter var(--normal) both; }
+.app-notice.notice-info { color: #1d4ed8; background: #eff6ff; border-color: #bfdbfe; }
+.app-notice.notice-success { color: #047857; background: #ecfdf5; border-color: #a7f3d0; }
+.app-notice.notice-error { color: #b91c1c; background: #fef2f2; border-color: #fecaca; }
+.app-notice .icon-button { width: 30px; height: 30px; color: currentColor; }
 .candidate-list { max-height: 560px; overflow-y: auto; scrollbar-width: thin; }
 .candidate-row { min-height: 62px; grid-template-columns: 44px minmax(0, 1fr) auto 15px; padding: 8px 12px; }
 .candidate-avatar { width: 44px; height: 44px; }
