@@ -65,6 +65,24 @@ const navItems = [
   ["models", "模型实验室", BrainCircuit],
 ];
 
+function useCountUp(endValue, duration = 800) {
+  const [value, setValue] = useState(0);
+  useEffect(() => {
+    let frame;
+    let start;
+    const step = (timestamp) => {
+      if (start === undefined) start = timestamp;
+      const progress = Math.min((timestamp - start) / duration, 1);
+      const eased = 1 - ((1 - progress) ** 3);
+      setValue(Math.floor(eased * endValue));
+      if (progress < 1) frame = window.requestAnimationFrame(step);
+    };
+    frame = window.requestAnimationFrame(step);
+    return () => window.cancelAnimationFrame(frame);
+  }, [duration, endValue]);
+  return value;
+}
+
 function Sprite({ id, size = "md", muted = false }) {
   return <img className={`sprite sprite-${size}${muted ? " is-muted" : ""}`} src={`${SPRITE}/${id}.png`} alt="" loading="lazy" />;
 }
@@ -86,12 +104,14 @@ function TeamPreview({ team, onSelect }) {
 }
 
 function Dashboard({ team, onNavigate, agentState, onToggleAgent, onOpenAccount }) {
-  return <div className="page page-dashboard">
-    <div className="hero-strip"><div><span className="eyebrow">ACTIVE WORKSPACE</span><h1>Champion Forge</h1><p>让每一次配队都能被验证，让每一场对战都能推动下一版。</p></div><div className="hero-rule"><span>当前规则快照</span><strong>Champions · VGC 2026 Reg M-B</strong><StatusPill icon={ShieldCheck}>LOCAL / ONLINE SYNCED</StatusPill></div></div>
+  const glicko = useCountUp(1742, 900);
+  const batch = useCountUp(34, 700);
+  return <div className="page page-dashboard motion-fade-in">
+    <div className="hero-strip stagger-item" style={{ "--stagger-idx": 0 }}><div><span className="eyebrow">ACTIVE WORKSPACE</span><h1>Champion Forge</h1><p>让每一次配队都能被验证，让每一场对战都能推动下一版。</p></div><div className="hero-rule"><span>当前规则快照</span><strong>Champions · VGC 2026 Reg M-B</strong><StatusPill icon={ShieldCheck}>LOCAL / ONLINE SYNCED</StatusPill></div></div>
     <div className="dashboard-grid">
       <section className="panel team-panel"><SectionHeader eyebrow="CURRENT TEAM" title="Rain Electro Burst" action={<button className="ghost-button" onClick={() => onNavigate("forge")}>打开工坊 <ChevronRight size={15} /></button>} /><TeamPreview team={team} onSelect={() => onNavigate("forge")} /><div className="team-route"><div className="route-head"><span>主胜利路线</span><strong>Drizzle <ChevronRight size={14} /> Electro Shot <ChevronRight size={14} /> 终盘收割</strong></div><div className="route-track"><span className="route-node node-water"><CloudRain size={15} /></span><span className="route-line line-water" /><span className="route-node node-blue"><Zap size={15} /></span><span className="route-line line-blue" /><span className="route-node node-red"><Target size={15} /></span></div><div className="route-foot"><span>备用路线：Fake Out + Tailwind</span><span className="mono">结构置信度 86%</span></div></div></section>
       <aside className="stack-column">
-        <section className="panel agent-panel"><SectionHeader eyebrow="AGENT ENGINE" title="Champion v4.2.1" action={<StatusPill tone={agentState === "active" ? "green" : "muted"} icon={Bot}>{agentState === "active" ? "LADDERING" : "PAUSED"}</StatusPill>} /><div className="rating-line"><div><span>Glicko-2 rating</span><strong>1742 <small>±22</small></strong></div><div className="rating-up">+18 <small>7d</small></div></div><div className="progress-label"><span>训练批次</span><b>34 / 50</b></div><div className="progress"><span style={{ width: "68%" }} /></div><div className="agent-actions"><button className="primary-button" onClick={onToggleAgent}>{agentState === "active" ? <><Pause size={16} />暂停 Agent</> : <><Play size={16} />开始排位</>}</button><button className="icon-button" title="账号设置" aria-label="账号设置" onClick={onOpenAccount}><Lock size={17} /></button></div></section>
+        <section className="panel agent-panel"><SectionHeader eyebrow="AGENT ENGINE" title="Champion v4.2.1" action={<StatusPill tone={agentState === "active" ? "green" : "muted"} icon={Bot}>{agentState === "active" ? <span className="agent-breath">LADDERING</span> : "PAUSED"}</StatusPill>} /><div className="rating-line"><div><span>Glicko-2 rating</span><strong className="tabular-num">{glicko} <small>±22</small></strong></div><div className="rating-up">+18 <small>7d</small></div></div><div className="progress-label"><span>训练批次</span><b className="tabular-num">{batch} / 50</b></div><div className="progress"><span style={{ width: "68%" }} /></div><div className="agent-actions"><button className="primary-button" onClick={onToggleAgent}>{agentState === "active" ? <><Pause size={16} />暂停 Agent</> : <><Play size={16} />开始排位</>}</button><button className="icon-button" title="账号设置" aria-label="账号设置" onClick={onOpenAccount}><Lock size={17} /></button></div></section>
         <section className="panel compact-panel"><SectionHeader eyebrow="RECENT MATCHES" title="最近对局" action={<button className="icon-button" title="查看全部" aria-label="查看全部" onClick={() => onNavigate("replays")}><ChevronRight size={17} /></button>} /><div className="match-list"><MatchRow result="W" score="+14" opponent="Rain Mirror" rating="1682" /><MatchRow result="L" score="-12" opponent="VGC_Master_JP" rating="1668" /><MatchRow result="W" score="+16" opponent="CyberCynthia" rating="1680" /></div></section>
       </aside>
       <section className="panel metrics-panel"><SectionHeader eyebrow="LIVE COVERAGE" title="队伍结构指标" action={<span className="mono muted">UPDATED 2 MIN AGO</span>} /><div className="metric-grid"><Metric label="速度计划" value="A-" detail="Tailwind / Icy Wind" tone="yellow" icon={Gauge} /><Metric label="防守覆盖" value="86%" detail="16-type matrix" tone="blue" icon={ShieldCheck} /><Metric label="首发协同" value="4.2" detail="lead pairs" tone="green" icon={Users} /><Metric label="环境压力" value="B+" detail="12 meta threats" tone="red" icon={Target} /></div></section>
@@ -168,9 +188,12 @@ function App() {
   const [agentState, setAgentState] = useState("paused");
   const [accountOpen, setAccountOpen] = useState(false);
   const [announcement, setAnnouncement] = useState("");
+  const [isKilled, setIsKilled] = useState(false);
   const stopAgent = () => {
     setAgentState("paused");
     setAnnouncement("Agent 已紧急停止");
+    setIsKilled(true);
+    window.setTimeout(() => setIsKilled(false), 220);
   };
   const toggleAgent = () => setAgentState((value) => {
     const next = value === "active" ? "paused" : "active";
@@ -204,7 +227,7 @@ function App() {
     rules: <Rules />,
     models: <Models />,
   }[page]), [agentState, page, team]);
-  return <div className="app-shell"><div className="sr-only" aria-live="assertive">{announcement}</div><header className="topbar"><div className="brand"><div className="brand-mark"><span /></div><strong>Champion Forge</strong><span className="desktop-only brand-sub">Competitive Agent Workbench</span></div><div className="top-status"><StatusPill tone="blue" icon={BookOpen}>VGC 2026 Reg M-B</StatusPill><StatusPill icon={Activity}>WS 14ms</StatusPill><StatusPill tone={agentState === "active" ? "green" : "muted"} icon={Bot}>{agentState === "active" ? "Agent active" : "Agent paused"}</StatusPill></div><div className="top-actions"><button className="top-account" onClick={() => setAccountOpen(true)} aria-label="账号设置"><span className="account-avatar"><Bot size={15} /></span><span className="desktop-only">专用账号</span></button><button className="kill-switch" onClick={stopAgent} aria-label="紧急停止 Agent"><CircleStop size={15} /> <span className="desktop-only">KILL SWITCH</span><kbd>Ctrl ⇧ K</kbd></button><button className="mobile-menu icon-button" aria-label="打开菜单"><Menu size={19} /></button></div></header><div className="shell-body"><aside className="sidebar" aria-label="主导航"><div className="nav-group">{navItems.map(([id, label, Icon]) => <button key={id} className={`nav-item ${page === id ? "is-active" : ""}`} onClick={() => setPage(id)} aria-current={page === id ? "page" : undefined}><Icon size={18} /><span>{label}</span>{page === id && <i />}</button>)}</div><div className="sidebar-foot"><button className="nav-item" onClick={() => setAccountOpen(true)}><Settings size={18} /><span>设置</span></button><div className="sync-card"><div><span className="dot dot-green" />规则同步</div><strong>当前快照有效</strong><small>2 min ago</small></div></div></aside><main className="main-content">{content}</main></div>{accountOpen && <AccountWizard onClose={() => setAccountOpen(false)} />}</div>;
+  return <div className={`app-shell ${agentState === "paused" ? "agent-paused" : ""}`}><div className="app-bg-layer" aria-hidden="true" /><div className="sr-only" aria-live="assertive">{announcement}</div><header className="topbar"><div className="brand"><div className="brand-mark"><span /></div><strong>Champion Forge</strong><span className="desktop-only brand-sub">Competitive Agent Workbench</span></div><div className="top-status"><StatusPill tone="blue" icon={BookOpen}>VGC 2026 Reg M-B</StatusPill><StatusPill icon={Activity}>WS 14ms</StatusPill><StatusPill tone={agentState === "active" ? "green" : "muted"} icon={Bot}>{agentState === "active" ? <span className="agent-breath">Agent active</span> : "Agent paused"}</StatusPill></div><div className="top-actions"><button className="top-account" onClick={() => setAccountOpen(true)} aria-label="账号设置"><span className="account-avatar"><Bot size={15} /></span><span className="desktop-only">专用账号</span></button><button className={`kill-switch ${isKilled ? "kill-flash" : ""}`} onClick={stopAgent} aria-label="紧急停止 Agent"><CircleStop size={15} /> <span className="desktop-only">KILL SWITCH</span><kbd>Ctrl ⇧ K</kbd></button><button className="mobile-menu icon-button" aria-label="打开菜单"><Menu size={19} /></button></div></header><div className="shell-body"><aside className="sidebar" aria-label="主导航"><div className="nav-group">{navItems.map(([id, label, Icon]) => <button key={id} className={`nav-item ${page === id ? "is-active" : ""}`} onClick={() => setPage(id)} aria-current={page === id ? "page" : undefined}><Icon size={18} /><span>{label}</span>{page === id && <i />}</button>)}</div><div className="sidebar-foot"><button className="nav-item" onClick={() => setAccountOpen(true)}><Settings size={18} /><span>设置</span></button><div className="sync-card"><div><span className="dot dot-green" />规则同步</div><strong>当前快照有效</strong><small>2 min ago</small></div></div></aside><main className="main-content">{content}</main></div>{accountOpen && <AccountWizard onClose={() => setAccountOpen(false)} />}</div>;
 }
 
 createRoot(document.getElementById("root")).render(<App />);
