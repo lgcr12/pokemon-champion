@@ -18,6 +18,7 @@
     "qa:showdown-bridge": "node scripts/qa-showdown-bridge.mjs",
     "qa:speedline": "node scripts/qa-speedline.mjs",
     "qa:battle-eval": "node scripts/qa-battle-eval.mjs",
+    "qa:agent-stack": "node scripts/qa-agent-stack.mjs",
     "qa:rules-registry": "node scripts/qa-rules-registry.mjs",
     "qa:zh-hans-ui": "node scripts/qa-zh-hans-ui.mjs",
     "capture:screenshots": "node scripts/capture-screenshots.mjs",

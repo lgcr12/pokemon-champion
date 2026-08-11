@@ -8,6 +8,8 @@ import { extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { ruleRegistry, RuleRegistryError } from "./server/rules-registry.mjs";
+import { showdownAccount } from "./server/showdown-account.mjs";
+import { agentController } from "./server/agent-controller.mjs";
 
 const ROOT = resolve(".");
 const require = createRequire(import.meta.url);
@@ -508,6 +510,79 @@ async function handleRulesApi(req, res) {
   });
 }
 
+async function handleAccountApi(req, res) {
+  if (req.method === "GET") {
+    sendJson(res, 200, { ok: true, ...showdownAccount.publicState() });
+    return;
+  }
+  if (req.method === "DELETE") {
+    sendJson(res, 200, { ok: true, ...(await showdownAccount.clear()) });
+    return;
+  }
+  const body = await readJson(req).catch(() => ({}));
+  if (req.url === "/api/agent/account/bootstrap") {
+    sendJson(res, 202, { ok: true, ...(await showdownAccount.bootstrap(body)) });
+    return;
+  }
+  if (req.url === "/api/agent/account/continue") {
+    sendJson(res, 200, { ok: true, ...(await showdownAccount.continue()) });
+    return;
+  }
+  sendJson(res, 404, { ok: false, error: "Unknown account endpoint." });
+}
+
+async function handleAgentApi(req, res) {
+  const url = new URL(req.url || "/api/agent/status", "http://127.0.0.1");
+  if (req.method === "GET" && url.pathname === "/api/agent/status") {
+    const state = await agentController.status();
+    sendJson(res, 200, { ok: true, ...state, account: showdownAccount.publicState(), rules: ruleRegistry.publicState().status });
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/agent/replays") {
+    const data = await agentController.replays(String(url.searchParams.get("rulesetId") || ""));
+    sendJson(res, 200, { ok: true, ...data });
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/agent/models") {
+    const data = await agentController.models(String(url.searchParams.get("rulesetId") || ""));
+    sendJson(res, 200, { ok: true, ...data });
+    return;
+  }
+  const body = await readJson(req).catch(() => ({}));
+  if (req.method === "POST" && url.pathname === "/api/agent/stop") {
+    sendJson(res, 200, { ok: true, ...(await agentController.stop()) });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/agent/promote") {
+    const snapshot = ruleRegistry.operational({ format: body.format || "double", rulesetId: String(body.rulesetId || "") });
+    sendJson(res, 200, { ok: true, ...(await agentController.promote({ ...body, rulesetId: snapshot.rulesetId })) });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/agent/start") {
+    const format = body.format === "single" ? "single" : "double";
+    const snapshot = ruleRegistry.operational({ format, rulesetId: String(body.rulesetId || "").trim() });
+    if (body.acknowledgeAutomationPolicy !== true) throw Object.assign(new Error("启动公开排位前必须确认单账号、单连接、不操纵匹配并遵守平台自动化规则。"), { status: 400, code: "AUTOMATION_ACK_REQUIRED" });
+    const prepared = prepareBattleTeam(body.teamText || "", format, "排位队伍", snapshot.rulesetId);
+    if (!prepared.ok || !prepared.strictLegal) throw Object.assign(new Error(`排位队伍未通过 ${snapshot.name} 校验。`), { status: 422, code: "EXACT_FORMAT_ILLEGAL", details: { problems: prepared.problems || [] } });
+    const credential = await showdownAccount.credential();
+    const games = Math.max(1, Math.min(Number(body.games || 1) || 1, Number(process.env.AGENT_MAX_BATCH_GAMES || 10)));
+    const state = await agentController.start({
+      rulesetId: snapshot.rulesetId,
+      showdownFormatId: snapshot.showdownFormatId,
+      battleType: snapshot.battleType,
+      openTeamSheets: snapshot.rules.includes("Open Team Sheets"),
+      username: credential.username,
+      password: credential.password,
+      team: prepared.packedTeam,
+      teamVersion: String(body.teamVersion || "manual"),
+      games,
+    });
+    sendJson(res, 202, { ok: true, ...state, ...rulesetMetadata(snapshot) });
+    return;
+  }
+  sendJson(res, 404, { ok: false, error: "Unknown agent endpoint." });
+}
+
 function buildPrompt(payload) {
   const emptyTeamRequest = Boolean(payload.intent?.emptyTeamRequest);
   const rebuildFromGoal = Boolean(payload.intent?.rebuildFromGoal);
@@ -915,6 +990,7 @@ function strictTags(member = {}, format = "single") {
   add("recovery", /recover|roost|slack-off|synthesis|moonlight|shore-up|drain-punch|leech-seed/);
   add("setup", /swords-dance|nasty-plot|calm-mind|dragon-dance|bulk-up|iron-defense|belly-drum|focus-energy/);
   add("priority", /extreme-speed|sucker-punch|aqua-jet|mach-punch|bullet-punch|shadow-sneak|ice-shard|jet-punch/);
+  if (tags.has("priority")) tags.add("speed");
   add("intimidate", /intimidate/);
   add("prankster", /prankster/);
   add("wallbreaker", /choice-band|choice-specs|life-orb|booster-energy|dragon-dance|swords-dance|nasty-plot|belly-drum/);
@@ -992,7 +1068,13 @@ function strictThemeInfo(member = {}, theme = "") {
   if (theme === "rain") return { source: has(/drizzle|rain-dance/), abuser: has(/swift-swim|thunder|hurricane|electro-shot|weather-ball|hydro-pump|wave-crash/) };
   if (theme === "sand") return { source: has(/sand-stream|sandstorm/), abuser: has(/sand-rush|sand-force/) };
   if (theme === "snow") return { source: has(/snow-warning|snowscape/), abuser: has(/slush-rush|aurora-veil|blizzard/) };
-  if (theme === "trick-room") return { source: has(/trick-room/), abuser: Number(member.speed || 100) <= 65 };
+  if (theme === "trick-room") {
+    const hasSlowDamage = strictBaseSpeedFor(member.slug) <= 65 && (member.moves || []).some((move) => {
+      const data = Dex.moves.get(move);
+      return data?.exists && data.category !== "Status" && Number(data.basePower || 0) >= 70;
+    });
+    return { source: has(/trick-room/), abuser: hasSlowDamage };
+  }
   if (theme === "tailwind") return { source: has(/tailwind/), abuser: Number(member.speed || 0) >= 70 || has(/choice-scarf|protosynthesis|quark-drive/) };
   if (theme === "pass-chain") return {
     source: has(/baton-pass/) && has(/swords-dance|nasty-plot|calm-mind|iron-defense|agility|focus-energy|bulk-up|belly-drum/),
@@ -1087,7 +1169,13 @@ function strictGoalConstraints(payload = {}, available = []) {
     "pass-chain": /接棒|强化接棒|baton\s*pass|pass\s*chain/,
   };
   for (const [theme, pattern] of Object.entries(themePatterns)) if (pattern.test(goal)) themes.add(theme);
-  const inferredMatches = knownPokemon.filter((candidate) => strictGoalMatchesPokemon(goal, candidate));
+  const inferredMatches = [...available, ...knownPokemon].filter((candidate) => strictGoalMatchesPokemon(goal, candidate));
+  const explicitMatches = [...available, ...knownPokemon].filter((candidate) => {
+    if (strictGoalExplicitlyForbids(goal, candidate)) return false;
+    const name = String(candidate.name || "").toLowerCase().trim();
+    const slug = String(candidate.slug || "").toLowerCase().trim();
+    return (name.length >= 2 && goal.includes(name)) || (slug.length >= 4 && goal.includes(slug));
+  });
   // Prefer a specific form explicitly named in the goal over a shorter base-name
   // substring (for example, 清洗洛托姆 over 洛托姆).
   const inferredPokemon = inferredMatches.filter((candidate) => {
@@ -1097,7 +1185,7 @@ function strictGoalConstraints(payload = {}, available = []) {
       return other !== candidate && otherName.length > ownName.length && otherName.includes(ownName);
     });
   });
-  const requiredPokemon = strictUniquePokemonRefs([...(Array.isArray(incoming.requiredPokemon) ? incoming.requiredPokemon : []), ...inferredPokemon]);
+  const requiredPokemon = strictUniquePokemonRefs([...(Array.isArray(incoming.requiredPokemon) ? incoming.requiredPokemon : []), ...explicitMatches, ...inferredPokemon]);
   const availableSpecies = new Set(available.map((candidate) => strictKey(candidate.slug || candidate.id || candidate.name)));
   const unavailable = strictUniquePokemonRefs([
     ...(Array.isArray(incoming.unavailablePokemon) ? incoming.unavailablePokemon : []),
@@ -1337,6 +1425,7 @@ function strictTeamValidation(team = [], format = "single", constraints = {}) {
     });
     if (!source) failures.push(`${theme} 体系没有真实启动者。`);
     if (!abuser) failures.push(`${theme} 体系没有独立收益位。`);
+    if (theme === "trick-room" && team.filter((member) => strictThemeInfo(member, theme).abuser).length < 2) failures.push("trick-room 体系至少需要两名真实低速输出位。");
   }
   if ((constraints.themes || []).includes("pass-chain")) {
     const passer = team.find((member) => strictThemeInfo(member, "pass-chain").source);
@@ -1428,7 +1517,7 @@ function strictBuildPlan(team = [], format = "single", constraints = {}) {
   return `${themeLine} 开局优先由 ${lead?.name || "首发位"} 建立节奏；中盘用 ${pivot?.name || "中转位"} 吃伤害或转场，给核心创造进场；终盘交给 ${closer?.name || "终盘位"} 完成收割。`;
 }
 
-function strictFullSampleCandidate(graph, format, constraints = {}) {
+function strictFullSampleCandidate(graph, format, constraints = {}, exactFamilies = []) {
   const configuredTeams = readTeamDataFile().filter((entry) => entry.season === graph.dataSeason && entry.format === format && (!entry.rulesetId || entry.rulesetId === graph.ruleset?.rulesetId) && (entry.configurations || []).length >= 6);
   const requestedWeather = ["rain", "sun", "sand", "snow"].filter((theme) => (constraints.themes || []).includes(theme));
   const candidateForConfig = (config = {}) => {
@@ -1438,6 +1527,11 @@ function strictFullSampleCandidate(graph, format, constraints = {}) {
   const samples = configuredTeams
     .map((source) => ({ source, team: source.configurations.slice(0, 6).map(candidateForConfig) }))
     .filter(({ team }) => team.length === 6 && team.every(Boolean))
+    .filter(({ team }) => {
+      if (!exactFamilies.length) return true;
+      const families = new Set(team.map((member) => strictFamilyKey(member.slug)));
+      return families.size === exactFamilies.length && exactFamilies.every((family) => families.has(family));
+    })
     .filter(({ team }) => !team.some((member) => (constraints.forbidden || []).includes(strictKey(member.slug))))
     .filter(({ team }) => strictIsDistinctFromAvoidedTeam(team, constraints))
     .filter(({ team }) => team.every((member) => !strictConflictsWithThemes(member, constraints)))
@@ -1674,41 +1768,39 @@ function strictBuildTeam(payload = {}) {
     return [...team, member];
   };
   if (aiDesigned) {
-    const preferred = [...new Set(constraints.aiPreferred || [])];
-    if (preferred.length !== 6) return { ok: false, code: "BUILD_UNSATISFIED", format, diagnostics: ["AI 原创草案必须先给出六名不重复的当前格式成员；严格引擎不会再用热门成员补位。"] };
-    let draftTeams = [[]];
-    for (const family of preferred) {
-      const variants = rankedPool.filter((member) => strictFamilyKey(member.slug) === family).slice(0, 8);
-      const expanded = [];
-      for (const team of draftTeams) {
-        for (const member of variants) {
-          const next = addUnique(team, member);
-          if (next) expanded.push(next);
-        }
+    const requiredFamilies = [...requiredKeys].map((key) => strictFamilyKey(key));
+    const preferred = [...new Set([...requiredFamilies, ...(constraints.aiPreferred || [])])].slice(0, 6);
+    if (preferred.length === 6) {
+      const exactSample = strictFullSampleCandidate(graph, format, constraints, preferred);
+      if (exactSample && strictSynergyReport(exactSample.team, format, constraints).length >= 2) {
+        return strictBuildResult(exactSample.team, format, graph, constraints, intent, current, null, payload.aiDraft);
       }
-      draftTeams = expanded
-        .sort((a, b) => b.reduce((sum, member) => sum + strictMemberScore(member, b.filter((item) => item !== member), format, constraints), 0) - a.reduce((sum, member) => sum + strictMemberScore(member, a.filter((item) => item !== member), format, constraints), 0))
-        .slice(0, 96);
-      if (!draftTeams.length) break;
+      let draftTeams = [[]];
+      const preferredEntries = preferred
+        .map((family) => ({ family, variants: rankedPool.filter((member) => strictFamilyKey(member.slug) === family).slice(0, 24) }))
+        .sort((a, b) => a.variants.length - b.variants.length);
+      for (const { variants } of preferredEntries) {
+        const expanded = [];
+        for (const team of draftTeams) {
+          for (const member of variants) {
+            const next = addUnique(team, member);
+            if (next) expanded.push(next);
+          }
+        }
+        draftTeams = expanded
+          .sort((a, b) => b.reduce((sum, member) => sum + strictMemberScore(member, b.filter((item) => item !== member), format, constraints), 0) - a.reduce((sum, member) => sum + strictMemberScore(member, a.filter((item) => item !== member), format, constraints), 0))
+          .slice(0, 512);
+        if (!draftTeams.length) break;
+      }
+      const direct = draftTeams
+        .filter((team) => team.length === 6)
+        .map((team) => ({ team, validation: strictTeamValidation(team, format, constraints), score: team.reduce((sum, member) => sum + strictMemberScore(member, team.filter((item) => item !== member), format, constraints), 0) }))
+        .sort((a, b) => Number(b.validation.ok) - Number(a.validation.ok) || b.score - a.score);
+      const selectedDraft = direct.find((entry) => entry.validation.ok && strictIsDistinctFromAvoidedTeam(entry.team, constraints) && strictSynergyReport(entry.team, format, constraints).length >= 2);
+      if (selectedDraft) {
+        return strictBuildResult(selectedDraft.team, format, graph, constraints, intent, current, null, payload.aiDraft);
+      }
     }
-    const direct = draftTeams
-      .filter((team) => team.length === 6)
-      .map((team) => ({ team, validation: strictTeamValidation(team, format, constraints), score: team.reduce((sum, member) => sum + strictMemberScore(member, team.filter((item) => item !== member), format, constraints), 0) }))
-      .sort((a, b) => Number(b.validation.ok) - Number(a.validation.ok) || b.score - a.score);
-    const selectedDraft = direct.find((entry) => entry.validation.ok && strictIsDistinctFromAvoidedTeam(entry.team, constraints) && strictSynergyReport(entry.team, format, constraints).length >= 2);
-    if (!selectedDraft) {
-      const best = direct[0];
-      return {
-        ok: false,
-        code: "BUILD_UNSATISFIED",
-        format,
-        diagnostics: [
-          ...(best?.validation.failures || ["AI 选择的成员无法组成当前格式的有效六人队。"]),
-          "AI 原创模式不会静默替换这些成员；请让模型按诊断重选职责槽位。",
-        ],
-      };
-    }
-    return strictBuildResult(selectedDraft.team, format, graph, constraints, intent, current, null, payload.aiDraft);
   }
   let initial = [];
   if (intent === "complete-team" || intent === "moveset-only") initial = locked;
@@ -6508,6 +6600,7 @@ export {
 
 async function startServer() {
   const registryState = await ruleRegistry.initialize();
+  await showdownAccount.initialize();
   const ruleSyncTimer = setInterval(() => {
     ruleRegistry.sync().catch((error) => console.error(`Rules registry sync failed: ${error.message}`));
   }, Math.max(60_000, RULE_SYNC_INTERVAL_MS));
@@ -6530,6 +6623,14 @@ async function startServer() {
       }
       if (req.method === "POST" && req.url === "/api/rules/sync") {
         await handleRulesApi(req, res);
+        return;
+      }
+      if ((req.method === "GET" && req.url === "/api/agent/account/status") || (req.method === "POST" && (req.url === "/api/agent/account/bootstrap" || req.url === "/api/agent/account/continue")) || (req.method === "DELETE" && req.url === "/api/agent/account")) {
+        await handleAccountApi(req, res);
+        return;
+      }
+      if ((req.method === "GET" && (req.url === "/api/agent/status" || req.url?.startsWith("/api/agent/replays") || req.url?.startsWith("/api/agent/models"))) || (req.method === "POST" && ["/api/agent/start", "/api/agent/stop", "/api/agent/promote"].includes(req.url || ""))) {
+        await handleAgentApi(req, res);
         return;
       }
       if (req.method === "POST" && req.url === "/api/team-advice") {
@@ -6593,6 +6694,10 @@ async function startServer() {
         sendJson(res, err.status || 409, { ok: false, code: err.code, error: err.message, details: err.details || {} });
         return;
       }
+      if (err?.status || err?.code) {
+        sendJson(res, err.status || 400, { ok: false, code: err.code || "REQUEST_FAILED", error: err.message, details: err.details || {}, candidates: err.candidates || undefined });
+        return;
+      }
       sendJson(res, 500, { ok: false, error: err.message || "Server error" });
     }
   }).listen(PORT, "127.0.0.1", () => {
@@ -6604,6 +6709,14 @@ async function startServer() {
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  process.once("SIGINT", () => {
+    agentController.shutdown();
+    process.exit(0);
+  });
+  process.once("SIGTERM", () => {
+    agentController.shutdown();
+    process.exit(0);
+  });
   startServer().catch((error) => {
     console.error(error);
     process.exitCode = 1;

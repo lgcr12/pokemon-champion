@@ -22,6 +22,38 @@ PokéForge Lab 是一个本地运行的宝可梦竞技队伍分析与构筑工�
 - [路线图](#路线图)
 - [常见问题](#常见问题)
 
+## Champion Forge Agent 工作台
+
+`src/` 下的新工作台把动态 Champions 规则、Showdown 精确校验、专用账号和 `poke-env` sidecar 接到同一套本地 API。所有队伍、对局批次和模型注册表都按 `rulesetId` 隔离；在线规则与本地 Showdown 规则不一致时，配队和排位会进入 `RULE_DRIFT` 并停止。
+
+Windows 首次安装 sidecar：
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r .\sidecar\requirements.txt
+```
+
+分别启动 API 与前端开发服务器：
+
+```powershell
+npm run start:ai
+npm run dev:forge
+```
+
+浏览器打开 `http://127.0.0.1:5173`。API 默认位于 `http://127.0.0.1:4174`，Vite 会代理 `/api` 请求。
+
+账号向导只创建一个工作区专用账号，密码由 Windows DPAPI 加密保存。遇到官方验证码时必须由用户在已打开的 Showdown 页面完成；系统不绕过验证码、代理锁或其他反滥用限制。若 Showdown 提示当前 IP 是代理并锁定，需切换到正常网络后删除本地账号配置并重新开始。
+
+验证核心栈：
+
+```powershell
+npm run qa:rules-registry
+npm run qa:agent-stack
+npm run build:forge
+```
+
+当前 sidecar 的 `structured-visible-state-v1` 是只读取公开战斗状态的确定性基线策略。Challenger 只会在同一 `rulesetId` 累计真实 50 场后建立，且没有真实评测指标时不会伪造晋级结果。
+
 ## 效果展示
 
 ### 主界面：环境数据驱动的队伍工作台
