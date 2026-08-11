@@ -1,9 +1,9 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap');
 
-:root { font-family: Inter, 'Noto Sans SC', system-ui, sans-serif; color: #0f172a; background: #f8fafc; font-synthesis: none; text-rendering: optimizeLegibility; --bg: #f8fafc; --surface: #fff; --ink: #0f172a; --muted: #64748b; --line: #e2e8f0; --blue: #2563eb; --yellow: #d97706; --red: #dc2626; --green: #059669; --cyan: #0284c7; --purple: #6366f1; --shadow: 0 1px 2px rgb(15 23 42 / .04); --shadow-lg: 0 16px 40px rgb(15 23 42 / .12); --fast: 150ms cubic-bezier(.4,0,.2,1); --normal: 260ms cubic-bezier(.16,1,.3,1); --motion-page: 300ms cubic-bezier(.32,.72,0,1); --motion-stagger: 35ms; --motion-flow: 1800ms linear; }
+:root { font-family: Manrope, 'Noto Sans SC', system-ui, sans-serif; color: #0f172a; background: #f8fafc; font-synthesis: none; text-rendering: optimizeLegibility; --bg: #f8fafc; --surface: #fff; --ink: #0f172a; --muted: #64748b; --line: #e2e8f0; --blue: #2563eb; --yellow: #d97706; --red: #dc2626; --green: #059669; --cyan: #0284c7; --purple: #6366f1; --shadow: 0 1px 2px rgb(15 23 42 / .04); --shadow-lg: 0 16px 40px rgb(15 23 42 / .12); --fast: 150ms cubic-bezier(.4,0,.2,1); --normal: 260ms cubic-bezier(.16,1,.3,1); --motion-page: 300ms cubic-bezier(.32,.72,0,1); --motion-stagger: 35ms; --motion-flow: 1800ms linear; }
 * { box-sizing: border-box; }
 .sr-only { width: 1px; height: 1px; padding: 0; margin: -1px; position: absolute; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--bg); font-variant-numeric: tabular-nums; letter-spacing: 0; }
+body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--bg); font-size: 15px; font-variant-numeric: tabular-nums; letter-spacing: 0; }
 button, input { font: inherit; }
 button { border: 0; cursor: pointer; }
 button:focus-visible, input:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
@@ -140,3 +140,117 @@ kbd { padding: 2px 4px; background: rgb(127 29 29 / .75); border-radius: 3px; fo
 @media (max-width: 340px) { .top-status { display: none; }.brand { gap: 7px; }.brand strong { font-size: 14px; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; } }
 @media (prefers-reduced-motion: reduce) { .app-bg-layer, .battle-field::after { animation: none !important; }.agent-breath::before { animation: none !important; opacity: 1; }.team-slot.is-selected::after { display: none; }.app-shell:not(.agent-paused) .evolution-panel .sparkline path:first-child { animation: none; stroke-dashoffset: 0; } }
+
+/* Typography scale: readable at desktop distance without losing workbench density. */
+.topbar { height: 60px; }
+.shell-body { min-height: calc(100vh - 60px); }
+.brand strong { font-size: 16px; font-weight: 800; }
+.brand-sub { font-size: 12px; }
+.status-pill { padding: 6px 9px; font-size: 11px; font-weight: 700; }
+.top-account { font-size: 13px; }
+.kill-switch, .danger-button { font-size: 12px; }
+.nav-item { min-height: 44px; font-size: 14px; font-weight: 650; }
+.sync-card div, .sync-card strong { font-size: 12px; }
+.sync-card small { font-size: 11px; }
+.hero-strip h1 { font-size: 36px; font-weight: 800; line-height: 1.12; }
+.page-title-row h1 { font-size: 38px; font-weight: 800; line-height: 1.12; }
+.hero-strip p, .page-title-row p { font-size: 14px; line-height: 1.65; }
+.hero-rule span, .hero-rule .status-pill { font-size: 11px; }
+.hero-rule strong { font-size: 15px; }
+.eyebrow { font-size: 11px; font-weight: 800; }
+.section-header h2 { font-size: 18px; font-weight: 800; }
+.primary-button, .secondary-button, .ghost-button { font-size: 13px; font-weight: 700; }
+.preview-member span { font-size: 13px; }
+.preview-member small { font-size: 11px; }
+.route-head, .route-foot { font-size: 12px; }
+.route-head strong { font-size: 13px; }
+.rating-line span, .progress-label span { font-size: 12px; }
+.rating-line strong { font-size: 32px; }
+.rating-line strong small { font-size: 13px; }
+.progress-label b { font-size: 12px; }
+.match-row strong { font-size: 13px; }
+.match-row small { font-size: 11px; }
+.match-row b { font-size: 12px; }
+.metric-copy span { font-size: 12px; }
+.metric-copy strong { font-size: 22px; }
+.metric-copy small, .learning-notes { font-size: 11px; }
+.sparkline-labels { font-size: 11px; }
+.search-field { height: 42px; }
+.search-field input { font-size: 13px; }
+.filter-chip { font-size: 12px; }
+.candidate-row strong { font-size: 13px; }
+.candidate-row span { font-size: 11px; }
+.candidate-row small { font-size: 10px; }
+.team-health { font-size: 12px; }
+.team-health b { font-size: 16px; }
+.slot-top { font-size: 11px; }
+.slot-body strong { font-size: 15px; }
+.slot-body span { font-size: 12px; }
+.slot-body small { font-size: 11px; }
+.move-pills span { padding: 5px 6px; font-size: 10px; }
+.flow-node span { font-size: 12px; }
+.flow-node small, .flow-legend { font-size: 10px; }
+.analysis-label { font-size: 11px; }
+.analysis-block > strong { font-size: 14px; }
+.analysis-block p, .speed-ladder span, .warning-note, .boundary-note { font-size: 12px; }
+.speed-ladder b { font-size: 12px; }
+.battle-head h2 { font-size: 18px; }
+.battle-meta, .side-heading small { font-size: 11px; }
+.side-heading { font-size: 13px; }
+.active-mon strong { font-size: 13px; }
+.active-mon small { font-size: 11px; }
+.weather-mark, .terrain-mark { font-size: 10px; }
+.decision-row strong { font-size: 13px; }
+.decision-row span { font-size: 11px; }
+.decision-row b, .decision-priority { font-size: 12px; }
+.guardrail-box { font-size: 11px; }
+.guardrail-box div { font-size: 13px; }
+.replay-item strong { font-size: 13px; }
+.replay-item small { font-size: 11px; }
+.replay-tag { font-size: 10px; }
+.replay-detail-head h2 { font-size: 18px; }
+.chart-label { font-size: 12px; }
+.chart-axis { font-size: 10px; }
+.replay-turn h3 { font-size: 15px; }
+.replay-turn p, .cause { font-size: 12px; }
+.drift-banner strong { font-size: 14px; }
+.drift-banner p { font-size: 12px; }
+.rule-heading strong { font-size: 15px; }
+.rule-heading span { font-size: 10px; }
+.rule-tags span, .rule-meta, .rule-meta b { font-size: 11px; }
+.meta-bars > div, .meta-bars strong { font-size: 12px; }
+.model-card h2 { font-size: 20px; }
+.model-rating strong { font-size: 34px; }
+.model-rating span, .model-stat, .benchmark-bars > div, .training-numbers { font-size: 12px; }
+.model-stat b, .benchmark-bars strong { font-size: 13px; }
+.benchmark-note { font-size: 12px; }
+.version-tree span { font-size: 13px; }
+.version-tree small { font-size: 11px; }
+.modal h2 { font-size: 24px; }
+.modal-intro { font-size: 14px; }
+.wizard-step { font-size: 10px; }
+.wizard-body label, .security-state strong, .verification-state strong { font-size: 13px; }
+.security-state p, .verification-state p { font-size: 12px; }
+
+@media (max-width: 560px) {
+  .topbar { height: 56px; }
+  .shell-body { min-height: calc(100vh - 56px); }
+  .brand strong { font-size: 15px; }
+  .nav-item { font-size: 9px; }
+  .hero-strip h1, .page-title-row h1 { font-size: 29px; }
+  .hero-strip p, .page-title-row p { font-size: 13px; }
+  .section-header h2 { font-size: 17px; }
+  .preview-member span { font-size: 12px; }
+  .preview-member small { font-size: 10px; }
+  .slot-body strong { font-size: 14px; }
+  .slot-body span { font-size: 11px; }
+  .slot-body small { font-size: 10px; }
+  .move-pills span { font-size: 9px; }
+  .flow-node span { font-size: 10px; }
+  .flow-node small { font-size: 8px; }
+  .active-mon strong { font-size: 10px; }
+  .active-mon small { font-size: 9px; }
+  .weather-mark, .terrain-mark { font-size: 8px; }
+  .decision-row strong { font-size: 11px; }
+  .decision-row span { font-size: 10px; }
+}
