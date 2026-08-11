@@ -430,12 +430,13 @@ export class ShowdownAccountManager {
         message: "账号已存在。请只在 Showdown 官方窗口输入现有密码并登录，然后回到这里继续。",
       });
     }
-    await this.bringToFront(page);
-    return this.update({
-      status: "WAITING_FOR_HUMAN_VERIFICATION",
-      verificationCode: "ACCOUNT_REGISTRATION_NOT_CONFIRMED",
-      message: "Showdown 当前会话仍将该用户名视为未注册。请确认注册成功提示后再重试。",
-    });
+    await this.openRegistrationForm(page);
+    await this.fillRegistrationPasswords(page);
+    return this.waitForHumanVerification(
+      page,
+      "CAPTCHA_REQUIRED",
+      "Showdown 确认该用户名尚未注册。安全注册表单已重新打开，请完成官方宝可梦识别后继续。",
+    );
   }
 
   async preparePasswordRotation(page) {
