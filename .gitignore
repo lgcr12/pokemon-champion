@@ -1,4 +1,6 @@
 node_modules/
+dist/
+.forge-vite.*.log
 npm-debug.log*
 server.log
 server.err.log
