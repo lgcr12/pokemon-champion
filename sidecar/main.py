@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from poke_env import AccountConfiguration, ShowdownServerConfiguration
+from poke_env.concurrency import handle_threaded_coroutines
 from poke_env.player import Player
 from poke_env.player.battle_order import BattleOrder, DefaultBattleOrder, DoubleBattleOrder
 
@@ -31,7 +32,12 @@ STATE = {
     "losses": 0,
     "ties": 0,
     "lastError": "",
+    "connectionStatus": "DISCONNECTED",
+    "queueStatus": "IDLE",
     "startedAt": None,
+    "connectedAt": None,
+    "searchStartedAt": None,
+    "battleStartedAt": None,
     "updatedAt": None,
     "policyVersion": "structured-visible-state-v1",
 }
@@ -50,6 +56,11 @@ def update_state(**values):
 def public_state():
     with STATE_LOCK:
         return dict(STATE)
+
+
+def mark_battle_active():
+    if public_state()["status"] != "BATTLE":
+        update_state(status="BATTLE", queueStatus="IN_BATTLE", battleStartedAt=now())
 
 
 def write_json(path, payload):
@@ -77,6 +88,7 @@ class StructuredPlayer(Player):
         return score
 
     def teampreview(self, battle):
+        mark_battle_active()
         members = list((getattr(battle, "team", {}) or {}).values())
         opponents = list((getattr(battle, "opponent_team", {}) or {}).values())
         ranked = sorted(
@@ -147,6 +159,7 @@ class StructuredPlayer(Player):
         return max(joint, key=lambda order: score_by_message.get(order.first_order.message if order.first_order else "", 0) + score_by_message.get(order.second_order.message if order.second_order else "", 0))
 
     def choose_move(self, battle):
+        mark_battle_active()
         if getattr(battle, "teampreview", False):
             return self.teampreview(battle)
         if getattr(battle, "is_doubles", False):
@@ -222,19 +235,8 @@ async def run_ladder(payload):
     global ACTIVE_PLAYER
     replay_dir = DATA_ROOT / "showdown-replays" / payload["rulesetId"]
     replay_dir.mkdir(parents=True, exist_ok=True)
-    player = StructuredPlayer(
-        account_configuration=AccountConfiguration(payload["username"], payload["password"]),
-        server_configuration=ShowdownServerConfiguration,
-        battle_format=payload["showdownFormatId"],
-        team=payload["team"],
-        max_concurrent_battles=1,
-        save_replays=str(replay_dir),
-        accept_open_team_sheet=bool(payload.get("openTeamSheets")),
-        start_timer_on_battle_start=True,
-    )
-    ACTIVE_PLAYER = player
     update_state(
-        status="RUNNING",
+        status="CONNECTING",
         mode="ladder",
         rulesetId=payload["rulesetId"],
         showdownFormatId=payload["showdownFormatId"],
@@ -246,9 +248,42 @@ async def run_ladder(payload):
         losses=0,
         ties=0,
         lastError="",
+        connectionStatus="CONNECTING",
+        queueStatus="IDLE",
         startedAt=now(),
+        connectedAt=None,
+        searchStartedAt=None,
+        battleStartedAt=None,
     )
+    player = StructuredPlayer(
+        account_configuration=AccountConfiguration(payload["username"], payload["password"]),
+        server_configuration=ShowdownServerConfiguration,
+        battle_format=payload["showdownFormatId"],
+        team=payload["team"],
+        max_concurrent_battles=1,
+        save_replays=str(replay_dir),
+        accept_open_team_sheet=bool(payload.get("openTeamSheets")),
+        start_timer_on_battle_start=True,
+    )
+    ACTIVE_PLAYER = player
     try:
+        await asyncio.wait_for(
+            handle_threaded_coroutines(player.ps_client.logged_in.wait()),
+            timeout=20,
+        )
+        update_state(
+            status="AUTHENTICATED",
+            connectionStatus="AUTHENTICATED",
+            queueStatus="IDLE",
+            connectedAt=now(),
+        )
+        search_ladder_game = player.ps_client.search_ladder_game
+
+        async def tracked_search_ladder_game(format_id, packed_team):
+            await search_ladder_game(format_id, packed_team)
+            update_state(status="SEARCHING", queueStatus="SEARCHING", searchStartedAt=now())
+
+        player.ps_client.search_ladder_game = tracked_search_ladder_game
         await player.ladder(payload["games"])
         summary = {
             "rulesetId": payload["rulesetId"],
@@ -265,21 +300,34 @@ async def run_ladder(payload):
         register_training_checkpoint(summary)
         update_state(
             status="IDLE",
+            queueStatus="COMPLETE",
             gamesFinished=summary["games"],
             wins=summary["wins"],
             losses=summary["losses"],
             ties=summary["ties"],
         )
     except asyncio.CancelledError:
-        update_state(status="STOPPED", lastError="Emergency stop requested.")
+        update_state(status="STOPPED", queueStatus="STOPPED", lastError="Emergency stop requested.")
         raise
+    except asyncio.TimeoutError:
+        update_state(
+            status="FAILED",
+            connectionStatus="DISCONNECTED",
+            queueStatus="FAILED",
+            lastError="Showdown 登录连接在 20 秒内未完成，请检查账号密码或网络后重试。",
+        )
     except Exception as error:
-        update_state(status="FAILED", lastError=str(error))
+        update_state(
+            status="FAILED",
+            queueStatus="FAILED",
+            lastError=str(error) or error.__class__.__name__,
+        )
     finally:
         try:
             await player.ps_client.stop_listening()
         except Exception:
             pass
+        update_state(connectionStatus="DISCONNECTED")
         ACTIVE_PLAYER = None
 
 
@@ -371,7 +419,12 @@ def main():
                     ACTIVE_TASK.cancel()
                 if ACTIVE_PLAYER:
                     asyncio.run_coroutine_threadsafe(ACTIVE_PLAYER.ps_client.stop_listening(), EVENT_LOOP)
-                update_state(status="STOPPED", lastError="Emergency stop requested.")
+                update_state(
+                    status="STOPPED",
+                    connectionStatus="DISCONNECTED",
+                    queueStatus="STOPPED",
+                    lastError="Emergency stop requested.",
+                )
                 respond(request_id, result=public_state())
             elif command == "replays":
                 respond(request_id, result={"items": list_replays(payload.get("rulesetId", ""))})

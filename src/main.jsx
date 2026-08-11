@@ -137,13 +137,14 @@ function Dashboard({ team, onNavigate, agentState, onToggleAgent, onOpenAccount,
   const protection = countMoves(["protect", "detect", "wideguard", "quickguard"]);
   const positioning = countMoves(["fakeout", "partingshot", "uturn", "voltswitch"]);
   const typeCount = new Set(team.flatMap((member) => member.types || [])).size;
-  const running = ["RUNNING", "STARTING"].includes(overview.agent?.status) || agentState === "active";
+  const running = connectedAgentStatuses.has(overview.agent?.status) || agentState === "active";
+  const sessionActive = running || pendingAgentStatuses.has(overview.agent?.status) || agentState === "starting";
   return <div className="page page-dashboard motion-fade-in">
     <div className="hero-strip stagger-item" style={{ "--stagger-idx": 0 }}><div><span className="eyebrow">ACTIVE WORKSPACE</span><h1>Champion Forge</h1><p>让每一次配队都能被验证，让每一场对战都能推动下一版。</p></div><div className="hero-rule"><span>当前规则快照</span><strong>{activeRuleset?.name?.replace(/^\[Gen \d+ Champions\]\s*/, "") || "等待规则同步"}</strong><StatusPill icon={ShieldCheck} tone={registry.canOperate ? "green" : "yellow"}>{registry.canOperate ? "LOCAL / ONLINE SYNCED" : registry.status}</StatusPill></div></div>
     <div className="dashboard-grid">
       <section className="panel team-panel"><SectionHeader eyebrow="CURRENT TEAM" title="Rain Electro Burst" action={<button className="ghost-button" onClick={() => onNavigate("forge")}>打开工坊 <ChevronRight size={15} /></button>} /><TeamPreview team={team} onSelect={() => onNavigate("forge")} /><div className="team-route"><div className="route-head"><span>主胜利路线</span><strong>Drizzle <ChevronRight size={14} /> Electro Shot <ChevronRight size={14} /> 终盘收割</strong></div><div className="route-track"><span className="route-node node-water"><CloudRain size={15} /></span><span className="route-line line-water" /><span className="route-node node-blue"><Zap size={15} /></span><span className="route-line line-blue" /><span className="route-node node-red"><Target size={15} /></span></div><div className="route-foot"><span>备用路线：Fake Out + Tailwind</span><span className="mono">{activeRuleset?.rulesetId || "NO RULESET"}</span></div></div></section>
       <aside className="stack-column">
-        <section className="panel agent-panel"><SectionHeader eyebrow="AGENT ENGINE" title={champion} action={<StatusPill tone={running ? "green" : "muted"} icon={Bot}>{running ? <span className="agent-breath">LADDERING</span> : overview.agent?.status || "IDLE"}</StatusPill>} /><div className="rating-line"><div><span>当前会话</span><strong className="tabular-num">{overview.agent?.gamesFinished || 0} <small>/ {overview.agent?.gamesRequested || 0}</small></strong></div><div className="rating-up">{totalGames} <small>total</small></div></div><div className="progress-label"><span>下一个训练检查点</span><b className="tabular-num">{checkpointProgress} / 50</b></div><div className="progress"><span style={{ width: `${checkpointProgress * 2}%` }} /></div><div className="agent-actions"><button className="primary-button" onClick={onToggleAgent}>{running ? <><Pause size={16} />停止 Agent</> : <><Play size={16} />开始排位</>}</button><button className="icon-button" title="账号设置" aria-label="账号设置" onClick={onOpenAccount}><Lock size={17} /></button></div></section>
+        <section className="panel agent-panel"><SectionHeader eyebrow="AGENT ENGINE" title={champion} action={<StatusPill tone={running ? "green" : pendingAgentStatuses.has(overview.agent?.status) ? "blue" : "muted"} icon={Bot}>{running ? <span className="agent-breath">{overview.agent?.status}</span> : overview.agent?.status || "IDLE"}</StatusPill>} /><div className="rating-line"><div><span>当前会话</span><strong className="tabular-num">{overview.agent?.gamesFinished || 0} <small>/ {overview.agent?.gamesRequested || 0}</small></strong></div><div className="rating-up">{totalGames} <small>total</small></div></div><div className="progress-label"><span>下一个训练检查点</span><b className="tabular-num">{checkpointProgress} / 50</b></div><div className="progress"><span style={{ width: `${checkpointProgress * 2}%` }} /></div><div className="agent-actions"><button className="primary-button" onClick={onToggleAgent}>{sessionActive ? <><Pause size={16} />停止 Agent</> : <><Play size={16} />开始排位</>}</button><button className="icon-button" title="账号设置" aria-label="账号设置" onClick={onOpenAccount}><Lock size={17} /></button></div></section>
         <section className="panel compact-panel"><SectionHeader eyebrow="RECENT BATCHES" title="最近真实对局" action={<button className="icon-button" title="查看全部" aria-label="查看全部" onClick={() => onNavigate("replays")}><ChevronRight size={17} /></button>} /><div className="match-list">{replays.length ? replays.slice(0, 3).map((item, index) => <BatchRow item={item} key={`${item.finishedAt}-${index}`} />) : <div className="empty-state compact">{error || "尚无真实排位记录"}</div>}</div></section>
       </aside>
       <section className="panel metrics-panel"><SectionHeader eyebrow="LIVE COVERAGE" title="当前队伍可验证指标" action={<span className="mono muted">FROM TEAM SETS</span>} /><div className="metric-grid"><Metric label="控速招式" value={speedControl} detail="Tailwind / Icy Wind / TR" tone="yellow" icon={Gauge} /><Metric label="保护手段" value={protection} detail="Protect / Guard" tone="blue" icon={ShieldCheck} /><Metric label="转场工具" value={positioning} detail="Fake Out / pivot" tone="green" icon={Users} /><Metric label="属性数量" value={typeCount} detail={`${team.length} members`} tone="red" icon={Target} /></div></section>
@@ -177,6 +178,15 @@ function agentStartProblemSummary(problems = []) {
   if (/can't learn/i.test(text)) return "队伍包含当前规则下无法学习的招式。";
   if (/same item|Item Clause/i.test(text)) return "队伍违反道具重复限制。";
   return problems[0] || "请先在配队工坊通过规则校验。";
+}
+
+const connectedAgentStatuses = new Set(["SEARCHING", "BATTLE", "RUNNING"]);
+const pendingAgentStatuses = new Set(["STARTING", "CONNECTING", "AUTHENTICATED"]);
+
+function agentUiState(status = "") {
+  if (connectedAgentStatuses.has(status)) return "active";
+  if (pendingAgentStatuses.has(status)) return "starting";
+  return "paused";
 }
 
 function Forge({ team, setTeam, onNavigate }) {
@@ -276,8 +286,10 @@ function Arena({ agentState, onToggleAgent, onStop }) {
     const timer = window.setInterval(refresh, 2000);
     return () => window.clearInterval(timer);
   }, []);
-  const running = status.status === "RUNNING" || agentState === "active";
-  return <div className="page arena-page"><div className="page-title-row"><div><span className="eyebrow">AGENT ARENA</span><h1>Agent 控制台</h1><p>这里只显示 sidecar 的真实连接与对局状态。</p></div><div className="toolbar-actions"><StatusPill tone={running ? "green" : status.status === "FAILED" ? "yellow" : "muted"} icon={running ? Activity : Pause}>{status.status}</StatusPill><button className="danger-button" onClick={onStop}><CircleStop size={16} />紧急停止</button></div></div><div className="arena-layout"><section className="panel battle-panel"><SectionHeader eyebrow="LADDER SESSION" title={status.username || "尚未启动"} action={<span className="mono muted">{status.showdownFormatId || "NO CONNECTION"}</span>} /><div className="metric-grid"><Metric label="计划对局" value={status.gamesRequested || 0} tone="blue" icon={Swords} /><Metric label="已完成" value={status.gamesFinished || 0} tone="green" icon={Check} /><Metric label="胜利" value={status.wins || 0} tone="green" icon={Trophy} /><Metric label="失败" value={status.losses || 0} tone="red" icon={Target} /></div><div className="battle-actions"><button className="primary-button" onClick={onToggleAgent}>{running ? <><Pause size={16} />停止 Agent</> : <><Play size={16} />开始 1 场排位</>}</button></div>{(status.lastError || error) && <div className="boundary-note"><AlertTriangle size={15} />{status.lastError || error}</div>}</section><section className="panel decision-panel"><SectionHeader eyebrow="POLICY BOUNDARY" title={status.policyVersion || "策略未加载"} action={<StatusPill tone="blue">VISIBLE STATE ONLY</StatusPill>} /><div className="guardrail-box"><div><ShieldCheck size={16} /><strong>运行约束</strong></div><span>账号连接 <b>{status.account?.status || "UNKNOWN"}</b></span><span>规则状态 <b>{status.rules || "UNKNOWN"}</b></span><span>并发上限 <b>1</b></span><span>批次上限 <b>10</b></span></div><div className="boundary-note"><ShieldCheck size={15} />未运行对局时不会生成虚构决策树；真实 replay 在对局完成后保存。</div></section></div></div>;
+  const running = connectedAgentStatuses.has(status.status) || agentState === "active";
+  const sessionActive = running || pendingAgentStatuses.has(status.status) || agentState === "starting";
+  const statusTone = running ? "green" : pendingAgentStatuses.has(status.status) ? "blue" : status.status === "FAILED" ? "yellow" : "muted";
+  return <div className="page arena-page"><div className="page-title-row"><div><span className="eyebrow">AGENT ARENA</span><h1>Agent 控制台</h1><p>这里只显示 sidecar 的真实连接与对局状态。</p></div><div className="toolbar-actions"><StatusPill tone={statusTone} icon={running ? Activity : Pause}>{status.status}</StatusPill><button className="danger-button" onClick={onStop}><CircleStop size={16} />紧急停止</button></div></div><div className="arena-layout"><section className="panel battle-panel"><SectionHeader eyebrow="LADDER SESSION" title={status.username || "尚未启动"} action={<span className="mono muted">{status.showdownFormatId || "NO CONNECTION"}</span>} /><div className="metric-grid"><Metric label="计划对局" value={status.gamesRequested || 0} tone="blue" icon={Swords} /><Metric label="已完成" value={status.gamesFinished || 0} tone="green" icon={Check} /><Metric label="胜利" value={status.wins || 0} tone="green" icon={Trophy} /><Metric label="失败" value={status.losses || 0} tone="red" icon={Target} /></div><div className="battle-actions"><button className="primary-button" onClick={onToggleAgent}>{sessionActive ? <><Pause size={16} />停止 Agent</> : <><Play size={16} />开始 1 场排位</>}</button></div>{(status.lastError || error) && <div className="boundary-note"><AlertTriangle size={15} />{status.lastError || error}</div>}</section><section className="panel decision-panel"><SectionHeader eyebrow="POLICY BOUNDARY" title={status.policyVersion || "策略未加载"} action={<StatusPill tone="blue">VISIBLE STATE ONLY</StatusPill>} /><div className="guardrail-box"><div><ShieldCheck size={16} /><strong>运行约束</strong></div><span>Showdown 连接 <b>{status.connectionStatus || "DISCONNECTED"}</b></span><span>匹配状态 <b>{status.queueStatus || "IDLE"}</b></span><span>规则状态 <b>{status.rules || "UNKNOWN"}</b></span><span>并发上限 <b>1</b></span></div><div className="boundary-note"><ShieldCheck size={15} />只有完成身份验证并发出匹配请求后才显示 SEARCHING；真实 replay 在对局完成后保存。</div></section></div></div>;
 }
 
 function Replays() {
@@ -396,6 +408,7 @@ function App() {
   const [announcement, setAnnouncement] = useState("");
   const [announcementTone, setAnnouncementTone] = useState("info");
   const [isKilled, setIsKilled] = useState(false);
+  const lastAgentStatus = useRef("");
   const activeRuleset = registry.active?.find((item) => item.battleType === "double") || registry.active?.[0];
   const stopAgent = async () => {
     await apiRequest("/api/agent/stop", { method: "POST", body: "{}" }).catch(() => {});
@@ -412,9 +425,9 @@ function App() {
     setAnnouncementTone("info");
     try {
       await apiRequest("/api/agent/start", { method: "POST", body: JSON.stringify({ format: activeRuleset?.battleType || "double", rulesetId: activeRuleset?.rulesetId, teamText: teamToShowdown(team), games: 1, teamVersion: "forge-ui", acknowledgeAutomationPolicy: true }) });
-      setAgentState("active");
-      setAnnouncement("Agent 已开始单连接排位");
-      setAnnouncementTone("success");
+      setAgentState("starting");
+      setAnnouncement("启动请求已提交，正在等待 Showdown 登录确认...");
+      setAnnouncementTone("info");
     } catch (error) {
       setAgentState("paused");
       const problemSummary = agentStartProblemSummary(error.data?.details?.problems || []);
@@ -430,7 +443,23 @@ function App() {
         const [rules, agent] = await Promise.all([apiRequest("/api/rules/active"), apiRequest("/api/agent/status")]);
         if (!mounted) return;
         setRegistry(rules);
-        setAgentState(agent.status === "RUNNING" || agent.status === "STARTING" ? "active" : "paused");
+        setAgentState(agentUiState(agent.status));
+        if (!lastAgentStatus.current) {
+          lastAgentStatus.current = agent.status;
+          return;
+        }
+        if (lastAgentStatus.current === agent.status) return;
+        lastAgentStatus.current = agent.status;
+        if (agent.status === "SEARCHING") {
+          setAnnouncement("Showdown 已认证，正在搜索排位对手。");
+          setAnnouncementTone("success");
+        } else if (agent.status === "BATTLE") {
+          setAnnouncement("已匹配到对手，Agent 正在进行对战。");
+          setAnnouncementTone("success");
+        } else if (agent.status === "FAILED") {
+          setAnnouncement(`Agent 连接失败：${agent.lastError || "未知错误"}`);
+          setAnnouncementTone("error");
+        }
       } catch {}
     };
     refresh();
