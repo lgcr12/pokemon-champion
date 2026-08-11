@@ -268,9 +268,9 @@ export class ShowdownAccountManager {
   async openRegistrationForm(page) {
     const existingPassword = page.locator(".ps-popup").last().locator('input[name="password"], input[type="password"]').first();
     if (await existingPassword.isVisible().catch(() => false)) return;
-    const accountButton = page.locator('button[name="login"]:visible, .username:visible, .header-username:visible').first();
-    await accountButton.waitFor({ state: "visible", timeout: 15000 });
-    await accountButton.click();
+    const optionsButton = page.locator('button[name="openOptions"]:visible, button[aria-label="Options"]:visible, button[title="Options"]:visible').first();
+    await optionsButton.waitFor({ state: "visible", timeout: 15000 });
+    await optionsButton.click();
     const popup = page.locator(".ps-popup").last();
     const registerButton = popup.locator('button[name="register"], button:has-text("Register"), button:has-text("注册")').first();
     await registerButton.waitFor({ state: "visible", timeout: 15000 });

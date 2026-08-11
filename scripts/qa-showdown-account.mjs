@@ -23,7 +23,7 @@ const browser = await chromium.launch({ headless: true });
 try {
   const page = await browser.newPage();
   await page.setContent(`
-    <button class="username" id="account">Guest</button>
+    <button class="username" id="account">Guest</button><button name="openOptions" id="options">Options</button>
     <main id="popups"></main>
     <script>
       const popups = document.querySelector('#popups');
@@ -31,8 +31,10 @@ try {
       let named = false;
       const popup = html => { popups.innerHTML = '<section class="ps-popup">' + html + '</section>'; };
       account.addEventListener('click', () => {
+        popup('<button name="login">Choose name</button>');
+      });
+      document.querySelector('#options').addEventListener('click', () => {
         if (named) popup('<button name="register">Register</button>');
-        else popup('<button name="login">Choose name</button>');
       });
       popups.addEventListener('click', event => {
         if (event.target.name === 'login') popup('<form id="login"><input name="username"></form>');
