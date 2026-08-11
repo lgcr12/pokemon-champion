@@ -240,7 +240,7 @@ export class ShowdownAccountManager {
   }
 
   async chooseUsername(page) {
-    const accountButton = page.locator('button[name="login"], button.username, .header-username').first();
+    const accountButton = page.locator('button[name="login"]:visible, .username:visible, .header-username:visible').first();
     await accountButton.waitFor({ state: "visible", timeout: 30000 });
     await accountButton.click();
     const popup = page.locator(".ps-popup").last();
@@ -261,7 +261,7 @@ export class ShowdownAccountManager {
   async openRegistrationForm(page) {
     const existingPassword = page.locator(".ps-popup").last().locator('input[name="password"], input[type="password"]').first();
     if (await existingPassword.isVisible().catch(() => false)) return;
-    const accountButton = page.locator('button[name="login"], button.username, .header-username').first();
+    const accountButton = page.locator('button[name="login"]:visible, .username:visible, .header-username:visible').first();
     await accountButton.waitFor({ state: "visible", timeout: 15000 });
     await accountButton.click();
     const popup = page.locator(".ps-popup").last();
