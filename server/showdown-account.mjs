@@ -89,6 +89,13 @@ export class ShowdownAccountManager {
       if (this.state.status === "READY" && !this.credentialStored) {
         await this.update({ status: "FAILED", message: "账号凭据缺失，请删除本地配置后重新注册。" });
       }
+      if (["REGISTERING", "VERIFYING_ACCOUNT"].includes(this.state.status)) {
+        await this.update({
+          status: "WAITING_FOR_HUMAN_VERIFICATION",
+          verificationCode: "BROWSER_ACTION_REQUIRED",
+          message: "注册流程曾被中断。请重新打开 Showdown 验证窗口继续。",
+        });
+      }
       if (this.state.status === "WAITING_FOR_HUMAN_VERIFICATION" && !this.state.verificationCode) {
         await this.update({
           verificationCode: "BROWSER_ACTION_REQUIRED",

@@ -12,6 +12,12 @@ manager.state.username = "ChampionForgeQA";
 await manager.vault.save("fixture-secret-A7!");
 manager.credentialStored = true;
 assert.equal(manager.publicState().credentialStored, true);
+await manager.update({ status: "REGISTERING", username: manager.state.username });
+const restoredManager = new ShowdownAccountManager();
+const restoredState = await restoredManager.initialize();
+assert.equal(restoredState.status, "WAITING_FOR_HUMAN_VERIFICATION");
+assert.equal(restoredState.verificationCode, "BROWSER_ACTION_REQUIRED");
+assert.equal(restoredState.credentialStored, true);
 
 const browser = await chromium.launch({ headless: true });
 try {
