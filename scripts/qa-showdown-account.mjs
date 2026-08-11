@@ -70,6 +70,16 @@ try {
     captchaEmpty: popup.querySelector('input[name="captcha"]').value === "",
   }));
   assert.deepEqual(formState, { passwordFilled: true, confirmationMatches: true, captchaEmpty: true });
+  await page.locator("#popups").evaluate((popups) => {
+    popups.innerHTML = '<section class="ps-popup"><form><input name="oldpassword" type="password"><input name="password" type="password"><input name="cpassword" type="password"><button type="submit">Change password</button></form></section>';
+  });
+  await manager.fillPasswordRotationFields(page);
+  const rotationState = await page.locator(".ps-popup").last().evaluate((popup) => ({
+    oldPasswordEmpty: popup.querySelector('input[name="oldpassword"]').value === "",
+    newPasswordFilled: popup.querySelector('input[name="password"]').value.length > 0,
+    confirmationMatches: popup.querySelector('input[name="password"]').value === popup.querySelector('input[name="cpassword"]').value,
+  }));
+  assert.deepEqual(rotationState, { oldPasswordEmpty: true, newPasswordFilled: true, confirmationMatches: true });
 } finally {
   await browser.close();
   await manager.vault.clear();

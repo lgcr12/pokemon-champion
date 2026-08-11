@@ -285,6 +285,14 @@ function AccountWizard({ onClose }) {
   const statusIndex = { UNCONFIGURED: 1, CHECKING_NAME: 1, REGISTERING: 3, WAITING_FOR_HUMAN_VERIFICATION: 4, VERIFYING_ACCOUNT: 4, READY: 5, LOCKED: 5, FAILED: 3 }[account.status] || 1;
   const steps = ["Identity", "Encryption", "Register", "Verification", "Auth"];
   const waitingForHuman = account.status === "WAITING_FOR_HUMAN_VERIFICATION";
+  const repairingLogin = account.verificationCode === "EXISTING_ACCOUNT_LOGIN_REQUIRED";
+  const repairingPassword = account.verificationCode === "OLD_PASSWORD_REQUIRED_FOR_ROTATION";
+  const repairInProgress = repairingLogin || repairingPassword;
+  const verificationGuide = repairingLogin
+    ? ["只在 Showdown 官方窗口输入现有密码并登录", "登录成功后回到这里点击继续"]
+    : repairingPassword
+      ? ["只填写 Showdown 的 Old password，新密码已安全填入", "填写后回到这里点击继续"]
+      : ["在 Showdown 窗口完成当前宝可梦识别题", "回到这里点击“已完成，验证并继续”"];
   return (
     <div className="modal-backdrop" role="presentation">
       <div className="modal account-modal" role="dialog" aria-modal="true" aria-labelledby="account-title">
@@ -306,7 +314,7 @@ function AccountWizard({ onClose }) {
               {account.status === "READY" ? <Check size={22} /> : ["WAITING_FOR_HUMAN_VERIFICATION", "LOCKED", "FAILED"].includes(account.status) ? <AlertTriangle size={22} /> : <Bot size={22} />}
               <strong>{account.username || account.status}</strong>
               <p>{account.message}</p>
-              {waitingForHuman && <div className="verification-hint"><span>1</span><p>在 Showdown 窗口完成当前宝可梦识别题</p><span>2</span><p>回到这里点击“已完成，验证并继续”</p></div>}
+              {waitingForHuman && <div className="verification-hint"><span>1</span><p>{verificationGuide[0]}</p><span>2</span><p>{verificationGuide[1]}</p></div>}
               <StatusPill tone={account.status === "READY" ? "green" : ["FAILED", "LOCKED"].includes(account.status) ? "yellow" : "blue"}>{account.status}</StatusPill>
             </div>
           )}
@@ -315,8 +323,9 @@ function AccountWizard({ onClose }) {
         <div className="modal-actions">
           <button className="ghost-button" onClick={onClose}>关闭</button>
           {account.status === "UNCONFIGURED" && <button className="primary-button" disabled={busy} onClick={() => perform("/api/agent/account/bootstrap", { method: "POST", body: JSON.stringify({ prefix }) })}><Bot size={15} />{busy ? "准备中" : "自动注册"}</button>}
-          {waitingForHuman && <button className="secondary-button" disabled={busy} onClick={() => perform("/api/agent/account/focus", { method: "POST", body: "{}" })}><ExternalLink size={15} />打开验证窗口</button>}
-          {["WAITING_FOR_HUMAN_VERIFICATION", "FAILED"].includes(account.status) && <button className="primary-button" disabled={busy} onClick={() => perform("/api/agent/account/continue", { method: "POST", body: "{}" })}><RefreshCw size={15} />已完成，验证并继续</button>}
+          {waitingForHuman && !repairInProgress && <button className="secondary-button" disabled={busy} onClick={() => perform("/api/agent/account/reconcile", { method: "POST", body: "{}" })}><ShieldCheck size={15} />账号已经注册</button>}
+          {waitingForHuman && <button className="secondary-button" disabled={busy} onClick={() => perform("/api/agent/account/focus", { method: "POST", body: "{}" })}><ExternalLink size={15} />打开官方窗口</button>}
+          {["WAITING_FOR_HUMAN_VERIFICATION", "FAILED"].includes(account.status) && <button className="primary-button" disabled={busy} onClick={() => perform("/api/agent/account/continue", { method: "POST", body: "{}" })}><RefreshCw size={15} />{repairInProgress ? "已完成，继续" : "已完成，验证并继续"}</button>}
           {account.status !== "UNCONFIGURED" && <button className="danger-button" disabled={busy} onClick={() => perform("/api/agent/account", { method: "DELETE" })}><X size={15} />删除本地凭据</button>}
         </div>
       </div>

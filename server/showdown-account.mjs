@@ -221,6 +221,16 @@ export class ShowdownAccountManager {
     return true;
   }
 
+  async fillPasswordRotationFields(page) {
+    const popup = page.locator(".ps-popup").last();
+    const password = await this.vault.load();
+    const newPassword = popup.locator('input[name="password"]').first();
+    const confirmation = popup.locator('input[name="cpassword"]').first();
+    await newPassword.waitFor({ state: "visible", timeout: 15000 });
+    await newPassword.fill(password);
+    await confirmation.fill(password);
+  }
+
   async waitForHumanVerification(page, code = "CAPTCHA_REQUIRED", message = "请在 Showdown 官方窗口完成宝可梦识别，完成后回到这里继续。") {
     await this.bringToFront(page);
     return this.update({ status: "WAITING_FOR_HUMAN_VERIFICATION", verificationCode: code, message });
@@ -344,6 +354,9 @@ export class ShowdownAccountManager {
 
   async continue() {
     if (!this.state.username) throw Object.assign(new Error("尚未开始账号注册。"), { status: 409, code: "ACCOUNT_UNCONFIGURED" });
+    if (["EXISTING_ACCOUNT_LOGIN_REQUIRED", "OLD_PASSWORD_REQUIRED_FOR_ROTATION"].includes(this.state.verificationCode)) {
+      return this.continueCredentialRepair();
+    }
     if (await registered(this.state.username)) return this.verify();
     if (this.state.status === "LOCKED") throw Object.assign(new Error("Showdown 已锁定当前代理 IP。请切换到正常网络后删除本地配置并重试。"), { status: 423, code: "SHOWDOWN_IP_LOCKED" });
     if (this.state.status === "FAILED") {
@@ -387,6 +400,122 @@ export class ShowdownAccountManager {
       message: "待注册凭据已安全轮换，正在重新打开官方验证窗口。",
     });
     return this.focus();
+  }
+
+  async accountSession(page) {
+    return page.evaluate(() => ({
+      userid: window.app?.user?.get("userid") || "",
+      named: Boolean(window.app?.user?.get("named")),
+      registered: Boolean(window.app?.user?.get("registered")),
+    })).catch(() => ({ userid: "", named: false, registered: false }));
+  }
+
+  async reconcileRegisteredAccount() {
+    if (!this.state.username) throw Object.assign(new Error("尚未开始账号注册。"), { status: 409, code: "ACCOUNT_UNCONFIGURED" });
+    const context = await this.ensureBrowser();
+    const page = context.pages()[0] || await context.newPage();
+    await page.goto(PLAY_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.waitForTimeout(1200);
+    let session = await this.accountSession(page);
+    if (session.registered && session.userid === toUserid(this.state.username)) return this.preparePasswordRotation(page);
+    await this.chooseUsername(page);
+    session = await this.accountSession(page);
+    if (session.registered && session.userid === toUserid(this.state.username)) return this.preparePasswordRotation(page);
+    const loginPassword = page.locator(".ps-popup").last().locator('input[name="password"]').first();
+    if (await loginPassword.isVisible().catch(() => false)) {
+      await this.bringToFront(page);
+      return this.update({
+        status: "WAITING_FOR_HUMAN_VERIFICATION",
+        verificationCode: "EXISTING_ACCOUNT_LOGIN_REQUIRED",
+        message: "账号已存在。请只在 Showdown 官方窗口输入现有密码并登录，然后回到这里继续。",
+      });
+    }
+    await this.bringToFront(page);
+    return this.update({
+      status: "WAITING_FOR_HUMAN_VERIFICATION",
+      verificationCode: "ACCOUNT_REGISTRATION_NOT_CONFIRMED",
+      message: "Showdown 当前会话仍将该用户名视为未注册。请确认注册成功提示后再重试。",
+    });
+  }
+
+  async preparePasswordRotation(page) {
+    const session = await this.accountSession(page);
+    if (!session.registered || session.userid !== toUserid(this.state.username)) {
+      await this.bringToFront(page);
+      return this.update({
+        status: "WAITING_FOR_HUMAN_VERIFICATION",
+        verificationCode: "EXISTING_ACCOUNT_LOGIN_REQUIRED",
+        message: "尚未检测到已注册账号登录。请在 Showdown 官方窗口登录后继续。",
+      });
+    }
+    const optionsButton = page.locator('button[name="openOptions"]:visible, button[aria-label="Options"]:visible, button[title="Options"]:visible').first();
+    await optionsButton.waitFor({ state: "visible", timeout: 15000 });
+    await optionsButton.click();
+    const changePassword = page.locator(".ps-popup").last().locator('button[name="changepassword"], button:has-text("Password")').first();
+    await changePassword.waitFor({ state: "visible", timeout: 15000 });
+    await changePassword.click();
+    const oldPassword = page.locator(".ps-popup").last().locator('input[name="oldpassword"]').first();
+    await oldPassword.waitFor({ state: "visible", timeout: 15000 });
+    await this.fillPasswordRotationFields(page);
+    await this.bringToFront(page);
+    return this.update({
+      status: "WAITING_FOR_HUMAN_VERIFICATION",
+      verificationCode: "OLD_PASSWORD_REQUIRED_FOR_ROTATION",
+      message: "请只在 Showdown 的 Old password 中输入现有密码；新密码已由 DPAPI 安全填写。",
+    });
+  }
+
+  async continueCredentialRepair() {
+    const page = await this.registrationPage();
+    if (!page) return this.reconcileRegisteredAccount();
+    if (this.state.verificationCode === "EXISTING_ACCOUNT_LOGIN_REQUIRED") {
+      const session = await this.accountSession(page);
+      if (session.registered && session.userid === toUserid(this.state.username)) return this.preparePasswordRotation(page);
+      await this.bringToFront(page);
+      return this.update({
+        status: "WAITING_FOR_HUMAN_VERIFICATION",
+        verificationCode: "EXISTING_ACCOUNT_LOGIN_REQUIRED",
+        message: "尚未检测到登录成功。请在 Showdown 官方窗口完成登录后继续。",
+      });
+    }
+    return this.submitPasswordRotation(page);
+  }
+
+  async submitPasswordRotation(page) {
+    const popup = page.locator(".ps-popup").last();
+    const popupText = await popup.innerText().catch(() => "");
+    if (/password was successfully changed/i.test(popupText)) return this.finishCredentialRepair();
+    const oldPassword = popup.locator('input[name="oldpassword"]').first();
+    if (!(await oldPassword.isVisible().catch(() => false))) return this.preparePasswordRotation(page);
+    if (!(await oldPassword.evaluate((input) => input.value.length > 0))) {
+      await this.bringToFront(page);
+      return this.update({
+        status: "WAITING_FOR_HUMAN_VERIFICATION",
+        verificationCode: "OLD_PASSWORD_REQUIRED_FOR_ROTATION",
+        message: "请在 Showdown 官方页面填写 Old password，然后回到这里继续。",
+      });
+    }
+    await this.fillPasswordRotationFields(page);
+    await popup.locator('button[type="submit"]').first().click();
+    await page.waitForTimeout(1800);
+    const resultPopup = page.locator(".ps-popup").last();
+    const resultText = await resultPopup.innerText().catch(() => "");
+    if (/password was successfully changed/i.test(resultText)) return this.finishCredentialRepair();
+    const errorText = await resultPopup.locator(".error").first().innerText().catch(() => "");
+    await this.fillPasswordRotationFields(page).catch(() => {});
+    await this.bringToFront(page);
+    return this.update({
+      status: "WAITING_FOR_HUMAN_VERIFICATION",
+      verificationCode: "OLD_PASSWORD_REQUIRED_FOR_ROTATION",
+      message: errorText ? "Showdown 未接受现有密码，请在官方页面重新输入后继续。" : "官方尚未确认密码轮换，请检查 Showdown 窗口后重试。",
+    });
+  }
+
+  async finishCredentialRepair() {
+    this.lastRejectedCaptcha = "";
+    await this.update({ status: "READY", verificationCode: "", message: "Showdown 账号已连接，官方密码与本地 DPAPI 凭据一致。" });
+    if (this.context) await this.context.close().catch(() => {});
+    return this.publicState();
   }
 
   async credential() {
