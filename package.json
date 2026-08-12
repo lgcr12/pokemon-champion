@@ -38,6 +38,7 @@
     "vite": "^7.0.6"
   },
   "dependencies": {
+    "framer-motion": "^13.1.0",
     "lucide-react": "^0.468.0",
     "pokemon-showdown": "github:smogon/pokemon-showdown#master",
     "react": "^19.1.1",
