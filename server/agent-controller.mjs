@@ -116,7 +116,14 @@ export class AgentController {
     return response;
   }
 
-  status() { return this.command("status"); }
+  async status() {
+    const state = await this.command("status");
+    return {
+      ...state,
+      sidecarPid: this.child?.pid || null,
+      sidecarError: this.lastError || "",
+    };
+  }
   start(payload) { return this.command("start", payload, 30000); }
   stop() { return this.command("stop"); }
   replays(rulesetId = "") { return this.command("replays", { rulesetId }); }

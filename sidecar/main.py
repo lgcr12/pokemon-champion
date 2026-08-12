@@ -5,6 +5,7 @@ import sys
 import threading
 import traceback
 import inspect
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,15 +27,15 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 from poke_env import AccountConfiguration, ShowdownServerConfiguration
-from poke_env.concurrency import handle_threaded_coroutines
+from poke_env.concurrency import POKE_LOOP, handle_threaded_coroutines
 from poke_env.player import Player
 from poke_env.player.battle_order import BattleOrder, DefaultBattleOrder, DoubleBattleOrder
 
 
-def run_threaded_coroutine(coro, loop):
-    """Bridge poke-env 0.8 and 0.15 coroutine helper signatures."""
+def run_threaded_coroutine(coro, loop=None):
+    """Bridge poke-env versions without assuming PSClient exposes a loop."""
     if len(inspect.signature(handle_threaded_coroutines).parameters) >= 2:
-        return handle_threaded_coroutines(coro, loop)
+        return handle_threaded_coroutines(coro, loop or POKE_LOOP)
     return handle_threaded_coroutines(coro)
 
 
@@ -86,6 +87,12 @@ STATE = {
     "lastDecisionError": "",
     "lastRequestSummary": "",
     "lastSentMessage": "",
+    "lastActivityAt": None,
+    "lastBattleEventAt": None,
+    "lastActionAt": None,
+    "staleForSeconds": 0,
+    "battleHealth": "IDLE",
+    "staleThresholdSeconds": int(os.environ.get("AGENT_STALE_SECONDS", "45")),
     "startedAt": None,
     "connectedAt": None,
     "searchStartedAt": None,
@@ -94,6 +101,18 @@ STATE = {
     "policyVersion": "structured-visible-state-v1",
     "policyRequested": "structured",
     "policyFallback": "",
+    "teamSource": "workbench",
+    "teamId": "",
+    "teamTitle": "",
+    "submittedTeam": [],
+    "battleSnapshot": {
+        "turn": 0,
+        "weather": "",
+        "terrain": "",
+        "own": {"slots": [], "active": []},
+        "opponent": {"slots": [], "active": [], "revealedCount": 0},
+        "lastEvent": "",
+    },
 }
 
 
@@ -109,12 +128,126 @@ def update_state(**values):
 
 def public_state():
     with STATE_LOCK:
-        return dict(STATE)
+        state = dict(STATE)
+    activity = state.get("lastBattleEventAt") or state.get("lastActivityAt")
+    stale_for = 0
+    if activity and state.get("status") in {"SEARCHING", "BATTLE", "AUTHENTICATED"}:
+        try:
+            stale_for = max(0, int(time.time() - datetime.fromisoformat(activity.replace("Z", "+00:00")).timestamp()))
+        except (TypeError, ValueError):
+            stale_for = 0
+    state["staleForSeconds"] = stale_for
+    state["battleHealth"] = "STALE" if stale_for >= state.get("staleThresholdSeconds", 45) and state.get("status") == "BATTLE" else "ACTIVE" if state.get("status") in {"SEARCHING", "BATTLE"} else state.get("status", "IDLE")
+    return state
 
 
 def mark_battle_active():
     if public_state()["status"] != "BATTLE":
         update_state(status="BATTLE", queueStatus="IN_BATTLE", battleStartedAt=now())
+
+
+def snapshot_pokemon(pokemon, active=False):
+    if pokemon is None:
+        return None
+    species = str(getattr(pokemon, "species", "") or getattr(pokemon, "name", "") or "")
+    slug = species.lower().replace("'", "").replace(".", "").replace(" ", "-")
+    ident = str(getattr(pokemon, "ident", "") or "")
+    hp_fraction = getattr(pokemon, "current_hp_fraction", None)
+    try:
+        hp_fraction = max(0.0, min(1.0, float(hp_fraction))) if hp_fraction is not None else None
+    except (TypeError, ValueError):
+        hp_fraction = None
+    moves = getattr(pokemon, "moves", {}) or {}
+    move_names = []
+    if isinstance(moves, dict):
+        move_names = [str(getattr(move, "id", "") or getattr(move, "name", "")) for move in moves.values()]
+    elif isinstance(moves, (list, tuple, set)):
+        move_names = [str(getattr(move, "id", "") or getattr(move, "name", "") or move) for move in moves]
+    raw_status = getattr(pokemon, "status", "")
+    status_name = getattr(raw_status, "name", None) or getattr(raw_status, "value", None) or raw_status
+    status_text = str(status_name or "").strip()
+    if "fnt" in status_text.lower() or "fainted" in status_text.lower():
+        status_text = "fnt"
+    return {
+        "id": ident or species.lower().replace(" ", "-"),
+        "species": species,
+        "slug": slug,
+        "sprite": slug,
+        "name": species,
+        "ident": ident,
+        "active": bool(active),
+        "fainted": bool(getattr(pokemon, "fainted", False)),
+        "hpFraction": hp_fraction,
+        "status": status_text,
+        "types": [str(item) for item in (getattr(pokemon, "types", ()) or ()) if item],
+        "item": str(getattr(pokemon, "item", "") or ""),
+        "ability": str(getattr(pokemon, "ability", "") or ""),
+        "moves": [item for item in move_names if item],
+    }
+
+
+def pokemon_collection(value):
+    """Normalize poke-env's single and double battle slot shapes."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [item for item in value if item is not None]
+    return [value]
+
+
+def battle_snapshot(battle, last_event=""):
+    own_values = list((getattr(battle, "team", {}) or {}).values())
+    opponent_values = list((getattr(battle, "opponent_team", {}) or {}).values())
+    own_active = pokemon_collection(getattr(battle, "active_pokemon", None))
+    opponent_active = pokemon_collection(getattr(battle, "opponent_active_pokemon", None))
+    own_active_ids = {id(item) for item in own_active if item is not None}
+    opponent_active_ids = {id(item) for item in opponent_active if item is not None}
+    own_slots = [snapshot_pokemon(item, id(item) in own_active_ids) for item in own_values]
+    opponent_slots = [snapshot_pokemon(item, id(item) in opponent_active_ids) for item in opponent_values]
+    own_slots = [item for item in own_slots if item]
+    opponent_slots = [item for item in opponent_slots if item]
+    return {
+        "turn": int(getattr(battle, "turn", 0) or 0),
+        "weather": str(getattr(battle, "weather", "") or ""),
+        "terrain": str(getattr(battle, "terrain", "") or ""),
+        "own": {"slots": own_slots, "active": [item for item in own_slots if item["active"]]},
+        "opponent": {"slots": opponent_slots, "active": [item for item in opponent_slots if item["active"]], "revealedCount": len(opponent_slots)},
+        "lastEvent": str(last_event or ""),
+    }
+
+
+def submitted_team_snapshot():
+    return [
+        {
+            **member,
+            "active": False,
+            "fainted": False,
+            "hpFraction": 1.0,
+            "status": "",
+        }
+        for member in public_state().get("submittedTeam", [])
+        if isinstance(member, dict)
+    ]
+
+
+def merge_battle_snapshot(battle, last_event=""):
+    snapshot = battle_snapshot(battle, last_event) if battle is not None else {
+        "turn": 0,
+        "weather": "",
+        "terrain": "",
+        "own": {"slots": [], "active": []},
+        "opponent": {"slots": [], "active": [], "revealedCount": 0},
+        "lastEvent": last_event,
+    }
+    submitted = submitted_team_snapshot()
+    if submitted:
+        if not snapshot["own"]["slots"]:
+            snapshot["own"]["slots"] = submitted
+        else:
+            known = {str(item.get("species") or item.get("name") or "").lower().replace("-", "") for item in snapshot["own"]["slots"]}
+            snapshot["own"]["slots"] = submitted + [item for item in snapshot["own"]["slots"] if str(item.get("species") or item.get("name") or "").lower().replace("-", "") not in known]
+        snapshot["own"]["active"] = [item for item in snapshot["own"]["slots"] if item.get("active")]
+    return snapshot
 
 
 def write_json(path, payload):
@@ -207,25 +340,11 @@ class StructuredPlayer(Player):
                 choice = self.choose_doubles_move(battle)
                 message = choice.message or "/choose default"
                 await self.ps_client.send_message(message, battle.battle_tag)
-                state = public_state()
-                update_state(
-                    decisionCount=int(state.get("decisionCount", 0)) + 1,
-                    lastDecisionTurn=turn,
-                    lastDecisionAt=now(),
-                    lastDecisionError="",
-                )
                 return
             await super()._handle_battle_request(
                 battle,
                 from_teampreview_request=from_teampreview_request,
                 maybe_default_order=maybe_default_order,
-            )
-            state = public_state()
-            update_state(
-                decisionCount=int(state.get("decisionCount", 0)) + 1,
-                lastDecisionTurn=turn,
-                lastDecisionAt=now(),
-                lastDecisionError="",
             )
         except Exception as error:
             state = public_state()
@@ -421,6 +540,11 @@ async def run_ladder(payload):
         lastDecisionError="",
         lastRequestSummary="",
         lastSentMessage="",
+        lastActivityAt=now(),
+        lastBattleEventAt=None,
+        lastActionAt=None,
+        staleForSeconds=0,
+        battleHealth="CONNECTING",
         startedAt=now(),
         connectedAt=None,
         searchStartedAt=None,
@@ -428,6 +552,18 @@ async def run_ladder(payload):
         policyVersion=policy_version,
         policyRequested=requested_policy,
         policyFallback=policy_fallback,
+        teamSource=str(payload.get("teamSource") or "workbench"),
+        teamId=str(payload.get("teamId") or ""),
+        teamTitle=str(payload.get("teamTitle") or ""),
+        submittedTeam=payload.get("teamMembers") or [],
+        battleSnapshot={
+            "turn": 0,
+            "weather": "",
+            "terrain": "",
+            "own": {"slots": [], "active": []},
+            "opponent": {"slots": [], "active": [], "revealedCount": 0},
+            "lastEvent": "",
+        },
     )
     player_class = LAPLACE_ENGINE if use_laplace else StructuredPlayer
     player_kwargs = {
@@ -455,6 +591,9 @@ async def run_ladder(payload):
                 "showdownFormatId": payload["showdownFormatId"],
                 "battleType": payload["battleType"],
                 "teamVersion": payload.get("teamVersion", "manual"),
+                "teamSource": payload.get("teamSource", "workbench"),
+                "teamId": payload.get("teamId", ""),
+                "teamTitle": payload.get("teamTitle", ""),
                 "username": payload.get("username", ""),
                 "policyVersion": policy_version,
                 "battleId": key,
@@ -478,10 +617,16 @@ async def run_ladder(payload):
         if message_battle_id:
             current_battle_id = message_battle_id
             update_state(activeBattleId=message_battle_id)
+        update_state(lastActivityAt=now())
         for line in str(message).splitlines():
             event = public_battle_event(line)
             if event:
                 append_trace_event(message_battle_id or current_battle_id, event)
+                update_state(
+                    lastActivityAt=now(),
+                    lastBattleEventAt=now(),
+                    lastServerEvent=str(event.get("type") or "BATTLE_EVENT").upper(),
+                )
             parts = line.split("|")
             if len(parts) > 1 and parts[1] == "request":
                 state = public_state()
@@ -539,6 +684,8 @@ async def run_ladder(payload):
                 server_message = " ".join(part for part in parts[2:] if part).strip()
                 update_state(lastServerEvent="POPUP", serverMessage=server_message[:1000])
         await handle_message(message)
+        battle = getattr(player, "battles", {}).get(current_battle_id) if getattr(player, "battles", None) and current_battle_id else None
+        update_state(battleSnapshot=merge_battle_snapshot(battle, public_state().get("lastServerEvent", "")))
 
     player.ps_client._handle_message = tracked_handle_message
     send_message = player.ps_client.send_message
@@ -549,18 +696,37 @@ async def run_ladder(payload):
                 state = public_state()
                 message = "/choose default"
                 update_state(fallbackCount=int(state.get("fallbackCount", 0)) + 1)
-            update_state(lastSentMessage=str(message)[:500])
+            command = str(message)[:500]
+            state = public_state()
+            action_update = {
+                "lastSentMessage": command,
+                "lastActionAt": now(),
+                "lastActivityAt": now(),
+            }
+            battle = getattr(player, "battles", {}).get(room) if getattr(player, "battles", None) else None
+            if battle is not None:
+                action_update["lastDecisionTurn"] = int(getattr(battle, "turn", 0) or 0)
+                action_update["battleSnapshot"] = merge_battle_snapshot(battle, public_state().get("lastServerEvent", ""))
+            if command.startswith("/choose") or command.startswith("/team"):
+                action_update["decisionCount"] = int(state.get("decisionCount", 0)) + 1
+                action_update["lastDecisionAt"] = now()
+                action_update["lastDecisionError"] = ""
+            update_state(**action_update)
             append_trace_event(room, {
                 "type": "agent-action",
                 "turn": int(public_state().get("lastDecisionTurn", 0) or 0),
                 "command": str(message)[:500],
             })
-        return await send_message(message, room, message_2)
+        try:
+            return await send_message(message, room, message_2)
+        except Exception as error:
+            update_state(lastDecisionError=f"{error.__class__.__name__}: {error}", lastServerEvent="SEND_ERROR")
+            raise
 
     player.ps_client.send_message = tracked_send_message
     try:
         await asyncio.wait_for(
-            run_threaded_coroutine(player.ps_client.logged_in.wait(), player.ps_client.loop),
+            run_threaded_coroutine(player.ps_client.logged_in.wait(), getattr(player.ps_client, "loop", None)),
             timeout=20,
         )
         update_state(
@@ -576,37 +742,109 @@ async def run_ladder(payload):
             update_state(status="SEARCHING", queueStatus="SEARCH_SENT", searchStartedAt=now())
 
         player.ps_client.search_ladder_game = tracked_search_ladder_game
-        await player.ladder(payload["games"])
-        replay_files = []
-        started_timestamp = datetime.fromisoformat(public_state()["startedAt"].replace("Z", "+00:00")).timestamp()
-        for replay_path in sorted(replay_dir.glob("*.html"), key=lambda item: item.stat().st_mtime, reverse=True):
-            if replay_path.stat().st_mtime >= started_timestamp - 2:
-                replay_files.append(replay_path.name)
-        battles = list((getattr(player, "battles", {}) or {}).items())
+        finished_battles = set()
         finished_trace_files = []
-        for index, (battle_id, battle) in enumerate(battles):
-            trace = trace_for(battle_id)
+        observed = {"games": 0, "wins": 0, "losses": 0, "ties": 0}
+
+        def battle_result(battle):
+            if bool(getattr(battle, "won", False)):
+                return "win"
+            if bool(getattr(battle, "lost", False)):
+                return "loss"
+            if bool(getattr(battle, "finished", False)):
+                return "tie"
+            return "unknown"
+
+        def replay_files_for_batch():
+            started = public_state().get("startedAt")
+            try:
+                started_timestamp = datetime.fromisoformat(started.replace("Z", "+00:00")).timestamp()
+            except (AttributeError, ValueError):
+                started_timestamp = 0
+            return [
+                path.name
+                for path in sorted(replay_dir.glob("*.html"), key=lambda item: item.stat().st_mtime, reverse=True)
+                if path.stat().st_mtime >= started_timestamp - 2
+            ]
+
+        def persist_finished_battle(battle_id, battle, replay_files):
+            key = str(battle_id)
+            if key in finished_battles:
+                return
+            result = battle_result(battle)
+            if result == "unknown":
+                return
+            finished_battles.add(key)
+            observed["games"] += 1
+            observed["wins"] += int(result == "win")
+            observed["losses"] += int(result == "loss")
+            observed["ties"] += int(result == "tie")
+            trace = trace_for(key)
             trace["finishedAt"] = now()
             trace["turns"] = int(getattr(battle, "turn", 0) or 0)
-            trace["result"] = "win" if bool(getattr(battle, "won", False)) else "loss" if bool(getattr(battle, "lost", False)) else "tie" if bool(getattr(battle, "finished", False)) else "unknown"
-            trace["replayFile"] = replay_files[index] if index < len(replay_files) else ""
-            trace_name = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{index + 1}-{str(battle_id).replace('/', '_')}.json"
+            trace["result"] = result
+            trace["replayFile"] = replay_files[min(observed["games"] - 1, len(replay_files) - 1)] if replay_files else ""
+            trace_name = trace.get("traceFile") or f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{observed['games']}-{key.replace('/', '_')}.json"
+            trace["traceFile"] = trace_name
             write_json(trace_dir / trace_name, trace)
             finished_trace_files.append(trace_name)
+            update_state(
+                gamesFinished=observed["games"],
+                wins=observed["wins"],
+                losses=observed["losses"],
+                ties=observed["ties"],
+                activeBattleId="",
+                lastBattleEventAt=now(),
+                lastServerEvent="BATTLE_FINISHED",
+            )
+
+        async def observe_finished_battles():
+            while True:
+                replay_files = replay_files_for_batch()
+                for battle_id, battle in list((getattr(player, "battles", {}) or {}).items()):
+                    persist_finished_battle(battle_id, battle, replay_files)
+                await asyncio.sleep(0.5)
+
+        observer_task = asyncio.create_task(observe_finished_battles())
+        try:
+            await player.ladder(payload["games"])
+        finally:
+            observer_task.cancel()
+            try:
+                await observer_task
+            except asyncio.CancelledError:
+                pass
+        replay_files = replay_files_for_batch()
+        for battle_id, battle in list((getattr(player, "battles", {}) or {}).items()):
+            persist_finished_battle(battle_id, battle, replay_files)
+        # A replay can be written just after the server sends the win event.
+        # Refresh already persisted traces so the UI can open it immediately.
+        for trace_name in finished_trace_files:
+            trace_path = trace_dir / trace_name
+            try:
+                trace = json.loads(trace_path.read_text(encoding="utf-8"))
+                if not trace.get("replayFile") and replay_files:
+                    trace["replayFile"] = replay_files[min(finished_trace_files.index(trace_name), len(replay_files) - 1)]
+                    write_json(trace_path, trace)
+            except Exception:
+                continue
         summary = {
             "rulesetId": payload["rulesetId"],
             "showdownFormatId": payload["showdownFormatId"],
             "teamVersion": payload.get("teamVersion", "manual"),
+            "teamSource": payload.get("teamSource", "workbench"),
+            "teamId": payload.get("teamId", ""),
+            "teamTitle": payload.get("teamTitle", ""),
             "policyVersion": STATE["policyVersion"],
             "policyRequested": STATE.get("policyRequested", "structured"),
             "policyFallback": STATE.get("policyFallback", ""),
             "replayFiles": replay_files[: int(player.n_finished_battles)],
             "traceFiles": finished_trace_files,
             "traceCount": len(finished_trace_files),
-            "games": int(player.n_finished_battles),
-            "wins": int(player.n_won_battles),
-            "losses": int(player.n_lost_battles),
-            "ties": int(player.n_tied_battles),
+            "games": observed["games"],
+            "wins": observed["wins"],
+            "losses": observed["losses"],
+            "ties": observed["ties"],
             "finishedAt": now(),
         }
         write_json(DATA_ROOT / "replays" / payload["rulesetId"] / f"batch-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json", summary)
@@ -618,6 +856,8 @@ async def run_ladder(payload):
             wins=summary["wins"],
             losses=summary["losses"],
             ties=summary["ties"],
+            activeBattleId="",
+            battleHealth="IDLE",
         )
     except asyncio.CancelledError:
         update_state(status="STOPPED", queueStatus="STOPPED", lastError="Emergency stop requested.")

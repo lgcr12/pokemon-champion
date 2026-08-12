@@ -550,6 +550,21 @@ async function handleAccountApi(req, res) {
 
 async function handleAgentApi(req, res) {
   const url = new URL(req.url || "/api/agent/status", "http://127.0.0.1");
+  if (req.method === "GET" && url.pathname === "/api/agent/hot-teams") {
+    const format = url.searchParams.get("format") === "single" ? "single" : "double";
+    const snapshot = ruleRegistry.operational({ format, rulesetId: String(url.searchParams.get("rulesetId") || "") });
+    const { pool, selected, preview } = chooseLadderHotTeam(snapshot);
+    sendJson(res, 200, {
+      ok: true,
+      ...rulesetMetadata(snapshot),
+      dataSeason: pool[0]?.sourceSeason || "",
+      seasonMatched: pool.some((item) => item.seasonMatched),
+      total: pool.length,
+      items: preview.slice(0, Math.max(1, Math.min(120, Number(url.searchParams.get("limit") || 48)))),
+      selected,
+    });
+    return;
+  }
   if (req.method === "GET" && url.pathname === "/api/agent/status") {
     const state = await agentController.status();
     sendJson(res, 200, { ok: true, ...state, account: showdownAccount.publicState(), rules: ruleRegistry.publicState().status });
@@ -597,15 +612,17 @@ async function handleAgentApi(req, res) {
   }
   if (req.method === "GET" && url.pathname === "/api/agent/learning") {
     const format = url.searchParams.get("format") === "double" ? "double" : "single";
-    const snapshot = ruleRegistry.operational({ format, rulesetId: String(url.searchParams.get("rulesetId") || "") });
+    const requestedRulesetId = String(url.searchParams.get("rulesetId") || "").trim();
+    const snapshot = learningSnapshot(format, requestedRulesetId);
     const root = join(AGENT_LEARNING_ROOT, snapshot.rulesetId);
+    await importLocalAgentReplays(snapshot, format);
     const [summary, failures, matchups, teamRegistry] = await Promise.all([
       learnFromAgentTraces(snapshot.rulesetId, format),
       readFile(join(root, "failure-memory.json"), "utf8").then(JSON.parse).catch(() => null),
       readFile(join(root, "opponent-matchups.json"), "utf8").then(JSON.parse).catch(() => null),
       readAgentTeamRegistry(snapshot.rulesetId),
     ]);
-    sendJson(res, 200, { ok: true, ...rulesetMetadata(snapshot), summary, failures, matchups, teamRegistry });
+    sendJson(res, 200, { ok: true, ...rulesetMetadata(snapshot), historical: Boolean(snapshot.historical), summary, failures, matchups, teamRegistry });
     return;
   }
   const body = await readJson(req).catch(() => ({}));
@@ -620,9 +637,10 @@ async function handleAgentApi(req, res) {
   }
   if (req.method === "POST" && url.pathname === "/api/agent/analyze") {
     const format = body.format === "double" ? "double" : "single";
-    const snapshot = ruleRegistry.operational({ format, rulesetId: String(body.rulesetId || "") });
+    const snapshot = learningSnapshot(format, String(body.rulesetId || "").trim());
+    await importLocalAgentReplays(snapshot, format);
     const summary = await learnFromAgentTraces(snapshot.rulesetId, format);
-    sendJson(res, 200, { ok: true, ...rulesetMetadata(snapshot), summary });
+    sendJson(res, 200, { ok: true, ...rulesetMetadata(snapshot), historical: Boolean(snapshot.historical), summary });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/agent/analyze-replay") {
@@ -644,6 +662,19 @@ async function handleAgentApi(req, res) {
     if (body.acknowledgeAutomationPolicy !== true) throw Object.assign(new Error("启动公开排位前必须确认单账号、单连接、不操纵匹配并遵守平台自动化规则。"), { status: 400, code: "AUTOMATION_ACK_REQUIRED" });
     const prepared = prepareBattleTeam(body.teamText || "", format, "排位队伍", snapshot.rulesetId);
     if (!prepared.ok || !prepared.strictLegal) throw Object.assign(new Error(`排位队伍未通过 ${snapshot.name} 校验。`), { status: 422, code: "EXACT_FORMAT_ILLEGAL", details: { problems: prepared.problems || [] } });
+    const parsedTeamMembers = (Teams.import(prepared.showdownTeamText) || []).slice(0, 6).map((member) => ({
+      id: strictKey(member.species || member.name || ""),
+      name: member.species || member.name || "",
+      sprite: strictKey(member.species || member.name || ""),
+      item: member.item || "",
+      ability: member.ability || "",
+      moves: Array.isArray(member.moves) ? member.moves.slice(0, 4) : [],
+      nature: member.nature || "",
+      stats: member.evs || "",
+    })).filter((member) => member.id && member.name);
+    if (!parsedTeamMembers.length) {
+      throw Object.assign(new Error("排位队伍解析成功但没有可显示的本场成员，已阻止启动。"), { status: 422, code: "SUBMITTED_TEAM_EMPTY" });
+    }
     const credential = await showdownAccount.credential();
     const games = Math.max(1, Math.min(Number(body.games || 1) || 1, Number(process.env.AGENT_MAX_BATCH_GAMES || 10)));
     const state = await agentController.start({
@@ -654,7 +685,11 @@ async function handleAgentApi(req, res) {
       username: credential.username,
       password: credential.password,
       team: prepared.showdownTeamText,
+      teamMembers: parsedTeamMembers,
       teamVersion: String(body.teamVersion || "manual"),
+      teamSource: String(body.teamSource || "workbench"),
+      teamId: String(body.teamId || ""),
+      teamTitle: String(body.teamTitle || ""),
       games,
       policy: String(body.policy || "structured").trim().toLowerCase(),
     });
@@ -1652,6 +1687,66 @@ function aggregateAgentLearning(traces = [], rulesetId = "", format = "single") 
     opponentMatchups: [...opponentMatchups.values()].sort((a, b) => b.games - a.games),
     eligibleTraceCount: scoped.length,
   };
+}
+
+function learningSnapshot(format = "single", rulesetId = "") {
+  const state = ruleRegistry.publicState();
+  const requested = String(rulesetId || "").trim();
+  const snapshot = requested
+    ? ruleRegistry.get(requested)
+    : ruleRegistry.activeFor(format);
+  if (!snapshot || snapshot.battleType !== format || snapshot.status !== "active") {
+    return ruleRegistry.operational({ format, rulesetId: requested });
+  }
+  const historical = !state.active.some((item) => item.rulesetId === snapshot.rulesetId);
+  if (!historical) return ruleRegistry.operational({ format, rulesetId: snapshot.rulesetId });
+  return { ...snapshot, historical: true };
+}
+
+async function importLocalAgentReplays(snapshot, format) {
+  const replayRoot = join(AGENT_DATA_ROOT, "showdown-replays", snapshot.rulesetId);
+  const traceRoot = join(AGENT_DATA_ROOT, "traces", snapshot.rulesetId);
+  const replayFiles = await readdir(replayRoot).catch(() => []);
+  const existing = await readAgentTraces(snapshot.rulesetId);
+  const imported = new Set(existing.map((item) => item.replayFile).filter(Boolean));
+  let importedCount = 0;
+  await mkdir(traceRoot, { recursive: true });
+  for (const fileName of replayFiles.filter((name) => name.toLowerCase().endsWith(".html"))) {
+    if (imported.has(fileName)) continue;
+    try {
+      const html = await readFile(join(replayRoot, fileName), "utf8");
+      const log = extractLocalReplayLog(html);
+      if (!log) continue;
+      const playerName = fileName.split(" - battle-")[0].trim();
+      const report = parseShowdownReplayLog(log, playerName, "");
+      const eligible = replayMatchesRulesEngine(report.tier, snapshot) && Boolean(report.candidateSide);
+      const trace = {
+        schemaVersion: 1,
+        rulesetId: snapshot.rulesetId,
+        showdownFormatId: snapshot.showdownFormatId,
+        battleType: format,
+        battleId: `local-${fileName}`,
+        replayFile: fileName,
+        policyVersion: "replay-import",
+        startedAt: new Date().toISOString(),
+        finishedAt: new Date().toISOString(),
+        result: report.result,
+        turns: report.turns,
+        opponentName: report.candidateSide === "p1" ? report.players.p2 : report.candidateSide === "p2" ? report.players.p1 : "",
+        events: report.trace.map((line) => ({ type: "replay-line", line })),
+        actions: [],
+        eligibleForBuildFeedback: eligible,
+      };
+      trace.failureAttributions = agentTraceFailureAttribution(trace);
+      const hash = createHash("sha1").update(`${snapshot.rulesetId}:${fileName}`).digest("hex").slice(0, 12);
+      await writeFile(join(traceRoot, `import-${hash}.json`), `${JSON.stringify(trace, null, 2)}\n`, "utf8");
+      imported.add(fileName);
+      importedCount += 1;
+    } catch {
+      // One malformed replay must not hide the other usable local replays.
+    }
+  }
+  return importedCount;
 }
 
 async function learnFromAgentTraces(rulesetId = "", format = "single") {
@@ -3808,6 +3903,51 @@ function showdownTextForHotTeam(team = {}) {
       return lines.join("\n");
     })
     .join("\n\n");
+}
+
+function ladderHotTeamPool(snapshot) {
+  const format = snapshot.battleType === "double" ? "double" : "single";
+  const allTeams = readTeamDataFile()
+    .filter((team) => team.format === format && Array.isArray(team.members) && team.members.length >= 6)
+    .sort((a, b) => Number(b.rate || 0) - Number(a.rate || 0) || Number(a.rank || 9999) - Number(b.rank || 9999));
+  const sameRegulation = allTeams.filter((team) => String(team.season || "").toLowerCase() === String(snapshot.regulation || "").toLowerCase());
+  const sourceTeams = sameRegulation.length ? sameRegulation : allTeams;
+  const formatLabel = format === "double" ? "VGC 双打" : "BSS 单打";
+  const candidates = [];
+  for (const team of sourceTeams) {
+    const rawText = showdownTextForHotTeam(team);
+    if (!rawText) continue;
+    let prepared;
+    try { prepared = prepareBattleTeam(rawText, format, `热门队伍 ${team.id || "unknown"}`, snapshot.rulesetId); } catch { continue; }
+    if (!prepared.ok || !prepared.strictLegal || prepared.teamSize < 6) continue;
+    const parsed = Teams.import(prepared.showdownTeamText) || [];
+    candidates.push({
+      id: String(team.id || `hot-${candidates.length + 1}`),
+      title: String(team.title || `${formatLabel} 热门样本`),
+      source: String(team.source || "热门队伍数据"),
+      sourceSeason: String(team.season || "unknown"),
+      seasonMatched: sameRegulation.length > 0,
+      format,
+      rate: Number(team.rate || 0),
+      rank: Number(team.rank || 9999),
+      rentalCode: String(team.rentalCode || ""),
+      members: parsed.map((member) => {
+        const species = Dex.species.get(member.species);
+        return { name: member.species, slug: species?.id || strictKey(member.species), sprite: Number(species?.num || 0) };
+      }).filter((member) => member.name).slice(0, 6),
+      teamText: prepared.showdownTeamText,
+      rulesetId: snapshot.rulesetId,
+      showdownFormatId: snapshot.showdownFormatId,
+    });
+  }
+  return candidates;
+}
+
+function chooseLadderHotTeam(snapshot) {
+  const pool = ladderHotTeamPool(snapshot);
+  const selected = sampleWeighted(pool, 1)[0] || null;
+  const preview = sampleWeighted(pool, Math.min(120, pool.length));
+  return { pool, selected, preview };
 }
 
 function battleFailureReasons(result, format = "single") {
@@ -7357,7 +7497,7 @@ async function startServer() {
         await handleAccountApi(req, res);
         return;
       }
-      if ((req.method === "GET" && (req.url === "/api/agent/status" || req.url?.startsWith("/api/agent/replays") || req.url?.startsWith("/api/agent/replay/") || req.url?.startsWith("/api/agent/models") || req.url?.startsWith("/api/agent/learning"))) || (req.method === "POST" && ["/api/agent/start", "/api/agent/stop", "/api/agent/promote", "/api/agent/analyze", "/api/agent/analyze-replay", "/api/agent/evolve-team"].includes(req.url || ""))) {
+      if ((req.method === "GET" && (req.url === "/api/agent/status" || req.url?.startsWith("/api/agent/hot-teams") || req.url?.startsWith("/api/agent/replays") || req.url?.startsWith("/api/agent/replay/") || req.url?.startsWith("/api/agent/models") || req.url?.startsWith("/api/agent/learning"))) || (req.method === "POST" && ["/api/agent/start", "/api/agent/stop", "/api/agent/promote", "/api/agent/analyze", "/api/agent/analyze-replay", "/api/agent/evolve-team"].includes(req.url || ""))) {
         await handleAgentApi(req, res);
         return;
       }

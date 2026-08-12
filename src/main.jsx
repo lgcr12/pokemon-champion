@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { createPortal } from "react-dom";
 import {
   Activity,
   AlertTriangle,
@@ -27,6 +28,8 @@ import {
   Search,
   Settings,
   ShieldCheck,
+  Shuffle,
+  Sparkles,
   Swords,
   Target,
   Trophy,
@@ -35,8 +38,63 @@ import {
   Zap,
 } from "lucide-react";
 import "./styles.css";
+import zhHansTerms from "../data/zh-hans-terms.json";
 
 const SPRITE = "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork";
+const ZH_TERMS = {
+  pokemon: {
+    mawile: "大嘴娃", garchomp: "烈咬陆鲨", lucario: "路卡利欧", gengar: "耿鬼", mimikyu: "谜拟丘",
+    rotom: "洛托姆", rotomheat: "加热洛托姆", rotomwash: "清洗洛托姆", hippowdon: "河马兽", greninja: "甲贺忍蛙",
+    pelipper: "大嘴鸥", archaludon: "铝钢桥龙", sinistcha: "来悲粗茶", incineroar: "炽焰咆哮虎", basculegion: "幽尾玄鱼", venusaur: "妙蛙花",
+  },
+  moves: { protect: "守住", fakeout: "击掌奇袭", earthquake: "地震", closecombat: "近身战", shadowball: "暗影球", swordsdance: "剑舞", trickroom: "戏法空间", tailwind: "顺风", flamethrower: "喷射火焰", icebeam: "冰冻光束" },
+  abilities: { intimidate: "威吓", disguise: "画皮", levitate: "飘浮", roughskin: "粗糙皮肤", innerfocus: "精神力", torrent: "激流", drizzle: "降雨" },
+  items: { leftovers: "吃剩的东西", focussash: "气势披带", lifeorb: "生命宝珠", choiceband: "讲究头带", choicescarf: "讲究围巾", assaultvest: "突击背心" },
+};
+
+const NORMALIZED_ZH_TERMS = Object.fromEntries(
+  Object.entries(zhHansTerms || {})
+    .filter(([, value]) => value && typeof value === "object" && !Array.isArray(value))
+    .map(([category, values]) => [category, Object.fromEntries(Object.entries(values).map(([key, value]) => [termKey(key), value]))]),
+);
+
+function termKey(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function localizedTerm(value, category) {
+  const raw = String(value || "");
+  if (!raw) return "";
+  return NORMALIZED_ZH_TERMS[category]?.[termKey(raw)] || ZH_TERMS[category]?.[termKey(raw)] || raw;
+}
+
+function displayValue(value, fallback = "暂无") {
+  if (value == null || value === "") return fallback;
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  if (Array.isArray(value)) return value.map((item) => displayValue(item, "")).filter(Boolean).join(" / ") || fallback;
+  if (typeof value === "object") {
+    const labels = { hp: "HP", atk: "Atk", def: "Def", spa: "SpA", spd: "SpD", spe: "Spe" };
+    return Object.entries(value).map(([key, item]) => `${labels[key] || key} ${item}`).join(" / ") || fallback;
+  }
+  return String(value);
+}
+
+function spriteSlug(value) {
+  const key = termKey(value);
+  const forms = {
+    rotomheat: "rotom-heat",
+    rotomwash: "rotom-wash",
+    rotomfrost: "rotom-frost",
+    rotomfan: "rotom-fan",
+    rotommow: "rotom-mow",
+    ogerponwellspring: "ogerpon-wellspring",
+    ogerponhearthflame: "ogerpon-hearthflame",
+    ogerponcornerstone: "ogerpon-cornerstone",
+    urshifurapidstrike: "urshifu-rapid-strike",
+    urshifusinglestrike: "urshifu-single-strike",
+  };
+  return forms[key] || String(value || "unknown").toLowerCase().replace(/\s+/g, "-");
+}
 
 const initialTeam = [
   { id: "pelipper", name: "Pelipper", localizedName: "大嘴鸥", dex: "279", role: "天气启动 / 速度控制", item: "Focus Sash", itemLabel: "气势披带", ability: "Drizzle", abilityLabel: "降雨", stats: "H1/C32/S32", types: ["水", "飞行"], sprite: 279, locked: true, tone: "water", moves: ["Weather Ball", "Hurricane", "Tailwind", "Protect"], moveLabels: ["气象球", "暴风", "顺风", "守住"] },
@@ -84,7 +142,8 @@ function teamToShowdown(team = []) {
 }
 
 function Sprite({ id, size = "md", muted = false }) {
-  return <img className={`sprite sprite-${size}${muted ? " is-muted" : ""}`} src={`${SPRITE}/${id}.png`} alt="" loading="lazy" />;
+  const source = /^\d+$/.test(String(id || "")) ? `${SPRITE}/${id}.png` : `https://img.pokemondb.net/sprites/scarlet-violet/normal/${spriteSlug(id)}.png`;
+  return <img className={`sprite sprite-${size}${muted ? " is-muted" : ""}`} src={source} alt="" loading="lazy" onError={(event) => { event.currentTarget.style.visibility = "hidden"; }} />;
 }
 
 function StatusPill({ tone = "green", children, icon: Icon }) {
@@ -122,7 +181,7 @@ function Dashboard({ team, onNavigate, agentState, onToggleAgent, onOpenAccount,
       }
     };
     refresh();
-    const timer = window.setInterval(refresh, 5000);
+    const timer = window.setInterval(refresh, 1000);
     return () => { mounted = false; window.clearInterval(timer); };
   }, []);
   const activeRuleset = registry.active?.find((item) => item.battleType === "double") || registry.active?.[0];
@@ -282,29 +341,80 @@ function AgentLearningPanel({ format = "single", rulesetId = "" }) {
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
-  const load = async () => {
-    if (!rulesetId) return;
-    try {
-      setData(await apiRequest(`/api/agent/learning?format=${format}&rulesetId=${encodeURIComponent(rulesetId)}`));
-      setError("");
-    } catch (requestError) { setError(requestError.message); }
+  const [activeRulesetId, setActiveRulesetId] = useState(rulesetId);
+
+  useEffect(() => {
+    setActiveRulesetId(rulesetId);
+  }, [rulesetId]);
+
+  const activeRulesetForFormat = async () => {
+    const registry = await apiRequest("/api/rules/active");
+    const snapshot = registry.active?.find((item) => item.battleType === format && item.status === "active") || registry.active?.find((item) => item.status === "active");
+    if (!snapshot?.rulesetId) throw new Error("当前没有可用的激活规则，暂时无法分析真实对局。");
+    setActiveRulesetId(snapshot.rulesetId);
+    return snapshot.rulesetId;
   };
-  useEffect(() => { load(); }, [format, rulesetId]);
+
+  const load = async (preferredRulesetId = activeRulesetId || rulesetId) => {
+    if (!preferredRulesetId) return;
+    try {
+      const result = await apiRequest(`/api/agent/learning?format=${format}&rulesetId=${encodeURIComponent(preferredRulesetId)}`);
+      if (!result.summary?.games && preferredRulesetId === rulesetId) {
+        const modelData = await apiRequest("/api/agent/models").catch(() => ({ items: [] }));
+        const historicalCandidates = (modelData.items || []).filter((item) => item.rulesetId && item.rulesetId !== preferredRulesetId && item.rulesetId.includes(format === "double" ? "double" : "single"));
+        for (const candidate of historicalCandidates) {
+          const historical = await apiRequest(`/api/agent/learning?format=${format}&rulesetId=${encodeURIComponent(candidate.rulesetId)}`).catch(() => null);
+          if (historical?.summary?.games) {
+            setActiveRulesetId(candidate.rulesetId);
+            setData(historical);
+            setError("");
+            return;
+          }
+        }
+      }
+      setData(result);
+      setError("");
+    } catch (requestError) {
+      if (requestError.data?.code === "RULESET_MISMATCH") {
+        try {
+          const nextRulesetId = await activeRulesetForFormat();
+          setData(await apiRequest(`/api/agent/learning?format=${format}&rulesetId=${encodeURIComponent(nextRulesetId)}`));
+          setError("");
+          return;
+        } catch (retryError) {
+          setError(retryError.message);
+          return;
+        }
+      }
+      setError(requestError.message);
+    }
+  };
+  useEffect(() => { load(rulesetId); }, [format, rulesetId]);
   const run = async (path) => {
     setBusy(path);
+    setError("");
     try {
-      const result = await apiRequest(path, { method: "POST", body: JSON.stringify({ format, rulesetId }) });
-      setData(path.endsWith("evolve-team") ? result : { ...data, summary: result.summary });
-      setError("");
+      let requestRulesetId = activeRulesetId || rulesetId;
+      let result;
+      try {
+        result = await apiRequest(path, { method: "POST", body: JSON.stringify({ format, rulesetId: requestRulesetId }) });
+      } catch (requestError) {
+        if (requestError.data?.code !== "RULESET_MISMATCH") throw requestError;
+        requestRulesetId = await activeRulesetForFormat();
+        result = await apiRequest(path, { method: "POST", body: JSON.stringify({ format, rulesetId: requestRulesetId }) });
+      }
+      setActiveRulesetId(result.rulesetId || requestRulesetId);
+      if (path.endsWith("evolve-team")) setData(result);
+      else await load(result.rulesetId || requestRulesetId);
     } catch (requestError) { setError(requestError.message); }
     finally { setBusy(""); }
   };
   const summary = data?.summary || {};
   const failures = summary.failures || [];
-  return <section className="panel agent-learning-panel"><SectionHeader eyebrow="LEARNING LOOP" title="排位数据与 Challenger" action={<StatusPill icon={Database} tone={summary.games ? "green" : "muted"}>{summary.games || 0} GAMES</StatusPill>} /><div className="learning-toolbar"><button className="secondary-button" onClick={() => run("/api/agent/analyze")} disabled={Boolean(busy)}><RefreshCw size={15} />分析真实对局</button><button className="primary-button" onClick={() => run("/api/agent/evolve-team")} disabled={Boolean(busy)}><GitBranch size={15} />生成 Challenger</button></div><div className="learning-summary"><Metric label="胜率" value={`${summary.winRate || 0}%`} tone="blue" icon={Trophy} /><Metric label="失败归因" value={failures.length} tone="red" icon={Target} /><Metric label="候选队伍" value={data?.candidates?.length || 0} tone="green" icon={Swords} /></div>{failures.length ? <div className="learning-failure-list">{failures.slice(0, 4).map((item) => <div className="learning-failure" key={item.code}><strong>{item.label}</strong><span>{item.count} 次 · {item.avoid}</span></div>)}</div> : <div className="empty-state compact">完成真实对局后，系统会从公开 trace 提取失败原因，再生成同一 rulesetId 下的候选队伍。</div>}{error && <div className="boundary-note"><AlertTriangle size={15} />{error}</div>}</section>;
+  return <section className="panel agent-learning-panel"><SectionHeader eyebrow="LEARNING LOOP" title={`${format === "single" ? "BSS 单打" : "VGC 双打"} · 排位数据与 Challenger`} action={<div className="learning-panel-status"><StatusPill icon={Database} tone={summary.games ? "green" : "muted"}>{summary.games || 0} GAMES</StatusPill>{data?.historical && <StatusPill tone="yellow">历史规则数据</StatusPill>}</div>} /><div className="learning-toolbar"><button className="secondary-button" onClick={() => run("/api/agent/analyze")} disabled={Boolean(busy)}><RefreshCw size={15} className={busy === "/api/agent/analyze" ? "spin" : ""} />{busy === "/api/agent/analyze" ? "分析中..." : data?.historical ? "重新分析历史对局" : "分析真实对局"}</button><button className="primary-button" onClick={() => run("/api/agent/evolve-team")} disabled={Boolean(busy) || Boolean(data?.historical)} title={data?.historical ? "历史规则数据只能复盘，不能生成当前规则 Challenger" : "生成当前规则 Challenger"}><GitBranch size={15} className={busy === "/api/agent/evolve-team" ? "spin" : ""} />{busy === "/api/agent/evolve-team" ? "生成中..." : data?.historical ? "历史数据不可生成" : "生成 Challenger"}</button></div>{data?.historical && <div className="boundary-note"><ShieldCheck size={15} />当前规则已更新，以下数据来自同格式的历史 rulesetId：{activeRulesetId}。可用于复盘和统计，不会混入当前规则排位。</div>}<div className="learning-summary"><Metric label="胜率" value={`${summary.winRate || 0}%`} tone="blue" icon={Trophy} /><Metric label="失败归因" value={failures.length} tone="red" icon={Target} /><Metric label="候选队伍" value={data?.candidates?.length || 0} tone="green" icon={Swords} /></div>{failures.length ? <div className="learning-failure-list">{failures.slice(0, 4).map((item) => <div className="learning-failure" key={item.code}><strong>{item.label}</strong><span>{item.count} 次 · {item.avoid}</span></div>)}</div> : <div className="empty-state compact">完成真实对局后，系统会从公开 trace 提取失败原因，再生成同一 rulesetId 下的候选队伍。</div>}{error && <div className="boundary-note is-error"><AlertTriangle size={15} />{error}</div>}</section>;
 }
 
-function Arena({ agentState, onToggleAgent, onStop, registry }) {
+function LegacyArena({ agentState, onToggleAgent, onStop, registry }) {
   const [status, setStatus] = useState({ status: "IDLE", gamesFinished: 0, gamesRequested: 0 });
   const [error, setError] = useState("");
   const [games, setGames] = useState(1);
@@ -330,12 +440,439 @@ function Arena({ agentState, onToggleAgent, onStop, registry }) {
   return <div className="page arena-page"><div className="page-title-row"><div><span className="eyebrow">AGENT ARENA</span><h1>Agent 控制台</h1><p>这里只显示 sidecar 的真实连接与对局状态。</p></div><div className="toolbar-actions"><StatusPill tone={statusTone} icon={running ? Activity : Pause}>{status.status}</StatusPill><button className="danger-button" onClick={onStop}><CircleStop size={16} />紧急停止</button></div></div><div className="arena-layout"><section className="panel battle-panel"><SectionHeader eyebrow="LADDER SESSION" title={status.username || "尚未启动"} action={<span className="mono muted">{status.showdownFormatId || "NO CONNECTION"}</span>} /><div className="metric-grid"><Metric label="计划对局" value={status.gamesRequested || 0} tone="blue" icon={Swords} /><Metric label="已完成" value={status.gamesFinished || 0} tone="green" icon={Check} /><Metric label="胜利" value={status.wins || 0} tone="green" icon={Trophy} /><Metric label="失败" value={status.losses || 0} tone="red" icon={Target} /></div><div className="agent-config-row"><label>规则格式<select value={selectedFormat?.rulesetId || ""} onChange={(event) => setFormatId(event.target.value)} disabled={sessionActive}>{formats.map((item) => <option key={item.rulesetId} value={item.rulesetId}>{item.battleType === "single" ? "BSS 单打" : "VGC 双打"} · {item.regulation}</option>)}</select></label><label>对局数量<input type="number" min="1" max="10" value={games} onChange={(event) => setGames(Math.max(1, Math.min(10, Number(event.target.value) || 1)))} disabled={sessionActive} /></label><label>策略<select value={policy} onChange={(event) => setPolicy(event.target.value)} disabled={sessionActive}><option value="structured">结构化策略</option><option value="laplace">Laplace 单打实验</option></select></label><span className="config-hint">单账号 · 单连接 · 当前批次最多 10 场</span></div><div className="battle-actions"><button className="primary-button" onClick={() => onToggleAgent({ games, policy, format: selectedFormat?.battleType, rulesetId: selectedFormat?.rulesetId })}>{sessionActive ? <><Pause size={16} />停止 Agent</> : <><Play size={16} />开始 {games} 场排位</>}</button></div>{status.policyFallback && <div className="boundary-note"><AlertTriangle size={15} />{status.policyFallback}</div>}{(status.lastError || error) && <div className="boundary-note"><AlertTriangle size={15} />{status.lastError || error}</div>}</section><section className="panel decision-panel"><SectionHeader eyebrow="POLICY BOUNDARY" title={status.policyVersion || "策略未加载"} action={<StatusPill tone="blue">VISIBLE STATE ONLY</StatusPill>} /><div className="guardrail-box"><div><ShieldCheck size={16} /><strong>运行约束</strong></div><span>Showdown 连接 <b>{status.connectionStatus || "DISCONNECTED"}</b></span><span>匹配状态 <b>{status.queueStatus || "IDLE"}</b></span><span>规则状态 <b>{status.rules || "UNKNOWN"}</b></span><span>并发上限 <b>1</b></span></div><div className="boundary-note"><ShieldCheck size={15} />只有完成身份验证并发出匹配请求后才显示 SEARCHING；真实 replay 在对局完成后保存。</div></section></div></div>;
 }
 
+function BattleBoard({ team = [], status = {}, selectedFormat }) {
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState(null);
+  const [dragging, setDragging] = useState(false);
+  const [focusedId, setFocusedId] = useState(team[0]?.id || "");
+  const dragRef = useRef({
+    pointerId: null,
+    element: null,
+    pointerTarget: null,
+    startX: 0,
+    startY: 0,
+    startLeft: 0,
+    startTop: 0,
+    width: 0,
+    height: 0,
+    pendingLeft: 0,
+    pendingTop: 0,
+    dragging: false,
+    raf: 0,
+  });
+  const snapshot = status.battleSnapshot || {};
+  const ownSnapshot = snapshot.own?.slots?.length ? snapshot.own.slots : (status.submittedTeam || []);
+  const opponentSnapshot = snapshot.opponent?.slots || [];
+  const mergeSnapshotTeam = (members, slots) => {
+    if (!slots.length) return members;
+    if (!members.length) return slots;
+    return members.map((member) => {
+      const key = String(member.name || member.species || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+      const slot = slots.find((item) => String(item.species || item.name || "").toLowerCase().replace(/[^a-z0-9]/g, "") === key);
+      return slot ? { ...member, ...slot, name: member.name || slot.species || slot.name, id: member.id || slot.id } : member;
+    });
+  };
+  const submittedTeam = Array.isArray(status.submittedTeam) ? status.submittedTeam : [];
+  const battleSourceTeam = submittedTeam.length ? submittedTeam : (status.status === "BATTLE" || status.activeBattleId ? ownSnapshot : team);
+  const battleTeam = mergeSnapshotTeam(battleSourceTeam, ownSnapshot);
+  const focused = battleTeam.find((member) => member.id === focusedId) || battleTeam[0];
+  const battleType = selectedFormat?.battleType || status.battleType || "double";
+  const isBattle = status.status === "BATTLE";
+  const isStale = status.battleHealth === "STALE";
+  const publicCount = Math.min(6, opponentSnapshot.length || Number(status.opponentRevealedCount || status.revealedOpponentCount || 0));
+  const hiddenCount = Math.max(0, 6 - publicCount);
+  const boardState = isStale ? "STALE" : isBattle ? "LIVE" : status.status === "SEARCHING" ? "SEARCHING" : "IDLE";
+  const focusName = focused?.localizedName || localizedTerm(focused?.name || focused?.species, "pokemon") || "未选择宝可梦";
+  const focusMoves = focused?.moves || [];
+  const battleSourceLabel = status.teamSource === "hot" ? (status.teamTitle || "规则内热门队伍") : "排位提交队伍";
+  const displayName = (member) => member?.localizedName || localizedTerm(member?.name || member?.species, "pokemon") || member?.name || "未知宝可梦";
+  const displayMove = (move, member, index) => member?.moveLabels?.[index] || localizedTerm(move, "moves") || move;
+  const displayAbility = (member) => member?.abilityLabel || localizedTerm(member?.ability, "abilities") || member?.ability || "未知特性";
+  const displayItem = (member) => member?.itemLabel || localizedTerm(member?.item, "items") || member?.item || "未公开道具";
+  const displayStatus = (value) => {
+    const raw = String(value || "").trim().toLowerCase();
+    if (!raw) return "已公开";
+    if (raw.includes("fnt") || raw.includes("fainted")) return "已倒下";
+    return ({ brn: "烧伤", par: "麻痹", slp: "睡眠", frz: "冰冻", psn: "中毒", tox: "剧毒" }[raw] || value);
+  };
+
+  useEffect(() => {
+    if (battleTeam.length && !battleTeam.some((member) => member.id === focusedId)) setFocusedId(battleTeam[0].id);
+  }, [battleTeam, focusedId]);
+
+  useEffect(() => {
+    const clampPosition = (left, top, width, height) => ({
+      left: Math.max(8, Math.min(window.innerWidth - width - 8, left)),
+      top: Math.max(8, Math.min(window.innerHeight - height - 8, top)),
+    });
+
+    const flushPosition = () => {
+      const drag = dragRef.current;
+      drag.raf = 0;
+      if (!drag.dragging) return;
+      if (drag.element) {
+        drag.element.style.left = `${drag.pendingLeft}px`;
+        drag.element.style.top = `${drag.pendingTop}px`;
+        drag.element.style.right = "auto";
+        drag.element.style.bottom = "auto";
+      }
+    };
+
+    const move = (event) => {
+      const drag = dragRef.current;
+      if (drag.pointerId == null || event.pointerId !== drag.pointerId) return;
+
+      if (!drag.dragging) {
+        const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+        if (distance < 5) return;
+        drag.dragging = true;
+        setDragging(true);
+        setPosition({ left: drag.startLeft, top: drag.startTop });
+        document.body.classList.add("is-dragging-battle-board");
+        try {
+          drag.pointerTarget?.setPointerCapture(event.pointerId);
+        } catch {
+          // Pointer capture can fail when the browser cancels the pointer.
+        }
+      }
+
+      const next = clampPosition(
+        drag.startLeft + event.clientX - drag.startX,
+        drag.startTop + event.clientY - drag.startY,
+        drag.width,
+        drag.height,
+      );
+      drag.pendingLeft = next.left;
+      drag.pendingTop = next.top;
+      if (!drag.raf) drag.raf = window.requestAnimationFrame(flushPosition);
+    };
+
+    const up = (event) => {
+      const drag = dragRef.current;
+      if (drag.pointerId == null || (event.pointerId != null && event.pointerId !== drag.pointerId)) return;
+      if (drag.raf) window.cancelAnimationFrame(drag.raf);
+      drag.raf = 0;
+      if (drag.dragging) {
+        if (drag.element) {
+          drag.element.style.left = `${drag.pendingLeft}px`;
+          drag.element.style.top = `${drag.pendingTop}px`;
+          drag.element.style.right = "auto";
+          drag.element.style.bottom = "auto";
+        }
+        setPosition({ left: drag.pendingLeft, top: drag.pendingTop });
+      }
+      try {
+        if (drag.pointerTarget?.hasPointerCapture(drag.pointerId)) drag.pointerTarget.releasePointerCapture(drag.pointerId);
+      } catch {
+        // The pointer may already have been released by the browser.
+      }
+      dragRef.current = {
+        pointerId: null,
+        element: null,
+        pointerTarget: null,
+        startX: 0,
+        startY: 0,
+        startLeft: 0,
+        startTop: 0,
+        width: 0,
+        height: 0,
+        pendingLeft: 0,
+        pendingTop: 0,
+        dragging: false,
+        raf: 0,
+      };
+      setDragging(false);
+      document.body.classList.remove("is-dragging-battle-board");
+    };
+
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+    return () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      if (dragRef.current.raf) window.cancelAnimationFrame(dragRef.current.raf);
+      document.body.classList.remove("is-dragging-battle-board");
+    };
+  }, []);
+
+  const beginDrag = (event) => {
+    if (event.target.closest("button")) return;
+    const element = event.currentTarget.closest(".battle-board");
+    if (!element) return;
+    const rect = element.getBoundingClientRect();
+    dragRef.current = {
+      pointerId: event.pointerId,
+      element,
+      pointerTarget: event.currentTarget,
+      startX: event.clientX,
+      startY: event.clientY,
+      startLeft: rect.left,
+      startTop: rect.top,
+      width: rect.width,
+      height: rect.height,
+      pendingLeft: rect.left,
+      pendingTop: rect.top,
+      dragging: false,
+      raf: 0,
+    };
+    event.preventDefault();
+  };
+
+  const panelStyle = position ? { left: `${position.left}px`, top: `${position.top}px`, right: "auto", bottom: "auto" } : undefined;
+  const statusName = (value) => ({ brn: "烧伤", par: "麻痹", slp: "睡眠", frz: "冰冻", psn: "中毒", tox: "剧毒" }[String(value || "").toLowerCase()] || value);
+  const spriteId = (member) => member?.sprite || member?.num || 0;
+  const hpPercent = (member) => member?.hpFraction == null ? 100 : Math.round(Number(member.hpFraction) * 100);
+
+  return <>
+    {!open && <button type="button" className={`battle-ball-trigger board-state-${boardState.toLowerCase()}`} onClick={() => setOpen(true)} aria-label="Open battle board" title="Open battle board"><span /><i /><b>VS</b></button>}
+    {open && createPortal(<section style={panelStyle} className={`battle-board board-state-${boardState.toLowerCase()} ${dragging ? "is-dragging" : ""}`} aria-label="Interactive battle board">
+    <div className="battle-board-head" onPointerDown={beginDrag} title="拖动移动对战面板">
+      <div><span className="eyebrow">对战面板</span><h2>实时对战视图</h2><p>本场使用：{battleSourceLabel} · 只显示 Showdown 已公开的信息。</p></div>
+      <div className="battle-board-head-actions"><div className="battle-board-status"><span className="battle-board-live-dot" />{({ LIVE: "对战中", SEARCHING: "搜索中", STALE: "连接延迟", IDLE: "空闲" }[boardState] || boardState)}<small>{battleType === "single" ? "BSS 单打" : "VGC 双打"}</small></div><button type="button" className="battle-board-close" onClick={() => setOpen(false)} aria-label="关闭对战面板"><X size={17} /></button></div>
+    </div>
+    <div className="battle-board-field">
+      <div className="battle-board-side battle-board-side-player">
+        <div className="battle-side-label"><span>我方队伍</span><strong>{battleTeam.length || 0} 只</strong></div>
+        <div className="battle-mon-grid">{battleTeam.map((member, index) => <button type="button" key={`${member.id}-${index}`} className={`battle-mon-card ${focused?.id === member.id ? "is-focused" : ""} ${member.active ? "is-active" : ""} ${member.fainted ? "is-fainted" : ""}`} onClick={() => setFocusedId(member.id)} aria-pressed={focused?.id === member.id} aria-label={`Focus ${member.name}`}>
+          <span className="battle-slot-number">{String(index + 1).padStart(2, "0")}</span>
+          <div className={`battle-mon-art tone-${member.tone}`}><Sprite id={spriteId(member)} size="sm" /></div>
+          <strong>{displayName(member)}</strong><small>{member.role || "已提交配置"}</small>
+          <i className="battle-hp-mini"><b style={{ width: `${hpPercent(member)}%` }} /></i>
+        </button>)}</div>
+      </div>
+      <div className="battle-vs-core" aria-hidden="true"><i /><strong>VS</strong><span>{status.lastDecisionTurn ? `第 ${status.lastDecisionTurn} 回合` : "准备中"}</span></div>
+      <div className="battle-board-side battle-board-side-opponent">
+        <div className="battle-side-label"><span>对手队伍</span><strong>{publicCount ? `已公开 ${publicCount} / 6` : "尚未公开 0 / 6"}</strong></div>
+        <div className="battle-unknown-grid">{Array.from({ length: 6 }, (_, index) => { const member = opponentSnapshot[index]; return <div className={`battle-unknown-slot ${member ? "is-public" : ""} ${member?.fainted ? "is-fainted" : ""}`} key={member?.id || index}>{member && <div className="battle-opponent-art"><Sprite id={spriteId(member) || member.slug} size="sm" /></div>}<span>{member ? displayName(member) : "未公开"}</span>{member && <><strong>{member.active ? "当前在场" : member.status ? displayStatus(member.status) : "已公开"}</strong><i className="battle-hp-mini"><b style={{ width: `${hpPercent(member)}%` }} /></i></>}<em /></div>; })}</div>
+        <div className="battle-public-note"><ShieldCheck size={15} /><span>{publicCount ? `Showdown 已公开 ${publicCount} 只，${hiddenCount} 个位置仍未公开` : "等待 Showdown 公开对手信息"}</span></div>
+      </div>
+    </div>
+    <div className="battle-mon-focus">
+      <div className="battle-focus-art"><Sprite id={spriteId(focused) || spriteId(battleTeam[0])} size="lg" /></div>
+      <div className="battle-focus-copy"><span className="eyebrow">当前焦点</span><h3>{focusName}</h3><p>{displayValue(focused?.role, "点击我方宝可梦查看本场配置。")}</p><div className="battle-focus-meta"><span>{displayItem(focused)}</span><span>{displayAbility(focused)}</span><span>{displayValue(focused?.stats, "未公开配招数值")}</span></div></div>
+      <div className="battle-move-list"><span className="eyebrow">招式配置</span><div>{focusMoves.length ? focusMoves.map((move, index) => <span key={`${move}-${index}`}>{displayMove(move, focused, index)}</span>) : <em>暂无招式信息</em>}</div></div>
+    </div>
+    <div className="battle-status-line"><span className="battle-status-marker" /><strong>{isStale ? "连接延迟，等待服务器响应" : isBattle ? "Agent 正在读取实时对战" : status.status === "SEARCHING" ? "正在搜索合法对手" : "等待下一场对战"}</strong><span className="battle-field-effects">{snapshot.weather ? `天气：${snapshot.weather}` : "天气：无"} · {snapshot.terrain ? `场地：${snapshot.terrain}` : "场地：无"}</span><span className="mono">{status.activeBattleId || "暂无对局"}</span><span className="battle-last-action">{status.lastSentMessage ? `最近动作：${status.lastSentMessage}` : "尚未提交动作"}</span></div>
+    </section>, document.body)}
+  </>;
+}
+
+function ArenaCommandCenter({ team, agentState, onToggleAgent, onStop, registry }) {
+  const [status, setStatus] = useState({ status: "IDLE", gamesFinished: 0, gamesRequested: 0 });
+  const [error, setError] = useState("");
+  const [games, setGames] = useState(1);
+  const [policy, setPolicy] = useState("structured");
+  const [teamMode, setTeamMode] = useState("workbench");
+  const [hotTeams, setHotTeams] = useState([]);
+  const [hotPoolTotal, setHotPoolTotal] = useState(0);
+  const [hotTeam, setHotTeam] = useState(null);
+  const [hotLoading, setHotLoading] = useState(false);
+  const [hotError, setHotError] = useState("");
+  const formats = registry?.active || [];
+  const [formatId, setFormatId] = useState("");
+
+  useEffect(() => {
+    let mounted = true;
+    const refresh = async () => {
+      try {
+        const next = await apiRequest("/api/agent/status");
+        if (mounted) { setStatus(next); setError(""); }
+      } catch (requestError) {
+        if (mounted) setError(requestError.message);
+      }
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 1000);
+    return () => { mounted = false; window.clearInterval(timer); };
+  }, []);
+
+  const running = connectedAgentStatuses.has(status.status) || agentState === "active";
+  const sessionActive = running || pendingAgentStatuses.has(status.status) || agentState === "starting";
+  const selectedFormat = formats.find((item) => item.rulesetId === formatId) || formats.find((item) => item.battleType === "double") || formats[0];
+  const health = status.battleHealth || (status.status === "BATTLE" ? "ACTIVE" : status.status);
+  const statusLabel = { CONNECTING: "连接中", AUTHENTICATED: "已登录", SEARCHING: "搜索对手", BATTLE: "对战中", STOPPED: "已停止", COMPLETE: "批次完成", FAILED: "连接失败", IDLE: "空闲" }[status.status] || status.status || "未知";
+  const healthLabel = health === "STALE" ? "等待服务器响应" : health === "ACTIVE" ? "实时运行" : statusLabel;
+  const statusTone = health === "STALE" ? "yellow" : running ? "green" : pendingAgentStatuses.has(status.status) ? "blue" : status.status === "FAILED" ? "yellow" : "muted";
+  const progress = status.gamesRequested ? Math.min(100, Math.round((Number(status.gamesFinished || 0) / Number(status.gamesRequested)) * 100)) : 0;
+  const lastActivity = status.lastActivityAt ? new Date(status.lastActivityAt).toLocaleTimeString() : "暂无";
+
+  useEffect(() => {
+    if (policy === "laplace") {
+      const single = formats.find((item) => item.battleType === "single");
+      if (single) setFormatId(single.rulesetId);
+    }
+  }, [policy, formats]);
+
+  const loadHotTeams = async () => {
+    if (!selectedFormat?.rulesetId) return;
+    setHotLoading(true);
+    setHotError("");
+    try {
+      const data = await apiRequest(`/api/agent/hot-teams?format=${selectedFormat.battleType}&rulesetId=${encodeURIComponent(selectedFormat.rulesetId)}&limit=120`);
+      setHotTeams(data.items || []);
+      setHotPoolTotal(Number(data.total || data.items?.length || 0));
+      setHotTeam(data.selected || data.items?.[0] || null);
+    } catch (requestError) {
+      setHotError(requestError.message);
+      setHotTeams([]);
+      setHotPoolTotal(0);
+      setHotTeam(null);
+    } finally {
+      setHotLoading(false);
+    }
+  };
+
+  useEffect(() => { if (teamMode === "hot") loadHotTeams(); }, [teamMode, selectedFormat?.rulesetId]);
+
+  const rerollHotTeam = () => {
+    if (!hotTeams.length) return loadHotTeams();
+    const choices = hotTeams.filter((item) => item.id !== hotTeam?.id);
+    const pool = choices.length ? choices : hotTeams;
+    setHotTeam(pool[Math.floor(Math.random() * pool.length)]);
+  };
+  const selectedTeamText = teamMode === "hot" ? hotTeam?.teamText || "" : "";
+  const selectedTeamLabel = teamMode === "hot" ? hotTeam?.title || "规则内热门队伍" : "当前配队工坊队伍";
+  const route = [
+    ["身份", status.connectionStatus || "DISCONNECTED", ["AUTHENTICATED", "CONNECTED"].includes(status.connectionStatus)],
+    ["匹配", status.queueStatus || "IDLE", ["SEARCH_SENT", "SEARCH_CONFIRMED"].includes(status.queueStatus)],
+    ["对局", status.activeBattleId ? "LIVE" : status.status === "BATTLE" ? "WAITING" : "IDLE", status.status === "BATTLE"],
+  ];
+  const signalItems = [
+    { icon: Activity, label: status.lastServerEvent || "等待 Showdown 事件", value: lastActivity, tone: health === "STALE" ? "yellow" : "green" },
+    { icon: Zap, label: status.lastSentMessage ? `最近动作 ${status.lastSentMessage}` : "尚未发送动作", value: `${status.decisionCount || 0} decisions`, tone: "blue" },
+    { icon: Database, label: `${status.requestCount || 0} requests / ${status.turnEventCount || 0} turns`, value: status.activeBattleId || "无活动对局", tone: "muted" },
+  ];
+
+  return <div className={`page arena-page arena-command-page arena-health-${String(health).toLowerCase()} motion-fade-in`}>
+    <BattleBoard team={team} status={status} selectedFormat={selectedFormat} />
+    <header className="arena-command-hero"><div className="arena-hero-copy"><div className="arena-kicker"><span className="arena-live-dot" />AGENT OPERATIONS <span>/</span> SHOWDOWN LADDER</div><h1>竞技场控制台</h1><p>从队伍来源到实时事件，都在同一个可追踪的操作面内完成。</p></div><div className="arena-hero-status"><div className="arena-status-orbit"><span /><span /><span /></div><div><span>当前状态</span><strong>{healthLabel}</strong><small>{status.lastServerEvent || "等待连接事件"}</small></div></div></header>
+
+    <div className="arena-summary-strip"><div className="arena-summary-main"><span className="eyebrow">LADDER SESSION</span><strong>{status.username || "专用账号尚未启动"}</strong><small>{status.showdownFormatId || "NO FORMAT SELECTED"} · {status.rulesetId || "等待规则快照"}</small></div><div className="arena-summary-stat"><span>完成进度</span><strong>{status.gamesFinished || 0}<em>/{status.gamesRequested || 0}</em></strong><i><b style={{ width: `${progress}%` }} /></i></div><div className="arena-summary-stat"><span>战绩</span><strong>{status.wins || 0}<em>W</em> <b>{status.losses || 0}<em>L</em></b></strong><small>{status.ties || 0} ties</small></div><div className="arena-summary-stat"><span>最近活动</span><strong>{lastActivity}</strong><small>{status.activeBattleId ? "battle active" : "no active battle"}</small></div></div>
+
+    <div className="arena-command-grid"><section className="arena-command-surface"><div className="arena-surface-head"><div><span className="eyebrow">MISSION CONTROL</span><h2>启动一批排位对局</h2><p>规则、策略和队伍在提交前固定，运行中不可切换。</p></div><StatusPill tone={statusTone} icon={health === "STALE" ? AlertTriangle : running ? Activity : Pause}>{healthLabel}</StatusPill></div><div className="arena-route-rail">{route.map(([label, value, active], index) => <div className={`arena-route-step ${active ? "is-active" : ""} ${index < route.length - 1 ? "has-link" : ""}`} key={label}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{label}</strong><small>{value}</small></div></div>)}</div><div className="arena-form-grid"><label><span>规则格式</span><select value={selectedFormat?.rulesetId || ""} onChange={(event) => setFormatId(event.target.value)} disabled={sessionActive}>{formats.map((item) => <option key={item.rulesetId} value={item.rulesetId}>{item.battleType === "single" ? "BSS 单打" : "VGC 双打"} · {item.regulation}</option>)}</select></label><label><span>对局数量</span><input type="number" min="1" max="10" value={games} onChange={(event) => setGames(Math.max(1, Math.min(10, Number(event.target.value) || 1)))} disabled={sessionActive} /></label><label><span>策略引擎</span><select value={policy} onChange={(event) => setPolicy(event.target.value)} disabled={sessionActive}><option value="structured">结构化策略</option><option value="laplace">Laplace 单打实验</option></select></label></div><div className="arena-team-source"><div className="arena-source-head"><div><span className="eyebrow">TEAM SOURCE</span><strong>{selectedTeamLabel}</strong></div><span className="arena-source-id">{teamMode === "hot" ? hotTeam?.id || "WAITING" : "FORGE WORKSPACE"}</span></div><div className="arena-segmented"><button className={teamMode === "workbench" ? "is-active" : ""} onClick={() => setTeamMode("workbench")} disabled={sessionActive}><Swords size={15} />当前配队</button><button className={teamMode === "hot" ? "is-active" : ""} onClick={() => setTeamMode("hot")} disabled={sessionActive}><Sparkles size={15} />热门随机</button></div>{teamMode === "hot" && <div className="arena-hot-preview"><div className="arena-hot-heading"><div><strong>{hotTeam?.title || (hotLoading ? "正在抽取队伍" : "暂无队伍")}</strong><small>{hotTeam ? `${hotTeam.source} · ${hotTeam.sourceSeason} · ${hotTeam.rate ? `${hotTeam.rate}% 使用率` : `排名 #${hotTeam.rank || "-"}`}` : "仅展示通过当前 rulesetId 校验的完整队伍"}</small></div><button className="icon-text-button" onClick={rerollHotTeam} disabled={hotLoading || sessionActive}><Shuffle size={15} />重新抽取</button></div>{hotTeam?.members?.length ? <div className="arena-hot-members">{hotTeam.members.map((member) => <div key={`${hotTeam.id}-${member.slug}`}><div>{member.sprite ? <Sprite id={member.sprite} size="sm" /> : <Sparkles size={16} />}</div><span>{member.name}</span></div>)}</div> : <div className="arena-hot-empty">{hotError || (hotLoading ? "正在验证当前规则下的完整队伍..." : "暂无通过当前规则校验的热门队伍")}</div>}<small className={`arena-hot-footnote ${hotTeam?.seasonMatched ? "is-current" : ""}`}>{hotTeam?.seasonMatched ? `数据赛季匹配 ${selectedFormat?.regulation}` : `数据源 ${hotTeam?.sourceSeason || "未知"}，已按 ${selectedFormat?.regulation} 重新校验`}</small></div>}</div><div className="arena-command-footer"><div><span>本次提交队伍</span><strong>{selectedTeamLabel}</strong></div><button className="arena-primary-cta" onClick={() => onToggleAgent({ games, policy, format: selectedFormat?.battleType, rulesetId: selectedFormat?.rulesetId, teamText: selectedTeamText, teamSource: teamMode, teamId: hotTeam?.id || "", teamTitle: hotTeam?.title || "" })} disabled={teamMode === "hot" && !hotTeam}>{sessionActive ? <><Pause size={16} />停止 Agent</> : <><Play size={16} />开始 {games} 场排位</>}</button></div>{(status.lastError || error) && <div className="arena-error"><AlertTriangle size={16} />{status.lastError || error}</div>}{status.policyFallback && <div className="arena-info"><ShieldCheck size={16} />{status.policyFallback}</div>}</section>
+
+      <aside className="arena-side-column"><section className="arena-telemetry-surface"><div className="arena-surface-head compact"><div><span className="eyebrow">LIVE TELEMETRY</span><h2>运行遥测</h2></div><span className="arena-health-chip"><i />{status.status || "IDLE"}</span></div><div className="arena-telemetry-grid"><div><span>当前对局</span><strong className="mono">{status.activeBattleId ? status.activeBattleId.replace(/^battle-/, "") : "无"}</strong></div><div><span>当前回合</span><strong>{status.lastDecisionTurn || 0}</strong></div><div><span>已收请求</span><strong>{status.requestCount || 0}</strong></div><div><span>已发决策</span><strong>{status.decisionCount || 0}</strong></div></div><div className="arena-telemetry-line"><span>连接</span><b>{status.connectionStatus || "DISCONNECTED"}</b><span>规则</span><b>{status.rules || "UNKNOWN"}</b></div></section><section className="arena-signal-surface"><div className="arena-surface-head compact"><div><span className="eyebrow">SIGNAL STREAM</span><h2>事件流</h2></div><span className="arena-stream-line" /></div><div className="arena-signal-list">{signalItems.map(({ icon: Icon, label, value, tone }) => <div className={`arena-signal-item signal-${tone}`} key={`${label}-${value}`}><Icon size={15} /><div><strong>{label}</strong><small>{value}</small></div></div>)}</div>{health === "STALE" && <div className="arena-stale-note"><AlertTriangle size={15} />超过 {status.staleForSeconds || 0} 秒没有新的服务器事件</div>}</section></aside></div>
+  </div>;
+}
+
+function Arena({ agentState, onToggleAgent, onStop, registry }) {
+  const [status, setStatus] = useState({ status: "IDLE", gamesFinished: 0, gamesRequested: 0 });
+  const [error, setError] = useState("");
+  const [games, setGames] = useState(1);
+  const [policy, setPolicy] = useState("structured");
+  const [teamMode, setTeamMode] = useState("workbench");
+  const [hotTeams, setHotTeams] = useState([]);
+  const [hotTeam, setHotTeam] = useState(null);
+  const [hotLoading, setHotLoading] = useState(false);
+  const [hotError, setHotError] = useState("");
+  const formats = registry?.active || [];
+  const [formatId, setFormatId] = useState("");
+
+  useEffect(() => {
+    let mounted = true;
+    const refresh = async () => {
+      try {
+        const next = await apiRequest("/api/agent/status");
+        if (mounted) {
+          setStatus(next);
+          setError("");
+        }
+      } catch (requestError) {
+        if (mounted) setError(requestError.message);
+      }
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 1000);
+    return () => { mounted = false; window.clearInterval(timer); };
+  }, []);
+
+  const running = connectedAgentStatuses.has(status.status) || agentState === "active";
+  const sessionActive = running || pendingAgentStatuses.has(status.status) || agentState === "starting";
+  const selectedFormat = formats.find((item) => item.rulesetId === formatId) || formats.find((item) => item.battleType === "double") || formats[0];
+  const health = status.battleHealth || (status.status === "BATTLE" ? "ACTIVE" : status.status);
+  const statusLabel = {
+    CONNECTING: "连接中",
+    AUTHENTICATED: "已登录",
+    SEARCHING: "搜索对手",
+    BATTLE: "对战中",
+    STOPPED: "已停止",
+    COMPLETE: "本批次完成",
+    FAILED: "连接失败",
+    IDLE: "空闲",
+  }[status.status] || status.status || "未知";
+  const healthLabel = health === "STALE" ? "等待 Showdown 响应" : health === "ACTIVE" ? "实时活动" : statusLabel;
+  const statusTone = health === "STALE" ? "yellow" : running ? "green" : pendingAgentStatuses.has(status.status) ? "blue" : status.status === "FAILED" ? "yellow" : "muted";
+  const lastActivity = status.lastActivityAt ? new Date(status.lastActivityAt).toLocaleTimeString() : "暂无";
+
+  useEffect(() => {
+    if (policy === "laplace") {
+      const single = formats.find((item) => item.battleType === "single");
+      if (single) setFormatId(single.rulesetId);
+    }
+  }, [policy, formats]);
+
+  const loadHotTeams = async () => {
+    if (!selectedFormat?.rulesetId) return;
+    setHotLoading(true);
+    setHotError("");
+    try {
+      const data = await apiRequest(`/api/agent/hot-teams?format=${selectedFormat.battleType}&rulesetId=${encodeURIComponent(selectedFormat.rulesetId)}&limit=24`);
+      setHotTeams(data.items || []);
+      setHotTeam(data.selected || data.items?.[0] || null);
+    } catch (requestError) {
+      setHotError(requestError.message);
+      setHotTeams([]);
+      setHotTeam(null);
+    } finally {
+      setHotLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (teamMode === "hot") loadHotTeams();
+  }, [teamMode, selectedFormat?.rulesetId]);
+
+  const rerollHotTeam = () => {
+    if (!hotTeams.length) return loadHotTeams();
+    const choices = hotTeams.filter((item) => item.id !== hotTeam?.id);
+    setHotTeam((choices.length ? choices : hotTeams)[Math.floor(Math.random() * (choices.length ? choices : hotTeams).length)]);
+  };
+  const selectedTeamText = teamMode === "hot" ? hotTeam?.teamText || "" : "";
+  const selectedTeamLabel = teamMode === "hot" ? hotTeam?.title || "规则内热门队伍" : "当前配队工坊队伍";
+
+  return <div className={`page arena-page motion-fade-in arena-health-${String(health).toLowerCase()}`}>
+    <div className="page-title-row"><div><span className="eyebrow">AGENT ARENA</span><h1>Agent 控制台</h1><p>状态来自 sidecar 与 Showdown 事件流，每秒刷新。</p></div><div className="toolbar-actions"><StatusPill tone={statusTone} icon={health === "STALE" ? AlertTriangle : running ? Activity : Pause}>{healthLabel}</StatusPill><button className="danger-button" onClick={onStop}><CircleStop size={16} />紧急停止</button></div></div>
+    <div className="arena-layout"><section className="panel battle-panel"><SectionHeader eyebrow="LADDER SESSION" title={status.username || "尚未启动"} action={<span className="mono muted">{status.showdownFormatId || "NO CONNECTION"}</span>} /><div className="metric-grid"><Metric label="计划对局" value={status.gamesRequested || 0} tone="blue" icon={Swords} /><Metric label="已完成" value={status.gamesFinished || 0} tone="green" icon={Check} /><Metric label="胜利" value={status.wins || 0} tone="green" icon={Trophy} /><Metric label="失败" value={status.losses || 0} tone="red" icon={Target} /></div><div className="agent-config-row"><label>规则格式<select value={selectedFormat?.rulesetId || ""} onChange={(event) => setFormatId(event.target.value)} disabled={sessionActive}>{formats.map((item) => <option key={item.rulesetId} value={item.rulesetId}>{item.battleType === "single" ? "BSS 单打" : "VGC 双打"} · {item.regulation}</option>)}</select></label><label>对局数量<input type="number" min="1" max="10" value={games} onChange={(event) => setGames(Math.max(1, Math.min(10, Number(event.target.value) || 1)))} disabled={sessionActive} /></label><label>策略<select value={policy} onChange={(event) => setPolicy(event.target.value)} disabled={sessionActive}><option value="structured">结构化策略</option><option value="laplace">Laplace 单打实验</option></select></label><span className="config-hint">单账号 · 单连接 · 当前批次最多 10 场</span></div><div className="team-source-switch" role="group" aria-label="排位队伍来源"><button className={teamMode === "workbench" ? "is-active" : ""} onClick={() => setTeamMode("workbench")} disabled={sessionActive}><Swords size={15} />当前配队</button><button className={teamMode === "hot" ? "is-active" : ""} onClick={() => setTeamMode("hot")} disabled={sessionActive}><Sparkles size={15} />规则内热门随机</button></div>{teamMode === "hot" && <div className="hot-team-picker"><div className="hot-team-head"><div><span className="eyebrow">RULE-SCOPED HOT POOL</span><strong>{hotTeam?.title || (hotLoading ? "正在抽取热门队伍" : "尚未抽取队伍")}</strong><small>{hotTeam ? `${hotTeam.source} · ${hotTeam.sourceSeason} · ${hotTeam.rate ? `${hotTeam.rate}% 使用率` : `排名 #${hotTeam.rank || "-"}`}` : "只使用当前规则可通过校验的完整队伍"}</small></div><button className="secondary-button" onClick={rerollHotTeam} disabled={hotLoading || sessionActive}><Shuffle size={15} />重新抽取</button></div>{hotTeam?.members?.length ? <div className="hot-team-members">{hotTeam.members.map((member) => <div className="hot-team-member" key={`${hotTeam.id}-${member.slug}`}><div className="hot-team-sprite">{member.sprite ? <Sprite id={member.sprite} size="sm" /> : <Sparkles size={16} />}</div><span>{member.name}</span></div>)}</div> : <div className="hot-team-empty">{hotError || (hotLoading ? "正在验证当前规则下的完整队伍..." : "暂无通过当前规则校验的热门队伍")}</div>}{hotTeam && <div className={`hot-team-validity ${hotTeam.seasonMatched ? "is-current" : ""}`}><span className="dot dot-green" />{hotTeam.seasonMatched ? `数据赛季匹配 ${selectedFormat?.regulation}` : `数据源赛季 ${hotTeam.sourceSeason || "未知"}，已按 ${selectedFormat?.regulation} 重新校验`}</div>}</div>}<div className="selected-team-bar"><div><span>本批次实际队伍</span><strong>{selectedTeamLabel}</strong></div><span className="mono">{teamMode === "hot" ? hotTeam?.id || "等待选择" : "forge-ui"}</span></div><div className="battle-actions"><button className="primary-button" onClick={() => onToggleAgent({ games, policy, format: selectedFormat?.battleType, rulesetId: selectedFormat?.rulesetId, teamText: selectedTeamText, teamSource: teamMode, teamId: hotTeam?.id || "", teamTitle: hotTeam?.title || "" })} disabled={teamMode === "hot" && !hotTeam}>{sessionActive ? <><Pause size={16} />停止 Agent</> : <><Play size={16} />开始 {games} 场排位</>}</button></div>{status.policyFallback && <div className="boundary-note"><AlertTriangle size={15} />{status.policyFallback}</div>}{(status.lastError || error) && <div className="boundary-note is-error"><AlertTriangle size={15} />{status.lastError || error}</div>}</section>
+      <section className={`panel decision-panel telemetry-panel ${health === "ACTIVE" ? "is-live" : ""}`}><SectionHeader eyebrow="LIVE TELEMETRY" title={healthLabel} action={<StatusPill tone={statusTone}>{status.status || "IDLE"}</StatusPill>} /><div className="guardrail-box"><div><Activity size={16} /><strong>实时对局数据</strong><span className="telemetry-pulse" aria-hidden="true" /></div><span>连接 <b>{status.connectionStatus || "DISCONNECTED"}</b></span><span>匹配 <b>{status.queueStatus || "IDLE"}</b></span><span>当前对局 <b className="mono">{status.activeBattleId || "无"}</b></span><span>最近活动 <b>{lastActivity}</b></span><span>当前回合 <b>{status.lastDecisionTurn || 0}</b></span><span>已收请求 <b>{status.requestCount || 0}</b></span><span>已发决策 <b>{status.decisionCount || 0}</b></span><span>回合事件 <b>{status.turnEventCount || 0}</b></span></div><div className="boundary-note"><ShieldCheck size={15} />最近事件：{status.lastServerEvent || "等待 Showdown 事件"}。最近动作：<span className="mono">{status.lastSentMessage || "暂无"}</span></div>{health === "STALE" && <div className="boundary-note is-error"><AlertTriangle size={15} />已超过 {status.staleForSeconds || 0} 秒没有新的服务端事件。请先观察连接状态，再决定是否停止，不会自动重复提交动作。</div>}</section></div>
+  </div>;
+}
+
 function Replays() {
   const [items, setItems] = useState([]);
   const [selected, setSelected] = useState(null);
   const [selectedReplay, setSelectedReplay] = useState("");
   const [error, setError] = useState("");
-  useEffect(() => { apiRequest("/api/agent/replays").then((data) => { const nextItems = data.items || []; setItems(nextItems); setSelected(nextItems[0] || null); setSelectedReplay(nextItems[0]?.replayFiles?.[0] || nextItems[0]?.replays?.[0]?.fileName || ""); }).catch((requestError) => setError(requestError.message)); }, []);
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      try {
+        const data = await apiRequest("/api/agent/replays");
+        if (!mounted) return;
+        const nextItems = data.items || [];
+        setItems(nextItems);
+        setSelected((current) => current ? nextItems.find((item) => item.batchId === current.batchId) || current : nextItems[0] || null);
+        setSelectedReplay((current) => current || nextItems[0]?.replayFiles?.[0] || nextItems[0]?.replays?.[0]?.fileName || "");
+        setError("");
+      } catch (requestError) {
+        if (mounted) setError(requestError.message);
+      }
+    };
+    load();
+    const timer = window.setInterval(load, 2000);
+    return () => { mounted = false; window.clearInterval(timer); };
+  }, []);
   const replayUrl = selected && selectedReplay ? `/api/agent/replay/${encodeURIComponent(selected.rulesetId)}/${encodeURIComponent(selectedReplay)}` : "";
   return <div className="page"><div className="page-title-row"><div><span className="eyebrow">MATCHES & REPLAYS</span><h1>对局与回放</h1><p>只展示 sidecar 实际完成并保存的对局批次。</p></div><StatusPill icon={Database} tone={items.length ? "green" : "muted"}>{items.length} BATCHES · {items.reduce((sum, item) => sum + Number(item.games || 0), 0)} GAMES</StatusPill></div><div className="replay-layout"><section className="panel replay-list-panel">{items.length ? items.map((item, index) => <button className={`replay-item ${selected === item ? "is-selected" : ""}`} key={`${item.rulesetId}-${item.finishedAt}-${index}`} onClick={() => { setSelected(item); setSelectedReplay(item.replayFiles?.[0] || item.replays?.[0]?.fileName || ""); }}><span className={`result ${item.wins >= item.losses ? "result-w" : "result-l"}`}>{item.wins >= item.losses ? "W" : "L"}</span><div><strong>{item.policyVersion}</strong><small>{new Date(item.finishedAt).toLocaleString()} · {item.rulesetId}</small></div><span className={item.wins >= item.losses ? "positive" : "negative"}>{item.wins}-{item.losses}</span><span className="replay-tag">{item.games} games · {item.replayCount || item.replayFiles?.length || 0} replay</span></button>) : <div className="empty-state">{error || "还没有真实排位批次。账号、规则和合法队伍就绪后才能产生记录。"}</div>}</section><section className="panel replay-detail">{selected ? <><div className="replay-detail-head"><div><span className="eyebrow">BATCH RESULT</span><h2>{selected.policyVersion} <StatusPill tone={selected.wins >= selected.losses ? "green" : "yellow"}>{selected.wins}W {selected.losses}L</StatusPill></h2></div><span className="mono muted">{selected.teamVersion}</span></div><div className="metric-grid"><Metric label="对局" value={selected.games} tone="blue" icon={Swords} /><Metric label="胜利" value={selected.wins} tone="green" icon={Trophy} /><Metric label="失败" value={selected.losses} tone="red" icon={Target} /><Metric label="平局" value={selected.ties} tone="yellow" icon={History} /></div><div className="boundary-note"><ShieldCheck size={15} />记录绑定 {selected.rulesetId}，不会进入其他规则版本的训练反馈。</div>{(selected.replayFiles?.length || selected.replays?.length) ? <div className="replay-viewer-tools"><label>选择对局<select value={selectedReplay || selected.replayFiles?.[0] || selected.replays?.[0]?.fileName || ""} onChange={(event) => setSelectedReplay(event.target.value)}>{(selected.replayFiles || selected.replays?.map((item) => item.fileName) || []).map((fileName) => <option key={fileName} value={fileName}>{fileName}</option>)}</select></label>{replayUrl && <a className="secondary-button" href={replayUrl} target="_blank" rel="noreferrer"><ExternalLink size={15} />新窗口打开</a>} </div> : <div className="empty-state compact">该批次没有找到 HTML 回放文件。</div>}{replayUrl && <iframe className="replay-frame" title="Showdown 对局回放" src={replayUrl} />}</> : <div className="empty-state">选择一个真实对局批次查看详情。</div>}</section></div></div>;
 }
@@ -476,13 +1013,13 @@ function App() {
     setIsKilled(true);
     window.setTimeout(() => setIsKilled(false), 220);
   };
-  const toggleAgent = async ({ games = 1, policy = "structured", format, rulesetId } = {}) => {
+  const toggleAgent = async ({ games = 1, policy = "structured", format, rulesetId, teamText = "", teamSource = "workbench", teamId = "", teamTitle = "" } = {}) => {
     if (agentState === "active" || agentState === "starting") return stopAgent();
     setAgentState("starting");
     setAnnouncement("正在校验队伍并连接 Showdown 排位...");
     setAnnouncementTone("info");
     try {
-      await apiRequest("/api/agent/start", { method: "POST", body: JSON.stringify({ format: format || activeRuleset?.battleType || "double", rulesetId: rulesetId || activeRuleset?.rulesetId, teamText: teamToShowdown(team), games, policy, teamVersion: "forge-ui", acknowledgeAutomationPolicy: true }) });
+      await apiRequest("/api/agent/start", { method: "POST", body: JSON.stringify({ format: format || activeRuleset?.battleType || "double", rulesetId: rulesetId || activeRuleset?.rulesetId, teamText: teamText || teamToShowdown(team), games, policy, teamVersion: teamSource === "hot" ? `hot-${teamId || "random"}` : "forge-ui", teamSource, teamId, teamTitle, acknowledgeAutomationPolicy: true }) });
       setAgentState("starting");
       setAnnouncement("启动请求已提交，正在等待 Showdown 登录确认...");
       setAnnouncementTone("info");
@@ -546,10 +1083,10 @@ function App() {
   const content = useMemo(() => ({
     dashboard: <Dashboard team={team} onNavigate={setPage} agentState={agentState} onToggleAgent={toggleAgent} onOpenAccount={() => setAccountOpen(true)} registry={registry} />,
     forge: <Forge team={team} setTeam={setTeam} onNavigate={setPage} />,
-    arena: <Arena agentState={agentState} onToggleAgent={toggleAgent} onStop={stopAgent} registry={registry} />,
+    arena: <ArenaCommandCenter team={team} agentState={agentState} onToggleAgent={toggleAgent} onStop={stopAgent} registry={registry} />,
     replays: <Replays />,
     rules: <Rules />,
-    models: <><Models />{activeRuleset && <AgentLearningPanel format={activeRuleset.battleType === "double" ? "double" : "single"} rulesetId={activeRuleset.rulesetId} />}</>,
+    models: <><Models />{(registry.active || []).filter((snapshot) => snapshot.status === "active" && (snapshot.battleType === "single" || snapshot.battleType === "double")).map((snapshot) => <AgentLearningPanel key={snapshot.rulesetId} format={snapshot.battleType} rulesetId={snapshot.rulesetId} />)}</>,
   }[page]), [agentState, page, registry, team]);
   return <div className={`app-shell ${agentState === "paused" ? "agent-paused" : ""}`}><div className="app-bg-layer" aria-hidden="true" /><div className="sr-only" aria-live="assertive">{announcement}</div><header className="topbar"><div className="brand"><div className="brand-mark"><span /></div><strong>Champion Forge</strong><span className="desktop-only brand-sub">Competitive Agent Workbench</span></div><div className="top-status"><StatusPill tone={registry.status === "ACTIVE" ? "blue" : "yellow"} icon={BookOpen}>{activeRuleset?.name?.replace(/^\[Gen \d+ Champions\]\s*/, "") || registry.status}</StatusPill><StatusPill tone={registry.canOperate ? "green" : "yellow"} icon={Activity}>{registry.canOperate ? "RULES SYNCED" : "RULES BLOCKED"}</StatusPill><StatusPill tone={agentState === "active" ? "green" : "muted"} icon={Bot}>{agentState === "active" ? <span className="agent-breath">Agent active</span> : agentState === "starting" ? "Agent starting" : "Agent paused"}</StatusPill></div><div className="top-actions"><button className="top-account" onClick={() => setAccountOpen(true)} aria-label="账号设置"><span className="account-avatar"><Bot size={15} /></span><span className="desktop-only">专用账号</span></button><button className={`kill-switch ${isKilled ? "kill-flash" : ""}`} onClick={stopAgent} aria-label="紧急停止 Agent"><CircleStop size={15} /> <span className="desktop-only">KILL SWITCH</span><kbd>Ctrl ⇧ K</kbd></button><button className="mobile-menu icon-button" aria-label="打开菜单"><Menu size={19} /></button></div></header>{announcement && <div className={`app-notice notice-${announcementTone}`} role="status">{announcementTone === "error" ? <AlertTriangle size={16} /> : announcementTone === "success" ? <Check size={16} /> : <Bot size={16} />}<span>{announcement}</span><button className="icon-button" onClick={() => setAnnouncement("")} aria-label="关闭状态提示"><X size={15} /></button></div>}<div className="shell-body"><aside className="sidebar" aria-label="主导航"><div className="nav-group">{navItems.map(([id, label, Icon]) => <button key={id} className={`nav-item ${page === id ? "is-active" : ""}`} onClick={() => setPage(id)} aria-current={page === id ? "page" : undefined}><Icon size={18} /><span>{label}</span>{page === id && <i />}</button>)}</div><div className="sidebar-foot"><button className="nav-item" onClick={() => setAccountOpen(true)}><Settings size={18} /><span>设置</span></button><div className="sync-card"><div><span className={`dot ${registry.canOperate ? "dot-green" : "dot-yellow"}`} />规则同步</div><strong>{registry.canOperate ? "当前快照有效" : registry.status}</strong><small>{activeRuleset?.regulation || "等待同步"}</small></div></div></aside><main className="main-content">{content}</main></div>{accountOpen && <AccountWizard onClose={() => setAccountOpen(false)} />}</div>;
 }
