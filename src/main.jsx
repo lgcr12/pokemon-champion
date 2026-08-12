@@ -2,15 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import * as Dialog from "@radix-ui/react-dialog";
-import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import * as Popover from "@radix-ui/react-popover";
-import * as Select from "@radix-ui/react-select";
-import * as Slider from "@radix-ui/react-slider";
-import * as Switch from "@radix-ui/react-switch";
-import * as Tabs from "@radix-ui/react-tabs";
-import * as Toast from "@radix-ui/react-toast";
-import * as Tooltip from "@radix-ui/react-tooltip";
 import {
   Activity,
   AlertTriangle,
@@ -123,7 +114,6 @@ const navItems = [
   ["replays", "对局与回放", History],
   ["rules", "规则与环境", BookOpen],
   ["models", "模型实验室", BrainCircuit],
-  ["components", "组件预览", LayoutDashboard],
 ];
 
 async function apiRequest(path, options = {}) {
@@ -991,32 +981,6 @@ function TeamLab({ team, setTeam }) {
   </div>;
 }
 
-function ComponentPreview() {
-  const [format, setFormat] = useState("vgc");
-  const [games, setGames] = useState([3]);
-  const [autoQueue, setAutoQueue] = useState(true);
-  const [noticeOpen, setNoticeOpen] = useState(false);
-
-  return <Toast.Provider swipeDirection="right">
-    <div className="page component-preview-page">
-      <div className="page-title-row"><div><span className="eyebrow">COMPONENT LAB</span><h1>组件预览</h1><p>Radix UI 原语配合 Champion Forge 的白色视觉层。这里的控件可以直接操作，用于决定后续接入哪些页面。</p></div><div className="toolbar-actions"><button className="secondary-button" onClick={() => setNoticeOpen(true)}><Sparkles size={16} />触发提示</button><Dialog.Root><Dialog.Trigger asChild><button className="primary-button"><Plus size={16} />打开表单</button></Dialog.Trigger><Dialog.Portal><Dialog.Overlay className="cf-dialog-overlay" /><Dialog.Content className="cf-dialog-content"><Dialog.Title>创建排位批次</Dialog.Title><Dialog.Description>表单弹层适合需要确认的操作，不会用于普通配置编辑。</Dialog.Description><div className="cf-dialog-fields"><label>对局数量<input type="number" value={games[0]} onChange={(event) => setGames([Math.max(1, Math.min(10, Number(event.target.value) || 1))])} /></label><label>队伍来源<select defaultValue="workbench"><option value="workbench">当前配队</option><option value="hot">热门随机</option></select></label></div><div className="cf-dialog-actions"><Dialog.Close asChild><button className="secondary-button">取消</button></Dialog.Close><Dialog.Close asChild><button className="primary-button"><Play size={15} />确认开始</button></Dialog.Close></div><Dialog.Close className="cf-dialog-close" aria-label="关闭"><X size={18} /></Dialog.Close></Dialog.Content></Dialog.Portal></Dialog.Root></div></div>
-
-      <section className="component-preview-hero"><div><span className="component-preview-kicker">WHITE COMMAND SYSTEM</span><h2>克制、清晰、可访问</h2><p>统一采用紧凑圆角、冷白面板、蓝色主操作与真实状态色。没有引入整套模板库，避免覆盖既有业务样式。</p></div><div className="component-preview-orbit" aria-hidden="true"><i /><i /><b>CF</b></div></section>
-
-      <div className="component-preview-grid">
-        <section className="panel component-showcase component-showcase-buttons"><SectionHeader eyebrow="ACTIONS" title="按钮与状态" /><div className="component-row"><button className="primary-button"><Play size={16} />开始排位</button><button className="secondary-button"><RefreshCw size={16} />同步规则</button><button className="ghost-button">查看详情</button><button className="danger-button"><CircleStop size={16} />停止</button></div><div className="component-row"><StatusPill tone="green" icon={Activity}>实时运行</StatusPill><StatusPill tone="blue" icon={ShieldCheck}>规则有效</StatusPill><StatusPill tone="yellow" icon={AlertTriangle}>等待验证</StatusPill><StatusPill tone="muted" icon={Pause}>空闲</StatusPill></div></section>
-
-        <section className="panel component-showcase"><SectionHeader eyebrow="TABS" title="规则切换" /><Tabs.Root className="cf-tabs" value={format} onValueChange={setFormat}><Tabs.List aria-label="对战格式"><Tabs.Trigger value="bss">BSS 单打</Tabs.Trigger><Tabs.Trigger value="vgc">VGC 双打</Tabs.Trigger><Tabs.Trigger value="history">历史快照</Tabs.Trigger></Tabs.List><Tabs.Content value="bss"><strong>单打决策</strong><p>突出轮换、隐藏信息、终盘与三选逻辑。</p></Tabs.Content><Tabs.Content value="vgc"><strong>双打决策</strong><p>突出首发组合、控速、守住和集火。</p></Tabs.Content><Tabs.Content value="history"><strong>历史规则</strong><p>只允许回放与复盘，不混入当前赛季训练。</p></Tabs.Content></Tabs.Root></section>
-
-        <section className="panel component-showcase"><SectionHeader eyebrow="FORM CONTROLS" title="下拉、滑块与开关" /><div className="cf-control-stack"><label>策略引擎<Select.Root defaultValue="structured"><Select.Trigger className="cf-select" aria-label="策略引擎"><Select.Value placeholder="结构化策略" /><Select.Icon><ChevronDown size={16} /></Select.Icon></Select.Trigger><Select.Portal><Select.Content className="cf-select-content" position="popper"><Select.Viewport><Select.Item value="structured">结构化策略<Select.ItemIndicator><Check size={14} /></Select.ItemIndicator></Select.Item><Select.Item value="laplace">Laplace 单打<Select.ItemIndicator><Check size={14} /></Select.ItemIndicator></Select.Item></Select.Viewport></Select.Content></Select.Portal></Select.Root></label><label>每批对局 <b>{games[0]} 场</b><Slider.Root className="cf-slider" value={games} onValueChange={setGames} max={10} min={1} step={1} aria-label="每批对局"><Slider.Track><Slider.Range /></Slider.Track><Slider.Thumb /></Slider.Root></label><div className="cf-switch-row"><div><strong>批次完成后继续匹配</strong><span>启用后沿用同一 rulesetId 与队伍来源。</span></div><Switch.Root className="cf-switch" checked={autoQueue} onCheckedChange={setAutoQueue} aria-label="批次完成后继续匹配"><Switch.Thumb /></Switch.Root></div></div></section>
-
-        <section className="panel component-showcase"><SectionHeader eyebrow="CONTEXT" title="菜单、信息层与提示" /><div className="component-row"><DropdownMenu.Root><DropdownMenu.Trigger asChild><button className="secondary-button">队伍操作 <ChevronDown size={15} /></button></DropdownMenu.Trigger><DropdownMenu.Portal><DropdownMenu.Content className="cf-menu" sideOffset={7}><DropdownMenu.Item><Check size={15} />校验当前队伍</DropdownMenu.Item><DropdownMenu.Item><Shuffle size={15} />随机热门队</DropdownMenu.Item><DropdownMenu.Separator /><DropdownMenu.Item className="is-danger"><X size={15} />清空草案</DropdownMenu.Item></DropdownMenu.Content></DropdownMenu.Portal></DropdownMenu.Root><Popover.Root><Popover.Trigger asChild><button className="secondary-button"><Gauge size={15} />结构分</button></Popover.Trigger><Popover.Portal><Popover.Content className="cf-popover" sideOffset={8}><strong>结构健康度 86</strong><p>天气、控速、轮转和终盘覆盖符合当前 VGC 规则。</p><Popover.Arrow className="cf-popover-arrow" /></Popover.Content></Popover.Portal></Popover.Root><Tooltip.Provider delayDuration={200}><Tooltip.Root><Tooltip.Trigger asChild><button className="icon-button" aria-label="规则信息"><BookOpen size={18} /></button></Tooltip.Trigger><Tooltip.Portal><Tooltip.Content className="cf-tooltip" sideOffset={7}>只显示当前激活 rulesetId 的数据<Tooltip.Arrow className="cf-tooltip-arrow" /></Tooltip.Content></Tooltip.Portal></Tooltip.Root></Tooltip.Provider></div><p className="component-helper">菜单用于少量操作，Popover 用于短解释，Tooltip 只解释图标，不承载关键操作。</p></section>
-      </div>
-    </div>
-    <Toast.Root className="cf-toast" open={noticeOpen} onOpenChange={setNoticeOpen}><Toast.Title>组件已触发</Toast.Title><Toast.Description>Toast 适合提示同步、保存和排位状态变化。</Toast.Description><Toast.Close aria-label="关闭"><X size={16} /></Toast.Close></Toast.Root><Toast.Viewport className="cf-toast-viewport" />
-  </Toast.Provider>;
-}
-
 function Models() {
   const [registries, setRegistries] = useState([]);
   const [error, setError] = useState("");
@@ -1212,7 +1176,6 @@ function App() {
     replays: <Replays />,
     rules: <Rules />,
     models: <><Models />{(registry.active || []).filter((snapshot) => snapshot.status === "active" && (snapshot.battleType === "single" || snapshot.battleType === "double")).map((snapshot) => <AgentLearningPanel key={snapshot.rulesetId} format={snapshot.battleType} rulesetId={snapshot.rulesetId} />)}</>,
-    components: <ComponentPreview />,
   }[page]), [agentState, page, registry, team]);
   return <div className={`app-shell ${agentState === "paused" ? "agent-paused" : ""}`}><div className="app-bg-layer" aria-hidden="true" /><div className="sr-only" aria-live="assertive">{announcement}</div><header className="topbar"><div className="brand"><div className="brand-mark"><span /></div><strong>Champion Forge</strong><span className="desktop-only brand-sub">Competitive Agent Workbench</span></div><div className="top-status"><StatusPill tone={registry.status === "ACTIVE" ? "blue" : "yellow"} icon={BookOpen}>{activeRuleset?.name?.replace(/^\[Gen \d+ Champions\]\s*/, "") || registry.status}</StatusPill><StatusPill tone={registry.canOperate ? "green" : "yellow"} icon={Activity}>{registry.canOperate ? "RULES SYNCED" : "RULES BLOCKED"}</StatusPill><StatusPill tone={agentState === "active" ? "green" : "muted"} icon={Bot}>{agentState === "active" ? <span className="agent-breath">Agent active</span> : agentState === "starting" ? "Agent starting" : "Agent paused"}</StatusPill></div><div className="top-actions"><button className="top-account" onClick={() => setAccountOpen(true)} aria-label="账号设置"><span className="account-avatar"><Bot size={15} /></span><span className="desktop-only">专用账号</span></button><button className={`kill-switch ${isKilled ? "kill-flash" : ""}`} onClick={stopAgent} aria-label="紧急停止 Agent"><CircleStop size={15} /> <span className="desktop-only">KILL SWITCH</span><kbd>Ctrl ⇧ K</kbd></button><button className="mobile-menu icon-button" aria-label="打开菜单"><Menu size={19} /></button></div></header>{announcement && <div className={`app-notice notice-${announcementTone}`} role="status">{announcementTone === "error" ? <AlertTriangle size={16} /> : announcementTone === "success" ? <Check size={16} /> : <Bot size={16} />}<span>{announcement}</span><button className="icon-button" onClick={() => setAnnouncement("")} aria-label="关闭状态提示"><X size={15} /></button></div>}<div className="shell-body"><aside className="sidebar" aria-label="主导航"><div className="nav-group">{navItems.map(([id, label, Icon]) => <button key={id} className={`nav-item ${page === id ? "is-active" : ""}`} onClick={() => setPage(id)} aria-current={page === id ? "page" : undefined}><Icon size={18} /><span>{label}</span>{page === id && <i />}</button>)}</div><div className="sidebar-foot"><button className="nav-item" onClick={() => setAccountOpen(true)}><Settings size={18} /><span>设置</span></button><div className="sync-card"><div><span className={`dot ${registry.canOperate ? "dot-green" : "dot-yellow"}`} />规则同步</div><strong>{registry.canOperate ? "当前快照有效" : registry.status}</strong><small>{activeRuleset?.regulation || "等待同步"}</small></div></div></aside><main className="main-content">{content}</main></div>{accountOpen && <AccountWizard onClose={() => setAccountOpen(false)} />}</div>;
 }
