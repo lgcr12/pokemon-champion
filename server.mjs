@@ -1,5 +1,5 @@
 ﻿import { createReadStream } from "node:fs";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
@@ -20,6 +20,8 @@ const BATTLE_HISTORY_PATH = join(ROOT, "data", "battle-history.json");
 const TEAM_DATA_PATH = join(ROOT, "data", "team-data.json");
 const CHAMPION_DATA_PATH = join(ROOT, "data", "champion-data.json");
 const BATTLE_KNOWLEDGE_DATA_PATH = join(ROOT, "data", "battle-knowledge.json");
+const AGENT_DATA_ROOT = join(ROOT, "data", "agent");
+const AGENT_LEARNING_ROOT = join(AGENT_DATA_ROOT, "learning");
 const ZH_HANS_TERMS_PATH = join(ROOT, "data", "zh-hans-terms.json");
 const POCKET_AG_COACH_RULES_PATH = join(ROOT, "skills", "pocket-ag-coach", "references", "coach-rules.json");
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
@@ -593,6 +595,19 @@ async function handleAgentApi(req, res) {
     sendJson(res, 200, { ok: true, ...data });
     return;
   }
+  if (req.method === "GET" && url.pathname === "/api/agent/learning") {
+    const format = url.searchParams.get("format") === "double" ? "double" : "single";
+    const snapshot = ruleRegistry.operational({ format, rulesetId: String(url.searchParams.get("rulesetId") || "") });
+    const root = join(AGENT_LEARNING_ROOT, snapshot.rulesetId);
+    const [summary, failures, matchups, teamRegistry] = await Promise.all([
+      learnFromAgentTraces(snapshot.rulesetId, format),
+      readFile(join(root, "failure-memory.json"), "utf8").then(JSON.parse).catch(() => null),
+      readFile(join(root, "opponent-matchups.json"), "utf8").then(JSON.parse).catch(() => null),
+      readAgentTeamRegistry(snapshot.rulesetId),
+    ]);
+    sendJson(res, 200, { ok: true, ...rulesetMetadata(snapshot), summary, failures, matchups, teamRegistry });
+    return;
+  }
   const body = await readJson(req).catch(() => ({}));
   if (req.method === "POST" && url.pathname === "/api/agent/stop") {
     sendJson(res, 200, { ok: true, ...(await agentController.stop()) });
@@ -601,6 +616,26 @@ async function handleAgentApi(req, res) {
   if (req.method === "POST" && url.pathname === "/api/agent/promote") {
     const snapshot = ruleRegistry.operational({ format: body.format || "double", rulesetId: String(body.rulesetId || "") });
     sendJson(res, 200, { ok: true, ...(await agentController.promote({ ...body, rulesetId: snapshot.rulesetId })) });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/agent/analyze") {
+    const format = body.format === "double" ? "double" : "single";
+    const snapshot = ruleRegistry.operational({ format, rulesetId: String(body.rulesetId || "") });
+    const summary = await learnFromAgentTraces(snapshot.rulesetId, format);
+    sendJson(res, 200, { ok: true, ...rulesetMetadata(snapshot), summary });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/agent/analyze-replay") {
+    const format = body.format === "double" ? "double" : "single";
+    const result = await analyzeLocalAgentReplay({ ...body, format });
+    sendJson(res, 200, { ok: true, ...result });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/agent/evolve-team") {
+    const format = body.format === "double" ? "double" : "single";
+    const snapshot = ruleRegistry.operational({ format, rulesetId: String(body.rulesetId || "") });
+    const result = await evolveAgentTeam({ ...body, format, rulesetId: snapshot.rulesetId });
+    sendJson(res, 200, { ok: true, ...result });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/agent/start") {
@@ -1478,6 +1513,365 @@ function strictFeedbackPriorities(history = []) {
     if ((Number(item.winRate || 100) < 50 || /实战负|loss/.test(text)) && notes.length < 3) notes.push(String(item.avoid || item.feedbackSignals || "实战回放暴露结构压力。"));
   }
   return { priorities: [...priorities], notes: [...new Set(notes)] };
+}
+
+const AGENT_FAILURE_CODES = {
+  LEAD_MISMATCH: "首发与对手节奏不匹配",
+  SPEED_CONTROL_MISSING: "缺少可执行的速度控制",
+  SPEED_TIE_LOST: "关键速度线落后",
+  UNSAFE_ENTRY: "缺少安全上场或轮换入口",
+  WRONG_TARGET: "目标选择暴露了交换价值",
+  IMMUNITY_CLICK: "攻击打在免疫或无效目标上",
+  DAMAGE_CHECK_FAILED: "输出不足以完成关键击杀",
+  PREMATURE_TERA: "过早消耗关键资源",
+  SETUP_GREED: "强化回合贪多导致不可逆损失",
+  RESOURCE_MISUSE: "保护、天气或终盘资源使用不当",
+  ENDGAME_MISSED: "终盘路线没有兑现",
+  FALLBACK_ACTION: "策略回退或非法动作",
+  TIMEOUT: "超时或连接中断",
+};
+
+function agentLineText(trace = {}) {
+  return (trace.events || [])
+    .map((event) => event.line || event.command || JSON.stringify(event))
+    .join("\n");
+}
+
+function agentActionList(trace = {}) {
+  return (trace.actions || [])
+    .filter((event) => event.type === "agent-action")
+    .map((event) => String(event.command || ""));
+}
+
+function agentTraceFailureAttribution(trace = {}) {
+  const text = agentLineText(trace);
+  const actions = agentActionList(trace);
+  const result = String(trace.result || "unknown");
+  const failures = [];
+  const add = (code, turn, confidence, evidence, repairTargets) => failures.push({
+    code,
+    label: AGENT_FAILURE_CODES[code] || code,
+    turn: Number(turn || 0),
+    confidence,
+    evidence,
+    repairTargets,
+  });
+  if (actions.some((item) => /default|random/i.test(item))) add("FALLBACK_ACTION", trace.turns, 0.98, ["真实 trace 记录到了 default/random 动作"], ["policy", "legalActionMask"]);
+  if (/time|forfeit|disconnected|outoftime/i.test(text) && /timeout|forfeit|disconnected/i.test(`${text} ${trace.result}`)) add("TIMEOUT", trace.turns, 0.96, ["回放或 trace 出现超时/投降/断线信号"], ["connection", "timer"]);
+  if (result === "loss") {
+    const hasSpeed = /tailwind|trick room|icy wind|electroweb|thunder wave|glare|rock tomb|bulldoze/i.test(text);
+    const hasProtect = /protect|detect|spiky shield|king's shield|wide guard/i.test(text);
+    const hasSwitch = /\|(switch|drag)\|/i.test(text);
+    if (!hasSpeed) add("SPEED_CONTROL_MISSING", 1, 0.66, ["整场公开日志未出现控速动作"], ["speedControl", "speedPlan"]);
+    if (!hasSwitch) add("UNSAFE_ENTRY", Math.max(1, Number(trace.turns || 1) - 1), 0.58, ["失败对局没有记录安全轮换"], ["pivot", "defensiveSwitch", "protect"]);
+    if (!hasProtect && /double|vgc/i.test(String(trace.battleType || ""))) add("RESOURCE_MISUSE", 1, 0.53, ["双打公开日志未出现保护/广域防守"], ["protect", "wideGuard"]);
+    const firstFaint = text.match(/\|faint\|([^\n]+)/i);
+    if (firstFaint && Number(trace.turns || 0) <= 3) add("LEAD_MISMATCH", 1, 0.7, [`前 3 回合内出现首个击倒：${firstFaint[1]}`], ["lead", "leadMatchup"]);
+    if (/immune|\|-immune\|/i.test(text)) add("IMMUNITY_CLICK", 0, 0.74, ["公开日志记录到了免疫事件"], ["targeting", "moveCoverage"]);
+    if (/tera|terastallize|mega/i.test(text) && Number(trace.turns || 0) <= 2) add("PREMATURE_TERA", 1, 0.55, ["前两回合使用了关键形态资源"], ["resourcePlan", "endgame"]);
+    if (/boost|quiver dance|swords dance|nasty plot|calm mind|dragon dance/i.test(text) && /faint/i.test(text)) add("SETUP_GREED", 0, 0.54, ["强化行为与随后击倒同时出现"], ["setupTiming", "protect"]);
+  }
+  if (result === "loss" && !failures.length) add("ENDGAME_MISSED", trace.turns, 0.42, ["结果为负但公开日志没有足够细节定位更早错误"], ["endgame", "policySearch"]);
+  return failures;
+}
+
+function agentActionTags(trace = {}) {
+  const text = agentLineText(trace);
+  const tags = {};
+  const add = (key, pattern) => { const count = (text.match(pattern) || []).length; if (count) tags[key] = count; };
+  add("speed-control", /tailwind|trick room|icy wind|electroweb|thunder wave|glare/gi);
+  add("protect", /protect|detect|spiky shield|king's shield|wide guard/gi);
+  add("pivot", /u-turn|volt switch|flip turn|parting shot|chilly reception/gi);
+  add("setup", /swords dance|nasty plot|dragon dance|quiver dance|calm mind|bulk up/gi);
+  add("switch", /\|(switch|drag)\|/gi);
+  add("faint", /\|faint\|/gi);
+  add("fallback", /default|random/gi);
+  return tags;
+}
+
+async function readAgentJsonFiles(root) {
+  try {
+    const names = (await readdir(root)).filter((name) => name.endsWith(".json"));
+    return (await Promise.all(names.map(async (name) => {
+      try { return JSON.parse(await readFile(join(root, name), "utf8")); } catch { return null; }
+    }))).filter(Boolean);
+  } catch { return []; }
+}
+
+async function readAgentTraces(rulesetId = "") {
+  const root = join(AGENT_DATA_ROOT, "traces", rulesetId);
+  return (await readAgentJsonFiles(root)).filter((item) => item.rulesetId === rulesetId);
+}
+
+function aggregateAgentLearning(traces = [], rulesetId = "", format = "single") {
+  const scoped = traces.filter((trace) => trace.rulesetId === rulesetId && (format !== "double" ? trace.battleType !== "double" : trace.battleType === "double"));
+  const counts = new Map();
+  const opponentMatchups = new Map();
+  const failureDetails = [];
+  for (const trace of scoped) {
+    const attributions = agentTraceFailureAttribution(trace);
+    for (const failure of attributions) {
+      const current = counts.get(failure.code) || { code: failure.code, label: failure.label, count: 0, confidence: 0, repairTargets: new Set(), evidence: [] };
+      current.count += 1;
+      current.confidence = Math.max(current.confidence, failure.confidence);
+      failure.repairTargets.forEach((target) => current.repairTargets.add(target));
+      current.evidence.push(...failure.evidence.slice(0, 2));
+      counts.set(failure.code, current);
+      failureDetails.push({ battleId: trace.battleId, ...failure });
+    }
+    const opponent = String(trace.opponentName || trace.opponent || "unknown");
+    const matchup = opponentMatchups.get(opponent) || { opponent, games: 0, wins: 0, losses: 0, ties: 0 };
+    matchup.games += 1;
+    if (trace.result === "win") matchup.wins += 1;
+    else if (trace.result === "loss") matchup.losses += 1;
+    else if (trace.result === "tie") matchup.ties += 1;
+    opponentMatchups.set(opponent, matchup);
+  }
+  const failures = [...counts.values()].map((item) => ({
+    ...item,
+    repairTargets: [...item.repairTargets],
+    evidence: [...new Set(item.evidence)].slice(0, 5),
+    avoid: `${item.label}；优先补足 ${[...item.repairTargets].join("、")}`,
+  })).sort((a, b) => b.count - a.count || b.confidence - a.confidence);
+  const games = scoped.filter((trace) => ["win", "loss", "tie"].includes(trace.result));
+  const wins = games.filter((trace) => trace.result === "win").length;
+  const losses = games.filter((trace) => trace.result === "loss").length;
+  const ties = games.filter((trace) => trace.result === "tie").length;
+  return {
+    schemaVersion: 1,
+    rulesetId,
+    format,
+    generatedAt: new Date().toISOString(),
+    games: games.length,
+    wins,
+    losses,
+    ties,
+    winRate: games.length ? Math.round((wins / games.length) * 1000) / 10 : 0,
+    failures,
+    failureDetails: failureDetails.slice(-200),
+    opponentMatchups: [...opponentMatchups.values()].sort((a, b) => b.games - a.games),
+    eligibleTraceCount: scoped.length,
+  };
+}
+
+async function learnFromAgentTraces(rulesetId = "", format = "single") {
+  const traces = await readAgentTraces(rulesetId);
+  const summary = aggregateAgentLearning(traces, rulesetId, format);
+  const root = join(AGENT_LEARNING_ROOT, rulesetId);
+  await mkdir(root, { recursive: true });
+  await writeFile(join(root, "battle-summary.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+  await writeFile(join(root, "failure-memory.json"), `${JSON.stringify({ rulesetId, format, updatedAt: summary.generatedAt, items: summary.failures }, null, 2)}\n`, "utf8");
+  await writeFile(join(root, "opponent-matchups.json"), `${JSON.stringify({ rulesetId, format, updatedAt: summary.generatedAt, items: summary.opponentMatchups }, null, 2)}\n`, "utf8");
+  const learningEntry = {
+    id: `agent-learning-${rulesetId}-${format}`,
+    key: `agent-learning:${rulesetId}:${format}`,
+    type: "agent-ladder-learning",
+    rulesetId,
+    format,
+    eligibleForBuildFeedback: true,
+    games: summary.games,
+    wins: summary.wins,
+    losses: summary.losses,
+    ties: summary.ties,
+    winRate: summary.winRate,
+    feedbackSignals: summary.failures.map((item) => item.code).join(","),
+    actionTags: summary.failures.flatMap((item) => item.repairTargets || []).join(","),
+    failureReasons: summary.failures.map((item) => item.avoid),
+    avoid: summary.failures.slice(0, 8).map((item) => item.avoid).join("；"),
+    badOpponents: summary.opponentMatchups.filter((item) => item.losses > item.wins).map((item) => item.opponent).join("、"),
+    source: "local-agent-traces",
+    updatedAt: summary.generatedAt,
+  };
+  const existingHistory = await readBattleHistoryFile();
+  await writeBattleHistoryFile([learningEntry, ...existingHistory.filter((item) => item.key !== learningEntry.key)]);
+  return summary;
+}
+
+function extractLocalReplayLog(html = "") {
+  const match = String(html).match(/<script[^>]*class=["']battle-log-data["'][^>]*>([\s\S]*?)<\/script>/i);
+  return match ? match[1].replace(/^\s+|\s+$/g, "") : "";
+}
+
+async function analyzeLocalAgentReplay({ rulesetId = "", format = "single", fileName = "", playerName = "" } = {}) {
+  const snapshot = ruleRegistry.operational({ format, rulesetId });
+  if (!fileName || fileName.includes("/") || fileName.includes("\\") || fileName.includes("..") || !fileName.toLowerCase().endsWith(".html")) {
+    throw Object.assign(new Error("非法本地回放文件名。"), { status: 400, code: "INVALID_REPLAY_FILE" });
+  }
+  const root = resolve(AGENT_DATA_ROOT, "showdown-replays", snapshot.rulesetId);
+  const filePath = resolve(root, fileName);
+  if (!filePath.startsWith(`${root}${process.platform === "win32" ? "\\" : "/"}`)) throw Object.assign(new Error("禁止访问该回放文件。"), { status: 403, code: "REPLAY_PATH_FORBIDDEN" });
+  const html = await readFile(filePath, "utf8");
+  const log = extractLocalReplayLog(html);
+  if (!log) throw Object.assign(new Error("本地 HTML 回放没有可解析的 Showdown 日志。"), { status: 422, code: "REPLAY_LOG_MISSING" });
+  const report = parseShowdownReplayLog(log, playerName, "");
+  const trace = {
+    schemaVersion: 1,
+    rulesetId: snapshot.rulesetId,
+    showdownFormatId: snapshot.showdownFormatId,
+    battleType: format,
+    battleId: `local-${fileName}`,
+    replayFile: fileName,
+    policyVersion: "replay-import",
+    startedAt: new Date().toISOString(),
+    finishedAt: new Date().toISOString(),
+    result: report.result,
+    turns: report.turns,
+    opponentName: report.candidateSide === "p1" ? report.players.p2 : report.candidateSide === "p2" ? report.players.p1 : "",
+    events: report.trace.map((line) => ({ type: "replay-line", line })),
+    actions: [],
+    eligibleForBuildFeedback: snapshot.showdownFormatId.toLowerCase() === String(report.tier || "").toLowerCase().replace(/[^a-z0-9]+/g, "") || report.tier === snapshot.name,
+  };
+  const attributions = agentTraceFailureAttribution(trace);
+  trace.failureAttributions = attributions;
+  const traceRoot = join(AGENT_DATA_ROOT, "traces", snapshot.rulesetId);
+  await mkdir(traceRoot, { recursive: true });
+  const traceFile = `import-${Date.now()}-${createHash("sha1").update(fileName).digest("hex").slice(0, 8)}.json`;
+  await writeFile(join(traceRoot, traceFile), `${JSON.stringify(trace, null, 2)}\n`, "utf8");
+  const summary = await learnFromAgentTraces(snapshot.rulesetId, format);
+  return { traceFile, trace, report, attributions, summary, ruleset: rulesetMetadata(snapshot) };
+}
+
+function teamTextFromBuild(build = []) {
+  const sets = (Array.isArray(build) ? build : []).map((member) => ({
+    species: legalShowdownSpeciesName(member.slug || member.name || member.id, member),
+    item: showdownLegalValue(member.item, "", "items"),
+    ability: showdownLegalValue(member.ability, "", "abilities"),
+    nature: showdownLegalValue(member.nature, "", "natures"),
+    moves: (member.moves || []).map((move) => showdownLegalValue(move, "", "moves")).filter(Boolean).slice(0, 4),
+    level: Number(member.level || 50),
+    evs: typeof member.evs === "object" ? member.evs : {},
+    championStats: typeof member.evs === "string" ? member.evs : "",
+  })).filter((member) => member.species && member.item && member.ability && member.moves.length >= 4);
+  if (!sets.length) return "";
+  return sets.map((member) => {
+    const lines = [`${member.species} @ ${member.item}`, `Ability: ${member.ability}`, "Level: 50"];
+    const evs = member.championStats ? championStatPointsFromChampionStats(member.championStats, "") : "";
+    if (evs) lines.push(`EVs: ${evs}`);
+    else lines.push("EVs: 1 HP");
+    const nature = member.nature;
+    if (nature) lines.push(`${nature} Nature`);
+    member.moves.forEach((move) => lines.push(`- ${move}`));
+    return lines.join("\n");
+  }).join("\n\n") + "\n";
+}
+
+function buildFeedbackHistory(summary = {}) {
+  return [{
+    rulesetId: summary.rulesetId,
+    format: summary.format,
+    eligibleForBuildFeedback: true,
+    games: summary.games,
+    wins: summary.wins,
+    losses: summary.losses,
+    ties: summary.ties,
+    winRate: summary.winRate,
+    actionTags: (summary.failures || []).map((item) => item.code).join(","),
+    failureReasons: (summary.failures || []).map((item) => item.avoid || item.label),
+    avoid: (summary.failures || []).slice(0, 6).map((item) => item.avoid || item.label).join("；"),
+    badOpponents: (summary.opponentMatchups || []).filter((item) => item.losses > item.wins).map((item) => item.opponent).join("、"),
+  }];
+}
+
+async function evaluateGeneratedTeam(teamText, format, rulesetId, gamesPerOpponent = 1) {
+  const rulesEngine = championsRulesEngine(format, rulesetId);
+  if (!rulesEngine.ok) return { ok: false, error: rulesEngine.error, games: 0, wins: 0, losses: 0, ties: 0, results: [] };
+  const own = prepareBattleTeam(teamText, format, "Challenger", rulesetId);
+  if (!own.ok || !own.strictLegal) return { ok: false, error: own.problems?.join("；") || "候选队伍不合法", games: 0, wins: 0, losses: 0, ties: 0, results: [] };
+  const opponentPool = hotOpponentPool(format);
+  const opponents = [];
+  for (const opponent of opponentPool) {
+    const target = prepareBattleTeam(opponent.showdownText || "", format, opponent.title || opponent.id || "固定靶队", rulesetId);
+    if (!target.ok || !target.strictLegal) continue;
+    opponents.push(opponent);
+    if (opponents.length >= 5) break;
+  }
+  if (!opponents.length) return { ok: false, error: `当前 ${rulesetId} 没有通过严格规则校验的固定靶队。请更新同规则队伍数据。`, games: 0, wins: 0, losses: 0, ties: 0, results: [] };
+  const results = [];
+  for (const opponent of opponents) {
+    const target = prepareBattleTeam(opponent.showdownText || "", format, opponent.title || opponent.id || "固定靶队", rulesetId);
+    if (!target.ok || !target.strictLegal) continue;
+    for (let index = 0; index < Math.max(1, Math.min(2, gamesPerOpponent)); index += 1) {
+      const pairing = index % 2 === 0
+        ? { p1Team: own.packedTeam, p2Team: target.packedTeam, p1Name: "Candidate", p2Name: "Meta" }
+        : { p1Team: target.packedTeam, p2Team: own.packedTeam, p1Name: "Meta", p2Name: "Candidate" };
+      const result = await runLocalBattle({
+        format,
+        formatId: rulesEngine.id,
+        rulesetId,
+        ...pairing,
+        candidateName: "Candidate",
+        maxTurns: 80,
+      });
+      results.push({ opponentId: opponent.id, opponentTitle: opponent.title, ...result, failureReasons: battleFailureReasons(result, format) });
+    }
+  }
+  const wins = results.filter((item) => item.result === "win").length;
+  const losses = results.filter((item) => item.result === "loss").length;
+  const ties = results.filter((item) => item.result === "tie").length;
+  return { ok: results.length > 0, games: results.length, wins, losses, ties, winRate: results.length ? Math.round((wins / results.length) * 1000) / 10 : 0, results };
+}
+
+async function readAgentTeamRegistry(rulesetId) {
+  const path = join(AGENT_LEARNING_ROOT, rulesetId, "team-registry.json");
+  try { return JSON.parse(await readFile(path, "utf8")); } catch { return { schemaVersion: 1, rulesetId, champion: null, challengers: [], updatedAt: "" }; }
+}
+
+async function writeAgentTeamRegistry(rulesetId, registry) {
+  const root = join(AGENT_LEARNING_ROOT, rulesetId);
+  await mkdir(root, { recursive: true });
+  registry.updatedAt = new Date().toISOString();
+  await writeFile(join(root, "team-registry.json"), `${JSON.stringify(registry, null, 2)}\n`, "utf8");
+  return registry;
+}
+
+async function evolveAgentTeam({ rulesetId, format = "single", userGoal = "", currentTeam = [], gamesPerOpponent = 1 } = {}) {
+  const snapshot = ruleRegistry.operational({ format, rulesetId });
+  const summary = await learnFromAgentTraces(snapshot.rulesetId, format);
+  const feedback = buildFeedbackHistory(summary);
+  const generated = [];
+  for (let index = 0; index < 5; index += 1) {
+    const built = strictBuildTeam({
+      format,
+      rulesetId: snapshot.rulesetId,
+      userGoal,
+      currentTeam,
+      buildMethod: "strict",
+      forceGenerated: true,
+      variationSeed: `agent-challenger-${summary.games}-${index}`,
+      battleHistory: feedback,
+      avoidTeam: index === 0 ? [] : generated[0]?.build?.team || currentTeam,
+    });
+    if (!built.ok) continue;
+    const teamText = teamTextFromBuild(built.team);
+    if (!teamText) continue;
+    const evaluation = await evaluateGeneratedTeam(teamText, format, snapshot.rulesetId, gamesPerOpponent);
+    generated.push({
+      id: `challenger-${Date.now()}-${index + 1}`,
+      createdAt: new Date().toISOString(),
+      rulesetId: snapshot.rulesetId,
+      format,
+      build: built,
+      teamText,
+      evaluation,
+      score: evaluation.games ? (0.6 * evaluation.winRate / 100 + 0.2 * Math.min(1, built.buildReport?.synergies?.length / 4 || 0) + 0.2 * Math.min(1, summary.games / 50)) : 0,
+    });
+  }
+  const ranked = generated.sort((a, b) => b.score - a.score);
+  const registry = await readAgentTeamRegistry(snapshot.rulesetId);
+  const best = ranked[0] || null;
+  if (best && best.evaluation.ok && best.evaluation.games > 0) {
+    const threshold = best.evaluation.games >= 4 && best.evaluation.winRate >= 50;
+    best.status = threshold ? "active" : "pending_evaluation";
+    registry.challengers = [best, ...(registry.challengers || [])].slice(0, 10);
+    if (threshold && (!registry.champion || best.evaluation.winRate >= Number(registry.champion.evaluation?.winRate || 0))) {
+      if (registry.champion) registry.champion.status = "archived";
+      registry.champion = { ...best, status: "active", promotedAt: new Date().toISOString() };
+    }
+  } else if (best) {
+    best.status = "rejected_no_exact_evaluation";
+  }
+  await writeAgentTeamRegistry(snapshot.rulesetId, registry);
+  return { ok: ranked.some((item) => item.evaluation?.ok), ...summary, ruleset: rulesetMetadata(snapshot), candidates: ranked, registry };
 }
 
 function strictGoalConstraints(payload = {}, available = []) {
@@ -6963,7 +7357,7 @@ async function startServer() {
         await handleAccountApi(req, res);
         return;
       }
-      if ((req.method === "GET" && (req.url === "/api/agent/status" || req.url?.startsWith("/api/agent/replays") || req.url?.startsWith("/api/agent/replay/") || req.url?.startsWith("/api/agent/models"))) || (req.method === "POST" && ["/api/agent/start", "/api/agent/stop", "/api/agent/promote"].includes(req.url || ""))) {
+      if ((req.method === "GET" && (req.url === "/api/agent/status" || req.url?.startsWith("/api/agent/replays") || req.url?.startsWith("/api/agent/replay/") || req.url?.startsWith("/api/agent/models") || req.url?.startsWith("/api/agent/learning"))) || (req.method === "POST" && ["/api/agent/start", "/api/agent/stop", "/api/agent/promote", "/api/agent/analyze", "/api/agent/analyze-replay", "/api/agent/evolve-team"].includes(req.url || ""))) {
         await handleAgentApi(req, res);
         return;
       }

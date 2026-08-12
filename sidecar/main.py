@@ -122,6 +122,49 @@ def write_json(path, payload):
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def battle_room_from_message(message):
+    for line in str(message).splitlines():
+        if line.startswith(">battle-"):
+            return line[1:].split("\t", 1)[0].strip()
+    return ""
+
+
+def public_battle_event(line):
+    """Keep only public Showdown protocol data for later analysis."""
+    raw = str(line or "").strip()
+    if not raw or raw.startswith(">" ):
+        return None
+    parts = raw.split("|")
+    if len(parts) < 2:
+        return None
+    event = parts[1]
+    allowed = {
+        "player", "teamsize", "poke", "switch", "drag", "move", "-damage",
+        "-heal", "-status", "-curestatus", "-boost", "-unboost", "-weather",
+        "-fieldstart", "-fieldend", "-sidestart", "-sideend", "-activate",
+        "-immune", "-miss", "faint", "turn", "win", "tie", "draw", "request",
+    }
+    if event not in allowed:
+        return None
+    if event == "request":
+        try:
+            request = json.loads(parts[2] or "{}")
+        except Exception:
+            return {"type": "request", "parseError": True}
+        # The request is the authoritative visible action space. It never
+        # contains the opponent's unrevealed set.
+        return {
+            "type": "request",
+            "turn": int(request.get("turn", 0) or 0),
+            "teamPreview": bool(request.get("teamPreview")),
+            "wait": bool(request.get("wait")),
+            "forceSwitch": request.get("forceSwitch", []),
+            "active": request.get("active", []),
+            "side": request.get("side", {}),
+        }
+    return {"type": event, "line": raw[:1200]}
+
+
 class StructuredPlayer(Player):
     @staticmethod
     def pokemon_preview_score(pokemon, opponents):
@@ -335,7 +378,9 @@ def register_training_checkpoint(summary):
 async def run_ladder(payload):
     global ACTIVE_PLAYER
     replay_dir = DATA_ROOT / "showdown-replays" / payload["rulesetId"]
+    trace_dir = DATA_ROOT / "traces" / payload["rulesetId"]
     replay_dir.mkdir(parents=True, exist_ok=True)
+    trace_dir.mkdir(parents=True, exist_ok=True)
     requested_policy = str(payload.get("policy") or os.environ.get("AGENT_POLICY", "structured")).strip().lower()
     use_laplace = requested_policy in {"laplace", "laplace-v1"} and payload.get("battleType") == "single"
     policy_version = "laplace-engine-v1" if use_laplace else "structured-visible-state-v1"
@@ -398,9 +443,45 @@ async def run_ladder(payload):
     player = player_class(**player_kwargs)
     ACTIVE_PLAYER = player
     handle_message = player.ps_client._handle_message
+    traces = {}
+    current_battle_id = ""
+
+    def trace_for(battle_id):
+        key = str(battle_id or "unknown-battle")
+        if key not in traces:
+            traces[key] = {
+                "schemaVersion": 1,
+                "rulesetId": payload["rulesetId"],
+                "showdownFormatId": payload["showdownFormatId"],
+                "battleType": payload["battleType"],
+                "teamVersion": payload.get("teamVersion", "manual"),
+                "username": payload.get("username", ""),
+                "policyVersion": policy_version,
+                "battleId": key,
+                "startedAt": now(),
+                "events": [],
+                "actions": [],
+                "result": "unknown",
+                "replayFile": "",
+                "eligibleForBuildFeedback": True,
+            }
+        return traces[key]
+
+    def append_trace_event(battle_id, event):
+        trace = trace_for(battle_id)
+        if event and len(trace["events"]) < 2000:
+            trace["events"].append({"at": now(), **event})
 
     async def tracked_handle_message(message):
+        nonlocal current_battle_id
+        message_battle_id = battle_room_from_message(message)
+        if message_battle_id:
+            current_battle_id = message_battle_id
+            update_state(activeBattleId=message_battle_id)
         for line in str(message).splitlines():
+            event = public_battle_event(line)
+            if event:
+                append_trace_event(message_battle_id or current_battle_id, event)
             parts = line.split("|")
             if len(parts) > 1 and parts[1] == "request":
                 state = public_state()
@@ -436,6 +517,8 @@ async def run_ladder(payload):
                     games = {}
                 confirmed = payload["showdownFormatId"] in searching
                 if games:
+                    current_battle_id = next(iter(games))
+                    trace_for(current_battle_id)["matchedAt"] = now()
                     update_state(
                         status="BATTLE",
                         searchConfirmed=False,
@@ -467,6 +550,11 @@ async def run_ladder(payload):
                 message = "/choose default"
                 update_state(fallbackCount=int(state.get("fallbackCount", 0)) + 1)
             update_state(lastSentMessage=str(message)[:500])
+            append_trace_event(room, {
+                "type": "agent-action",
+                "turn": int(public_state().get("lastDecisionTurn", 0) or 0),
+                "command": str(message)[:500],
+            })
         return await send_message(message, room, message_2)
 
     player.ps_client.send_message = tracked_send_message
@@ -494,6 +582,17 @@ async def run_ladder(payload):
         for replay_path in sorted(replay_dir.glob("*.html"), key=lambda item: item.stat().st_mtime, reverse=True):
             if replay_path.stat().st_mtime >= started_timestamp - 2:
                 replay_files.append(replay_path.name)
+        battles = list((getattr(player, "battles", {}) or {}).items())
+        finished_trace_files = []
+        for index, (battle_id, battle) in enumerate(battles):
+            trace = trace_for(battle_id)
+            trace["finishedAt"] = now()
+            trace["turns"] = int(getattr(battle, "turn", 0) or 0)
+            trace["result"] = "win" if bool(getattr(battle, "won", False)) else "loss" if bool(getattr(battle, "lost", False)) else "tie" if bool(getattr(battle, "finished", False)) else "unknown"
+            trace["replayFile"] = replay_files[index] if index < len(replay_files) else ""
+            trace_name = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{index + 1}-{str(battle_id).replace('/', '_')}.json"
+            write_json(trace_dir / trace_name, trace)
+            finished_trace_files.append(trace_name)
         summary = {
             "rulesetId": payload["rulesetId"],
             "showdownFormatId": payload["showdownFormatId"],
@@ -502,6 +601,8 @@ async def run_ladder(payload):
             "policyRequested": STATE.get("policyRequested", "structured"),
             "policyFallback": STATE.get("policyFallback", ""),
             "replayFiles": replay_files[: int(player.n_finished_battles)],
+            "traceFiles": finished_trace_files,
+            "traceCount": len(finished_trace_files),
             "games": int(player.n_finished_battles),
             "wins": int(player.n_won_battles),
             "losses": int(player.n_lost_battles),

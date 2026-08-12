@@ -278,6 +278,32 @@ function Forge({ team, setTeam, onNavigate }) {
 
 function TacticalFlow({ team }) { return <section className="panel flow-panel"><SectionHeader eyebrow="TACTICAL FLOW" title="队友联动" action={<span className="mono muted">LIVE ENGINE ANALYSIS</span>} /><div className="flow-canvas"><svg viewBox="0 0 900 180" preserveAspectRatio="none" aria-label="队伍联动关系"><path d="M110 90 C230 10 310 10 430 90" className="flow-line flow-water-line" /><path d="M430 90 C545 168 650 168 780 90" className="flow-line flow-yellow-line" /><path d="M110 90 C310 150 550 150 780 90" className="flow-line flow-green-line" /></svg><div className="flow-nodes">{team.slice(0, 4).map((member, index) => <div className="flow-node" key={member.id}><div className={`flow-avatar tone-${member.tone}`}><Sprite id={member.sprite} size="sm" /></div><span>{member.name}</span><small>{index === 0 ? "RAIN" : index === 1 ? "PAYOFF" : index === 2 ? "SPEED" : "CLOSER"}</small></div>)}</div></div><div className="flow-legend"><span><i className="legend-water" />天气</span><span><i className="legend-yellow" />速度</span><span><i className="legend-green" />安全上场</span></div></section>; }
 
+function AgentLearningPanel({ format = "single", rulesetId = "" }) {
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const load = async () => {
+    if (!rulesetId) return;
+    try {
+      setData(await apiRequest(`/api/agent/learning?format=${format}&rulesetId=${encodeURIComponent(rulesetId)}`));
+      setError("");
+    } catch (requestError) { setError(requestError.message); }
+  };
+  useEffect(() => { load(); }, [format, rulesetId]);
+  const run = async (path) => {
+    setBusy(path);
+    try {
+      const result = await apiRequest(path, { method: "POST", body: JSON.stringify({ format, rulesetId }) });
+      setData(path.endsWith("evolve-team") ? result : { ...data, summary: result.summary });
+      setError("");
+    } catch (requestError) { setError(requestError.message); }
+    finally { setBusy(""); }
+  };
+  const summary = data?.summary || {};
+  const failures = summary.failures || [];
+  return <section className="panel agent-learning-panel"><SectionHeader eyebrow="LEARNING LOOP" title="排位数据与 Challenger" action={<StatusPill icon={Database} tone={summary.games ? "green" : "muted"}>{summary.games || 0} GAMES</StatusPill>} /><div className="learning-toolbar"><button className="secondary-button" onClick={() => run("/api/agent/analyze")} disabled={Boolean(busy)}><RefreshCw size={15} />分析真实对局</button><button className="primary-button" onClick={() => run("/api/agent/evolve-team")} disabled={Boolean(busy)}><GitBranch size={15} />生成 Challenger</button></div><div className="learning-summary"><Metric label="胜率" value={`${summary.winRate || 0}%`} tone="blue" icon={Trophy} /><Metric label="失败归因" value={failures.length} tone="red" icon={Target} /><Metric label="候选队伍" value={data?.candidates?.length || 0} tone="green" icon={Swords} /></div>{failures.length ? <div className="learning-failure-list">{failures.slice(0, 4).map((item) => <div className="learning-failure" key={item.code}><strong>{item.label}</strong><span>{item.count} 次 · {item.avoid}</span></div>)}</div> : <div className="empty-state compact">完成真实对局后，系统会从公开 trace 提取失败原因，再生成同一 rulesetId 下的候选队伍。</div>}{error && <div className="boundary-note"><AlertTriangle size={15} />{error}</div>}</section>;
+}
+
 function Arena({ agentState, onToggleAgent, onStop, registry }) {
   const [status, setStatus] = useState({ status: "IDLE", gamesFinished: 0, gamesRequested: 0 });
   const [error, setError] = useState("");
@@ -334,6 +360,24 @@ function Models() {
   const [registries, setRegistries] = useState([]);
   const [error, setError] = useState("");
   useEffect(() => { apiRequest("/api/agent/models").then((data) => setRegistries(data.items || [])).catch((requestError) => setError(requestError.message)); }, []);
+  const [learning, setLearning] = useState(null);
+  const [learningBusy, setLearningBusy] = useState(false);
+  const learningRuleset = registries[0]?.rulesetId || "";
+  const learningFormat = learningRuleset.includes("single") ? "single" : "double";
+  const refreshLearning = async () => {
+    if (!learningRuleset) return;
+    setLearning(await apiRequest(`/api/agent/learning?format=${learningFormat}&rulesetId=${encodeURIComponent(learningRuleset)}`));
+  };
+  useEffect(() => { refreshLearning().catch(() => {}); }, [learningRuleset]);
+  const runLearning = async (path) => {
+    setLearningBusy(true);
+    try {
+      const result = await apiRequest(path, { method: "POST", body: JSON.stringify({ format: learningFormat, rulesetId: learningRuleset }) });
+      setLearning(result);
+      if (path.endsWith("evolve-team")) setRegistries((items) => items);
+    } catch (requestError) { setError(requestError.message); }
+    finally { setLearningBusy(false); }
+  };
   return <div className="page"><div className="page-title-row"><div><span className="eyebrow">MODEL LAB</span><h1>模型实验室</h1><p>每个 rulesetId 独立保存 Champion、Challenger 与评测状态。</p></div><StatusPill icon={GitBranch} tone={registries.length ? "green" : "muted"}>{registries.length} REGISTRIES</StatusPill></div>{registries.length ? registries.map((registry) => <section className="panel training-panel" key={registry.rulesetId}><SectionHeader eyebrow={registry.rulesetId} title="Champion / Challenger" action={<StatusPill icon={ShieldCheck}>{registry.champion?.status?.toUpperCase()}</StatusPill>} /><div className="model-grid"><div className="model-card"><span className="eyebrow">CHAMPION</span><h2>{registry.champion?.version}</h2><div className="model-stat"><span>状态</span><b>{registry.champion?.status}</b></div></div>{registry.challengers?.length ? registry.challengers.map((item) => <div className="model-card challenger" key={item.version}><span className="eyebrow">CHALLENGER</span><h2>{item.version}</h2><div className="model-stat"><span>训练对局</span><b>{item.trainingGames}</b></div><div className="model-stat"><span>评测</span><StatusPill tone={item.status === "active" ? "green" : "yellow"}>{item.status}</StatusPill></div></div>) : <div className="empty-state">累计满 50 场后才会创建待评测 Challenger。</div>}</div></section>) : <section className="panel"><div className="empty-state">{error || "尚无模型注册表。完成真实对局批次后系统才会建立规则独立模型记录。"}</div></section>}</div>;
 }
 
@@ -505,7 +549,7 @@ function App() {
     arena: <Arena agentState={agentState} onToggleAgent={toggleAgent} onStop={stopAgent} registry={registry} />,
     replays: <Replays />,
     rules: <Rules />,
-    models: <Models />,
+    models: <><Models />{activeRuleset && <AgentLearningPanel format={activeRuleset.battleType === "double" ? "double" : "single"} rulesetId={activeRuleset.rulesetId} />}</>,
   }[page]), [agentState, page, registry, team]);
   return <div className={`app-shell ${agentState === "paused" ? "agent-paused" : ""}`}><div className="app-bg-layer" aria-hidden="true" /><div className="sr-only" aria-live="assertive">{announcement}</div><header className="topbar"><div className="brand"><div className="brand-mark"><span /></div><strong>Champion Forge</strong><span className="desktop-only brand-sub">Competitive Agent Workbench</span></div><div className="top-status"><StatusPill tone={registry.status === "ACTIVE" ? "blue" : "yellow"} icon={BookOpen}>{activeRuleset?.name?.replace(/^\[Gen \d+ Champions\]\s*/, "") || registry.status}</StatusPill><StatusPill tone={registry.canOperate ? "green" : "yellow"} icon={Activity}>{registry.canOperate ? "RULES SYNCED" : "RULES BLOCKED"}</StatusPill><StatusPill tone={agentState === "active" ? "green" : "muted"} icon={Bot}>{agentState === "active" ? <span className="agent-breath">Agent active</span> : agentState === "starting" ? "Agent starting" : "Agent paused"}</StatusPill></div><div className="top-actions"><button className="top-account" onClick={() => setAccountOpen(true)} aria-label="账号设置"><span className="account-avatar"><Bot size={15} /></span><span className="desktop-only">专用账号</span></button><button className={`kill-switch ${isKilled ? "kill-flash" : ""}`} onClick={stopAgent} aria-label="紧急停止 Agent"><CircleStop size={15} /> <span className="desktop-only">KILL SWITCH</span><kbd>Ctrl ⇧ K</kbd></button><button className="mobile-menu icon-button" aria-label="打开菜单"><Menu size={19} /></button></div></header>{announcement && <div className={`app-notice notice-${announcementTone}`} role="status">{announcementTone === "error" ? <AlertTriangle size={16} /> : announcementTone === "success" ? <Check size={16} /> : <Bot size={16} />}<span>{announcement}</span><button className="icon-button" onClick={() => setAnnouncement("")} aria-label="关闭状态提示"><X size={15} /></button></div>}<div className="shell-body"><aside className="sidebar" aria-label="主导航"><div className="nav-group">{navItems.map(([id, label, Icon]) => <button key={id} className={`nav-item ${page === id ? "is-active" : ""}`} onClick={() => setPage(id)} aria-current={page === id ? "page" : undefined}><Icon size={18} /><span>{label}</span>{page === id && <i />}</button>)}</div><div className="sidebar-foot"><button className="nav-item" onClick={() => setAccountOpen(true)}><Settings size={18} /><span>设置</span></button><div className="sync-card"><div><span className={`dot ${registry.canOperate ? "dot-green" : "dot-yellow"}`} />规则同步</div><strong>{registry.canOperate ? "当前快照有效" : registry.status}</strong><small>{activeRuleset?.regulation || "等待同步"}</small></div></div></aside><main className="main-content">{content}</main></div>{accountOpen && <AccountWizard onClose={() => setAccountOpen(false)} />}</div>;
 }

@@ -235,6 +235,13 @@ kbd { padding: 2px 4px; background: rgb(127 29 29 / .75); border-radius: 3px; fo
 .replay-viewer-tools label { display: grid; gap: 5px; color: var(--muted); font-size: 11px; font-weight: 700; }
 .replay-viewer-tools .secondary-button { text-decoration: none; }
 .replay-frame { width: calc(100% - 40px); height: 620px; margin: 18px 20px 0; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+.agent-learning-panel { margin-top: 16px; padding-bottom: 18px; }
+.learning-toolbar { display: flex; flex-wrap: wrap; gap: 8px; padding: 16px 20px 0; }
+.learning-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 16px 20px 0; }
+.learning-failure-list { display: grid; gap: 7px; padding: 14px 20px 0; }
+.learning-failure { display: grid; gap: 3px; padding: 10px 12px; border: 1px solid #fee2e2; border-radius: 5px; background: #fff7f7; }
+.learning-failure strong { color: #b91c1c; font-size: 12px; }
+.learning-failure span { color: var(--muted); font-size: 10px; }
 @media (max-width: 560px) { .agent-config-row { align-items: stretch; padding-inline: 14px; }.agent-config-row label { flex: 1 1 100%; }.agent-config-row input, .agent-config-row select { width: 100%; }.config-hint { padding-bottom: 0; }.replay-viewer-tools { margin-inline: 14px; }.replay-viewer-tools label, .replay-viewer-tools select, .replay-viewer-tools .secondary-button { width: 100%; }.replay-frame { width: calc(100% - 28px); height: 520px; margin-inline: 14px; } }
 .chart-label { font-size: 12px; }
 .chart-axis { font-size: 10px; }
