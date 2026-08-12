@@ -1,5 +1,6 @@
 node_modules/
 .venv/
+.laplace-venv/
 .cache/
 dist/
 .forge-vite.*.log

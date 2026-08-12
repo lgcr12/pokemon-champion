@@ -3,7 +3,9 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-const PYTHON = process.env.CHAMPION_SIDECAR_PYTHON || resolve(".venv", "Scripts", "python.exe");
+const DEFAULT_PYTHON = process.env.CHAMPION_SIDECAR_PYTHON || resolve(".venv", "Scripts", "python.exe");
+const LAPLACE_ROOT = process.env.LAPLACE_ROOT || resolve("..", "Laplace-Pokemon-Showdown-AI");
+const LAPLACE_PYTHON = process.env.CHAMPION_LAPLACE_PYTHON || resolve(".laplace-venv", "Scripts", "python.exe");
 const SIDECAR = resolve("sidecar", "main.py");
 
 export class AgentController {
@@ -13,22 +15,43 @@ export class AgentController {
     this.pending = new Map();
     this.buffer = "";
     this.lastError = "";
+    this.pythonPath = "";
   }
 
-  available() {
-    return existsSync(PYTHON) && existsSync(SIDECAR);
+  available(policy = "structured") {
+    const python = policy === "laplace" ? LAPLACE_PYTHON : DEFAULT_PYTHON;
+    return existsSync(python) && existsSync(SIDECAR);
   }
 
-  async ensureSidecar() {
-    if (this.child && this.child.exitCode === null) return this.ready;
-    if (!this.available()) throw Object.assign(new Error("Python sidecar 未安装。请运行 .venv\\Scripts\\python.exe -m pip install -r sidecar\\requirements.txt。"), { status: 503, code: "SIDECAR_UNAVAILABLE" });
+  async ensureSidecar(policy = "structured") {
+    const requestedPolicy = String(policy || "structured").toLowerCase().startsWith("laplace") ? "laplace" : "structured";
+    const python = requestedPolicy === "laplace" ? LAPLACE_PYTHON : DEFAULT_PYTHON;
+    if (this.child && this.child.exitCode === null && this.pythonPath === python) return this.ready;
+    if (this.child && this.child.exitCode === null && this.pythonPath !== python) {
+      this.child.stdin.end();
+      this.child.kill();
+      this.child = null;
+      this.ready = null;
+      this.buffer = "";
+    }
+    if (!this.available(requestedPolicy)) {
+      const detail = requestedPolicy === "laplace"
+        ? `Laplace 环境未安装：${LAPLACE_PYTHON}；请确认 LAPLACE_ROOT=${LAPLACE_ROOT}`
+        : "Python sidecar 未安装。请运行 .venv\\Scripts\\python.exe -m pip install -r sidecar\\requirements.txt。";
+      throw Object.assign(new Error(detail), { status: 503, code: "SIDECAR_UNAVAILABLE" });
+    }
     this.ready = new Promise((resolvePromise, reject) => {
-      const child = spawn(PYTHON, [SIDECAR], {
+      const child = spawn(python, [SIDECAR], {
         cwd: resolve("."),
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          LAPLACE_ROOT,
+        },
       });
       this.child = child;
+      this.pythonPath = python;
       const timer = setTimeout(() => {
         child.kill();
         reject(new Error("Python sidecar startup timed out."));
@@ -77,7 +100,7 @@ export class AgentController {
   }
 
   async command(command, payload = {}, timeoutMs = 15000) {
-    await this.ensureSidecar();
+    await this.ensureSidecar(command === "start" ? payload.policy : this.pythonPath === LAPLACE_PYTHON ? "laplace" : "structured");
     const id = randomUUID();
     const response = new Promise((resolvePromise, reject) => {
       const timer = setTimeout(() => {
