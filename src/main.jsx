@@ -486,10 +486,7 @@ function BattleBoard({ team = [], status = {}, selectedFormat }) {
   const boardState = isStale ? "STALE" : isBattle ? "LIVE" : status.status === "SEARCHING" ? "SEARCHING" : "IDLE";
   const focusName = focused?.localizedName || localizedTerm(focused?.name || focused?.species, "pokemon") || "未选择宝可梦";
   const focusMoves = focused?.moves || [];
-  const publicTeamTitle = String(status.teamTitle || "").trim();
-  const battleSourceLabel = status.teamSource === "hot"
-    ? (/fuck|shit|bitch|cunt|asshole/i.test(publicTeamTitle) ? "当前规则热门队伍" : publicTeamTitle || "规则内热门队伍")
-    : "排位提交队伍";
+  const battleSourceLabel = status.teamSource === "hot" ? (status.teamTitle || "规则内热门队伍") : "排位提交队伍";
   const displayName = (member) => member?.localizedName || localizedTerm(member?.name || member?.species, "pokemon") || member?.name || "未知宝可梦";
   const displayMove = (move, member, index) => member?.moveLabels?.[index] || localizedTerm(move, "moves") || move;
   const displayAbility = (member) => member?.abilityLabel || localizedTerm(member?.ability, "abilities") || member?.ability || "未知特性";
