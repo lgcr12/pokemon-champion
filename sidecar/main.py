@@ -30,6 +30,18 @@ from poke_env.player import Player
 from poke_env.player.battle_order import BattleOrder, DefaultBattleOrder, DoubleBattleOrder
 
 
+LAPLACE_ROOT = Path(os.environ.get("LAPLACE_ROOT", "")).expanduser() if os.environ.get("LAPLACE_ROOT") else None
+LAPLACE_ENGINE = None
+LAPLACE_LOAD_ERROR = ""
+if LAPLACE_ROOT and (LAPLACE_ROOT / "src" / "engine_search.py").exists():
+    try:
+        sys.path.insert(0, str(LAPLACE_ROOT / "src"))
+        from engine_search import EnginePlayer as LAPLACE_ENGINE  # type: ignore
+    except Exception as error:
+        LAPLACE_LOAD_ERROR = f"{error.__class__.__name__}: {error}"
+LAPLACE_AVAILABLE = LAPLACE_ENGINE is not None
+
+
 ROOT = Path(__file__).resolve().parents[1]
 DATA_ROOT = ROOT / "data" / "agent"
 STATE_LOCK = threading.Lock()
@@ -72,6 +84,8 @@ STATE = {
     "battleStartedAt": None,
     "updatedAt": None,
     "policyVersion": "structured-visible-state-v1",
+    "policyRequested": "structured",
+    "policyFallback": "",
 }
 
 
@@ -314,6 +328,17 @@ async def run_ladder(payload):
     global ACTIVE_PLAYER
     replay_dir = DATA_ROOT / "showdown-replays" / payload["rulesetId"]
     replay_dir.mkdir(parents=True, exist_ok=True)
+    requested_policy = str(payload.get("policy") or os.environ.get("AGENT_POLICY", "structured")).strip().lower()
+    use_laplace = requested_policy in {"laplace", "laplace-v1"} and payload.get("battleType") == "single"
+    policy_version = "laplace-engine-v1" if use_laplace else "structured-visible-state-v1"
+    policy_fallback = ""
+    if use_laplace and not LAPLACE_AVAILABLE:
+        use_laplace = False
+        policy_fallback = "Laplace 未加载：请配置 LAPLACE_ROOT，并安装其 poke-engine 依赖。"
+        if LAPLACE_LOAD_ERROR:
+            policy_fallback += f" ({LAPLACE_LOAD_ERROR})"
+    if requested_policy.startswith("laplace") and payload.get("battleType") != "single":
+        policy_fallback = "Laplace 当前仅接入单打；双打已回退 structured-visible-state-v1。"
     update_state(
         status="CONNECTING",
         mode="ladder",
@@ -347,17 +372,22 @@ async def run_ladder(payload):
         connectedAt=None,
         searchStartedAt=None,
         battleStartedAt=None,
+        policyVersion=policy_version,
+        policyRequested=requested_policy,
+        policyFallback=policy_fallback,
     )
-    player = StructuredPlayer(
-        account_configuration=AccountConfiguration(payload["username"], payload["password"]),
-        server_configuration=ShowdownServerConfiguration,
-        battle_format=payload["showdownFormatId"],
-        team=payload["team"],
-        max_concurrent_battles=1,
-        save_replays=str(replay_dir),
-        accept_open_team_sheet=bool(payload.get("openTeamSheets")),
-        start_timer_on_battle_start=True,
-    )
+    player_class = LAPLACE_ENGINE if use_laplace else StructuredPlayer
+    player_kwargs = {
+        "account_configuration": AccountConfiguration(payload["username"], payload["password"]),
+        "server_configuration": ShowdownServerConfiguration,
+        "battle_format": payload["showdownFormatId"],
+        "team": payload["team"],
+        "max_concurrent_battles": 1,
+        "save_replays": str(replay_dir),
+        "accept_open_team_sheet": bool(payload.get("openTeamSheets")),
+        "start_timer_on_battle_start": True,
+    }
+    player = player_class(**player_kwargs)
     ACTIVE_PLAYER = player
     handle_message = player.ps_client._handle_message
 
@@ -451,11 +481,19 @@ async def run_ladder(payload):
 
         player.ps_client.search_ladder_game = tracked_search_ladder_game
         await player.ladder(payload["games"])
+        replay_files = []
+        started_timestamp = datetime.fromisoformat(public_state()["startedAt"].replace("Z", "+00:00")).timestamp()
+        for replay_path in sorted(replay_dir.glob("*.html"), key=lambda item: item.stat().st_mtime, reverse=True):
+            if replay_path.stat().st_mtime >= started_timestamp - 2:
+                replay_files.append(replay_path.name)
         summary = {
             "rulesetId": payload["rulesetId"],
             "showdownFormatId": payload["showdownFormatId"],
             "teamVersion": payload.get("teamVersion", "manual"),
             "policyVersion": STATE["policyVersion"],
+            "policyRequested": STATE.get("policyRequested", "structured"),
+            "policyFallback": STATE.get("policyFallback", ""),
+            "replayFiles": replay_files[: int(player.n_finished_battles)],
             "games": int(player.n_finished_battles),
             "wins": int(player.n_won_battles),
             "losses": int(player.n_lost_battles),
@@ -500,10 +538,34 @@ async def run_ladder(payload):
 def list_replays(ruleset_id=""):
     root = DATA_ROOT / "replays"
     paths = list((root / ruleset_id).glob("*.json")) if ruleset_id else list(root.glob("*/*.json")) if root.exists() else []
+    replay_root = DATA_ROOT / "showdown-replays"
+    replay_files = {}
+    if replay_root.exists():
+        replay_paths = list((replay_root / ruleset_id).glob("*.html")) if ruleset_id else list(replay_root.glob("*/*.html"))
+        for replay_path in replay_paths:
+            replay_files.setdefault(replay_path.parent.name, []).append({
+                "fileName": replay_path.name,
+                "size": replay_path.stat().st_size,
+                "updatedAt": datetime.fromtimestamp(replay_path.stat().st_mtime, timezone.utc).isoformat(),
+            })
+        for files in replay_files.values():
+            files.sort(key=lambda item: item["updatedAt"], reverse=True)
     items = []
+    cursors = {key: 0 for key in replay_files}
     for path in sorted(paths, reverse=True)[:200]:
         try:
-            items.append(json.loads(path.read_text(encoding="utf-8")))
+            item = json.loads(path.read_text(encoding="utf-8"))
+            item.setdefault("batchId", path.stem)
+            pool = replay_files.get(path.parent.name, [])
+            start = cursors.get(path.parent.name, 0)
+            count = int(item.get("games", 0) or 0)
+            item["replays"] = pool[start:start + count] if count else []
+            cursors[path.parent.name] = start + len(item["replays"])
+            if item.get("replayFiles"):
+                item["replays"] = [entry for entry in pool if entry["fileName"] in set(item["replayFiles"])] or item["replays"]
+            item["replayFiles"] = [entry["fileName"] for entry in item["replays"]]
+            item["replayCount"] = len(item["replays"])
+            items.append(item)
         except Exception:
             continue
     return items

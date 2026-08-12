@@ -224,6 +224,18 @@ kbd { padding: 2px 4px; background: rgb(127 29 29 / .75); border-radius: 3px; fo
 .replay-item small { font-size: 11px; }
 .replay-tag { font-size: 10px; }
 .replay-detail-head h2 { font-size: 18px; }
+.agent-config-row { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; padding: 16px 20px 0; }
+.agent-config-row label { display: grid; gap: 5px; color: var(--muted); font-size: 11px; font-weight: 700; }
+.agent-config-row input, .agent-config-row select, .replay-viewer-tools select { height: 38px; min-width: 130px; padding: 0 9px; border: 1px solid var(--line); border-radius: 5px; color: var(--ink); background: #fff; outline: 0; font-size: 12px; }
+.agent-config-row input { width: 82px; min-width: 82px; }
+.dashboard-games { display: grid; gap: 4px; align-content: center; color: var(--muted); font-size: 10px; font-weight: 700; }
+.dashboard-games input { width: 58px; height: 34px; padding: 0 6px; border: 1px solid var(--line); border-radius: 5px; color: var(--ink); background: #fff; font-size: 12px; }
+.config-hint { padding-bottom: 10px; color: var(--muted); font: 10px 'JetBrains Mono', monospace; }
+.replay-viewer-tools { display: flex; align-items: end; flex-wrap: wrap; gap: 9px; margin: 18px 20px 0; }
+.replay-viewer-tools label { display: grid; gap: 5px; color: var(--muted); font-size: 11px; font-weight: 700; }
+.replay-viewer-tools .secondary-button { text-decoration: none; }
+.replay-frame { width: calc(100% - 40px); height: 620px; margin: 18px 20px 0; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+@media (max-width: 560px) { .agent-config-row { align-items: stretch; padding-inline: 14px; }.agent-config-row label { flex: 1 1 100%; }.agent-config-row input, .agent-config-row select { width: 100%; }.config-hint { padding-bottom: 0; }.replay-viewer-tools { margin-inline: 14px; }.replay-viewer-tools label, .replay-viewer-tools select, .replay-viewer-tools .secondary-button { width: 100%; }.replay-frame { width: calc(100% - 28px); height: 520px; margin-inline: 14px; } }
 .chart-label { font-size: 12px; }
 .chart-axis { font-size: 10px; }
 .replay-turn h3 { font-size: 15px; }

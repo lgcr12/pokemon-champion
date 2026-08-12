@@ -558,6 +558,36 @@ async function handleAgentApi(req, res) {
     sendJson(res, 200, { ok: true, ...data });
     return;
   }
+  if (req.method === "GET" && url.pathname.startsWith("/api/agent/replay/")) {
+    const parts = url.pathname.split("/").filter(Boolean);
+    const rulesetId = String(parts[3] || "").trim();
+    let fileName = "";
+    try { fileName = decodeURIComponent(String(parts.slice(4).join("/") || "").trim()); } catch { fileName = ""; }
+    if (!rulesetId || !fileName || fileName.includes("/") || fileName.includes("\\") || fileName.includes("..") || !fileName.toLowerCase().endsWith(".html")) {
+      sendJson(res, 400, { ok: false, error: "非法回放文件路径。" });
+      return;
+    }
+    const root = resolve(ROOT, "data", "agent", "showdown-replays", rulesetId);
+    const filePath = resolve(root, fileName);
+    if (!filePath.startsWith(`${root}${process.platform === "win32" ? "\\" : "/"}`)) {
+      sendJson(res, 403, { ok: false, error: "禁止访问该回放文件。" });
+      return;
+    }
+    try {
+      const fileStat = await stat(filePath);
+      if (!fileStat.isFile()) throw new Error("Not a file");
+      res.writeHead(200, {
+        "content-type": "text/html; charset=utf-8",
+        "content-disposition": "inline",
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+      });
+      createReadStream(filePath).pipe(res);
+    } catch {
+      sendJson(res, 404, { ok: false, error: "回放文件不存在。" });
+    }
+    return;
+  }
   if (req.method === "GET" && url.pathname === "/api/agent/models") {
     const data = await agentController.models(String(url.searchParams.get("rulesetId") || ""));
     sendJson(res, 200, { ok: true, ...data });
@@ -591,6 +621,7 @@ async function handleAgentApi(req, res) {
       team: prepared.showdownTeamText,
       teamVersion: String(body.teamVersion || "manual"),
       games,
+      policy: String(body.policy || "structured").trim().toLowerCase(),
     });
     sendJson(res, 202, { ok: true, ...state, ...rulesetMetadata(snapshot) });
     return;
@@ -6932,7 +6963,7 @@ async function startServer() {
         await handleAccountApi(req, res);
         return;
       }
-      if ((req.method === "GET" && (req.url === "/api/agent/status" || req.url?.startsWith("/api/agent/replays") || req.url?.startsWith("/api/agent/models"))) || (req.method === "POST" && ["/api/agent/start", "/api/agent/stop", "/api/agent/promote"].includes(req.url || ""))) {
+      if ((req.method === "GET" && (req.url === "/api/agent/status" || req.url?.startsWith("/api/agent/replays") || req.url?.startsWith("/api/agent/replay/") || req.url?.startsWith("/api/agent/models"))) || (req.method === "POST" && ["/api/agent/start", "/api/agent/stop", "/api/agent/promote"].includes(req.url || ""))) {
         await handleAgentApi(req, res);
         return;
       }
