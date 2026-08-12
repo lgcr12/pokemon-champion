@@ -4,6 +4,7 @@ import os
 import sys
 import threading
 import traceback
+import inspect
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -28,6 +29,13 @@ from poke_env import AccountConfiguration, ShowdownServerConfiguration
 from poke_env.concurrency import handle_threaded_coroutines
 from poke_env.player import Player
 from poke_env.player.battle_order import BattleOrder, DefaultBattleOrder, DoubleBattleOrder
+
+
+def run_threaded_coroutine(coro, loop):
+    """Bridge poke-env 0.8 and 0.15 coroutine helper signatures."""
+    if len(inspect.signature(handle_threaded_coroutines).parameters) >= 2:
+        return handle_threaded_coroutines(coro, loop)
+    return handle_threaded_coroutines(coro)
 
 
 LAPLACE_ROOT = Path(os.environ.get("LAPLACE_ROOT", "")).expanduser() if os.environ.get("LAPLACE_ROOT") else None
@@ -464,7 +472,7 @@ async def run_ladder(payload):
     player.ps_client.send_message = tracked_send_message
     try:
         await asyncio.wait_for(
-            handle_threaded_coroutines(player.ps_client.logged_in.wait()),
+            run_threaded_coroutine(player.ps_client.logged_in.wait(), player.ps_client.loop),
             timeout=20,
         )
         update_state(
