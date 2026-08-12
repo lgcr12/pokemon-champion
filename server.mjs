@@ -22,6 +22,7 @@ const CHAMPION_DATA_PATH = join(ROOT, "data", "champion-data.json");
 const BATTLE_KNOWLEDGE_DATA_PATH = join(ROOT, "data", "battle-knowledge.json");
 const AGENT_DATA_ROOT = join(ROOT, "data", "agent");
 const AGENT_LEARNING_ROOT = join(AGENT_DATA_ROOT, "learning");
+const TEAM_LAB_ROOT = join(AGENT_DATA_ROOT, "team-lab");
 const ZH_HANS_TERMS_PATH = join(ROOT, "data", "zh-hans-terms.json");
 const POCKET_AG_COACH_RULES_PATH = join(ROOT, "skills", "pocket-ag-coach", "references", "coach-rules.json");
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
@@ -1909,6 +1910,186 @@ async function evaluateGeneratedTeam(teamText, format, rulesetId, gamesPerOppone
 async function readAgentTeamRegistry(rulesetId) {
   const path = join(AGENT_LEARNING_ROOT, rulesetId, "team-registry.json");
   try { return JSON.parse(await readFile(path, "utf8")); } catch { return { schemaVersion: 1, rulesetId, champion: null, challengers: [], updatedAt: "" }; }
+}
+
+function teamLabPath(rulesetId) {
+  return join(TEAM_LAB_ROOT, rulesetId, "experiments.json");
+}
+
+async function readTeamLab(rulesetId) {
+  try {
+    const data = JSON.parse(await readFile(teamLabPath(rulesetId), "utf8"));
+    return {
+      schemaVersion: 1,
+      rulesetId,
+      experiments: Array.isArray(data.experiments) ? data.experiments : [],
+      updatedAt: data.updatedAt || "",
+    };
+  } catch {
+    return { schemaVersion: 1, rulesetId, experiments: [], updatedAt: "" };
+  }
+}
+
+async function writeTeamLab(rulesetId, value) {
+  const root = join(TEAM_LAB_ROOT, rulesetId);
+  await mkdir(root, { recursive: true });
+  const payload = { schemaVersion: 1, rulesetId, experiments: value.experiments || [], updatedAt: new Date().toISOString() };
+  await writeFile(teamLabPath(rulesetId), `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  return payload;
+}
+
+function teamLabCandidateKey(candidate = {}) {
+  return (candidate.team || candidate.build?.team || [])
+    .map((member) => `${strictFamilyKey(member.slug || member.name || member.id)}:${strictKey(member.item || "")}:${(member.moves || []).map(strictKey).sort().join(",")}`)
+    .sort()
+    .join("|");
+}
+
+function teamLabCandidateSummary(candidate = {}) {
+  const evaluation = candidate.evaluation || {};
+  return {
+    id: candidate.id,
+    rulesetId: candidate.rulesetId,
+    format: candidate.format,
+    createdAt: candidate.createdAt,
+    status: candidate.status || "pending_evaluation",
+    score: Number(candidate.score || 0),
+    team: candidate.build?.team || candidate.team || [],
+    buildReport: candidate.build?.buildReport || {},
+    validation: candidate.validation || { ok: Boolean(candidate.build?.ok) },
+    evaluation: {
+      ok: Boolean(evaluation.ok),
+      games: Number(evaluation.games || 0),
+      wins: Number(evaluation.wins || 0),
+      losses: Number(evaluation.losses || 0),
+      ties: Number(evaluation.ties || 0),
+      winRate: Number(evaluation.winRate || 0),
+      error: evaluation.error || "",
+      results: (evaluation.results || []).slice(0, 20),
+    },
+    evidence: {
+      source: "strict-search-plus-local-showdown",
+      rulesetId: candidate.rulesetId,
+      feedbackGames: Number(candidate.feedbackGames || 0),
+      feedbackFailures: candidate.feedbackFailures || [],
+    },
+  };
+}
+
+async function handleTeamLabApi(req, res) {
+  const url = new URL(req.url || "/api/team-lab", "http://127.0.0.1");
+  const body = req.method === "GET" ? {} : await readJson(req).catch(() => ({}));
+  const format = (url.searchParams.get("format") || body.format) === "double" ? "double" : "single";
+  const requestedRulesetId = String(url.searchParams.get("rulesetId") || "").trim();
+  if (req.method === "GET") {
+    const snapshot = ruleRegistry.operational({ format, rulesetId: requestedRulesetId });
+    const lab = await readTeamLab(snapshot.rulesetId);
+    const registry = await readAgentTeamRegistry(snapshot.rulesetId);
+    sendJson(res, 200, {
+      ok: true,
+      ...rulesetMetadata(snapshot),
+      experiments: lab.experiments.map(teamLabCandidateSummary),
+      champion: registry.champion ? teamLabCandidateSummary(registry.champion) : null,
+      challengers: (registry.challengers || []).map(teamLabCandidateSummary),
+      updatedAt: lab.updatedAt,
+    });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/team-lab/generate") {
+    const snapshot = ruleRegistry.operational({ format, rulesetId: String(body.rulesetId || requestedRulesetId) });
+    const count = Math.max(1, Math.min(8, Number(body.count || 5) || 5));
+    const gamesPerOpponent = Math.max(1, Math.min(2, Number(body.gamesPerOpponent || 1) || 1));
+    const summary = await learnFromAgentTraces(snapshot.rulesetId, format);
+    const feedback = buildFeedbackHistory(summary);
+    const lab = await readTeamLab(snapshot.rulesetId);
+    const generated = [];
+    const seen = new Set(lab.experiments.map(teamLabCandidateKey));
+    for (let index = 0; index < count; index += 1) {
+      const built = strictBuildTeam({
+        format,
+        rulesetId: snapshot.rulesetId,
+        userGoal: String(body.userGoal || ""),
+        currentTeam: Array.isArray(body.currentTeam) ? body.currentTeam : [],
+        buildMethod: "evolution",
+        evolution: true,
+        forceGenerated: true,
+        variationSeed: `team-lab-${Date.now()}-${index}`,
+        battleHistory: feedback,
+        avoidTeam: generated[0]?.build?.team || [],
+      });
+      if (!built.ok) continue;
+      const key = teamLabCandidateKey({ team: built.team });
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const teamText = teamTextFromBuild(built.team);
+      const validation = validateShowdownTeam(teamText, format, snapshot.rulesetId);
+      if (!validation.ok) continue;
+      const evaluation = body.evaluate === false
+        ? { ok: false, games: 0, wins: 0, losses: 0, ties: 0, winRate: 0, results: [], error: "等待本地对战评估" }
+        : await evaluateGeneratedTeam(teamText, format, snapshot.rulesetId, gamesPerOpponent);
+      const score = Math.round((
+        (evaluation.games ? evaluation.winRate * 8 : 0) +
+        (built.buildReport?.synergies?.length || 0) * 4 +
+        Math.min(20, Number(summary.games || 0)) -
+        (built.buildReport?.risks?.length || 0) * 1.5
+      ) * 10) / 10;
+      generated.push({
+        id: `lab-${Date.now()}-${index + 1}`,
+        createdAt: new Date().toISOString(),
+        rulesetId: snapshot.rulesetId,
+        format,
+        build: built,
+        teamText,
+        validation,
+        evaluation,
+        feedbackGames: summary.games,
+        feedbackFailures: (summary.failures || []).slice(0, 8),
+        score,
+        status: evaluation.ok && evaluation.games >= 4 && evaluation.winRate >= 50 ? "challenger" : "pending_evaluation",
+      });
+    }
+    lab.experiments = [...generated, ...lab.experiments].slice(0, 40);
+    const saved = await writeTeamLab(snapshot.rulesetId, lab);
+    sendJson(res, 200, {
+      ok: true,
+      ...rulesetMetadata(snapshot),
+      summary,
+      experiments: generated.map(teamLabCandidateSummary),
+      totalExperiments: saved.experiments.length,
+    });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/team-lab/promote") {
+    const snapshot = ruleRegistry.operational({ format, rulesetId: String(body.rulesetId || requestedRulesetId) });
+    const candidateId = String(body.candidateId || "").trim();
+    const lab = await readTeamLab(snapshot.rulesetId);
+    const candidate = lab.experiments.find((item) => item.id === candidateId);
+    if (!candidate) {
+      sendJson(res, 404, { ok: false, error: "找不到该配队实验候选。" });
+      return;
+    }
+    if (!candidate.evaluation?.ok || Number(candidate.evaluation.games || 0) < 4) {
+      sendJson(res, 422, { ok: false, error: "候选尚未完成足够的本地实战评估，不能晋级。" });
+      return;
+    }
+    const registry = await readAgentTeamRegistry(snapshot.rulesetId);
+    const promoted = { ...candidate, status: "active", promotedAt: new Date().toISOString() };
+    if (registry.champion) registry.champion.status = "archived";
+    registry.champion = promoted;
+    registry.challengers = [
+      ...(registry.challengers || []).filter((item) => item.id !== candidateId),
+      { ...candidate, status: "promoted" },
+    ].slice(-10);
+    candidate.status = "promoted";
+    await writeTeamLab(snapshot.rulesetId, lab);
+    await writeAgentTeamRegistry(snapshot.rulesetId, registry);
+    sendJson(res, 200, { ok: true, ...rulesetMetadata(snapshot), champion: teamLabCandidateSummary(promoted), registry });
+    return;
+  }
+
+  sendJson(res, 405, { ok: false, error: "不支持的配队实验操作。" });
 }
 
 async function writeAgentTeamRegistry(rulesetId, registry) {
@@ -7515,6 +7696,14 @@ async function startServer() {
       }
       if (req.method === "POST" && req.url === "/api/team-design") {
         await handleTeamDesign(req, res);
+        return;
+      }
+      if (req.method === "GET" && req.url?.startsWith("/api/team-lab")) {
+        await handleTeamLabApi(req, res);
+        return;
+      }
+      if (req.method === "POST" && (req.url === "/api/team-lab/generate" || req.url === "/api/team-lab/promote")) {
+        await handleTeamLabApi(req, res);
         return;
       }
       if (req.method === "POST" && req.url === "/api/ai-test") {

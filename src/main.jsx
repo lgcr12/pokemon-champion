@@ -106,6 +106,7 @@ const initialTeam = [
 ];
 
 const navItems = [
+  ["teamlab", "配队实验", Sparkles],
   ["dashboard", "总览", LayoutDashboard],
   ["forge", "配队工坊", Swords],
   ["arena", "Agent 竞技场", Zap],
@@ -893,6 +894,92 @@ function Rules() {
   return <div className="page"><div className="page-title-row"><div><span className="eyebrow">RULES & META</span><h1>规则与环境</h1><p>规则先于模型，当前快照先于历史经验。</p></div><button className="secondary-button" onClick={() => load(true)} disabled={syncing}><RefreshCw size={16} className={syncing ? "spin" : ""} />{syncing ? "同步中" : "同步规则"}</button></div><section className={`drift-banner ${drift ? "is-drift" : ""}`}><div className="drift-icon">{drift ? <AlertTriangle size={20} /> : <ShieldCheck size={20} />}</div><div><strong>{drift ? registry.status : "规则快照已同步"}</strong><p>{error || (drift ? "本地引擎与官方格式存在差异，配队与排位已暂停。" : "本地 Showdown 引擎与在线格式一致。")}</p></div><StatusPill tone={drift ? "yellow" : "green"}>{registry.canOperate ? "OPERATIONAL" : "BLOCKED"}</StatusPill></section><div className="rules-grid"><section className="panel"><SectionHeader eyebrow="ACTIVE SNAPSHOTS" title="当前官方排位" />{registry.active?.length ? registry.active.map((snapshot) => <div className="rule-card" key={snapshot.rulesetId}><div className="rule-heading"><div className="rule-badge">{snapshot.battleType === "double" ? "VGC" : "BSS"}</div><div><strong>{snapshot.name?.replace(/^\[Gen \d+ Champions\]\s*/, "")}</strong><span>{snapshot.showdownFormatId}</span></div><StatusPill icon={snapshot.status === "active" ? Check : AlertTriangle} tone={snapshot.status === "active" ? "green" : "yellow"}>{snapshot.status.toUpperCase()}</StatusPill></div><div className="rule-tags">{snapshot.rules?.map((rule) => <span key={rule}>{rule}</span>)}</div><div className="rule-meta"><span>rulesetId <b>{snapshot.rulesetId}</b></span><span>Reg <b>{snapshot.regulation}</b></span></div></div>) : <div className="empty-state">没有可用的官方 Champions 排位快照。</div>}</section><section className="panel"><SectionHeader eyebrow="DRIFT REPORT" title="规则差异" action={<span className="mono muted">{registry.lastSyncAt ? new Date(registry.lastSyncAt).toLocaleString() : "NOT SYNCED"}</span>} />{registry.differences?.length ? <div className="difference-list">{registry.differences.map((item, index) => <div className="boundary-note" key={`${item.formatId}-${index}`}><AlertTriangle size={15} />{item.formatId}: {item.type}</div>)}</div> : <div className="boundary-note"><ShieldCheck size={15} />在线格式、本地规则与合法池校验通过。</div>}</section></div></div>;
 }
 
+function TeamLab({ team, setTeam }) {
+  const [format, setFormat] = useState("single");
+  const [rules, setRules] = useState({ active: [], status: "LOADING" });
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const activeRule = rules.active?.find((item) => item.battleType === format && item.status === "active");
+
+  const load = async () => {
+    setError("");
+    try {
+      const [nextRules, nextLab] = await Promise.all([
+        apiRequest("/api/rules/active"),
+        apiRequest(`/api/team-lab?format=${format}`),
+      ]);
+      setRules(nextRules);
+      setData(nextLab);
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  };
+  useEffect(() => { load(); }, [format]);
+
+  const generate = async () => {
+    setBusy("generate");
+    setError("");
+    try {
+      const next = await apiRequest("/api/team-lab/generate", {
+        method: "POST",
+        body: JSON.stringify({ format, count: 4, gamesPerOpponent: 1, evaluate: true, currentTeam: team }),
+      });
+      setData((current) => ({ ...current, ...next, experiments: [...(next.experiments || []), ...(current?.experiments || [])] }));
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const promote = async (candidateId) => {
+    setBusy(candidateId);
+    setError("");
+    try {
+      const next = await apiRequest("/api/team-lab/promote", {
+        method: "POST",
+        body: JSON.stringify({ format, candidateId, rulesetId: data?.rulesetId }),
+      });
+      setData((current) => ({ ...current, champion: next.champion, experiments: (current?.experiments || []).map((item) => item.id === candidateId ? { ...item, status: "promoted" } : item) }));
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const loadCandidate = (candidate) => {
+    const nextTeam = (candidate.team || []).map((member) => ({
+      id: member.slug || member.id || member.name,
+      name: member.slug || member.name,
+      localizedName: member.name || member.slug,
+      sprite: member.slug || member.name,
+      role: member.role || "结构成员",
+      item: member.item || "",
+      itemLabel: member.item || "",
+      ability: member.ability || "",
+      abilityLabel: member.ability || "",
+      nature: member.nature || "",
+      stats: member.evs || "",
+      moves: member.moves || [],
+      moveLabels: member.moves || [],
+      locked: false,
+      tone: "steel",
+    }));
+    if (nextTeam.length) setTeam(nextTeam);
+  };
+
+  return <div className="page team-lab-page">
+    <div className="page-title-row"><div><span className="eyebrow">TEAM RESEARCH LOOP</span><h1>配队实验室</h1><p>规则约束、结构搜索、本地对战评估和排位反馈在同一条实验链路中。</p></div><div className="toolbar-actions"><StatusPill icon={ShieldCheck} tone={data?.rulesetId ? "green" : "muted"}>{data?.rulesetId || "读取规则中"}</StatusPill><button className="primary-button" onClick={generate} disabled={busy === "generate" || !activeRule}><Sparkles size={16} />{busy === "generate" ? "搜索与评估中..." : "生成候选队伍"}</button></div></div>
+    <div className="team-lab-switch"><button className={format === "single" ? "is-active" : ""} onClick={() => setFormat("single")}>BSS 单打</button><button className={format === "double" ? "is-active" : ""} onClick={() => setFormat("double")}>VGC 双打</button><span>{activeRule?.name?.replace(/^\[Gen \d+ Champions\]\s*/, "") || "当前规则不可用"}</span></div>
+    {error && <div className="boundary-note is-error"><AlertTriangle size={15} />{error}</div>}
+    <div className="team-lab-summary"><Metric label="排位反馈" value={`${data?.summary?.games || 0} 场`} detail="仅使用相同 rulesetId" tone="blue" icon={Database} /><Metric label="当前胜率" value={`${data?.summary?.winRate || 0}%`} detail="不是候选队伍胜率" tone="yellow" icon={Trophy} /><Metric label="候选数量" value={data?.experiments?.length || 0} detail="规则隔离保存" tone="green" icon={GitBranch} /><Metric label="晋级队伍" value={data?.champion ? "1" : "0"} detail="需显式晋级" tone="red" icon={ShieldCheck} /></div>
+    <section className="panel team-lab-panel"><SectionHeader eyebrow="SEARCHED CANDIDATES" title="候选队伍" action={<span className="mono muted">STRICT SEARCH + LOCAL SHOWDOWN</span>} />{data?.experiments?.length ? <div className="team-lab-grid">{data.experiments.map((candidate) => { const evaluation = candidate.evaluation || {}; const canPromote = evaluation.ok && Number(evaluation.games || 0) >= 4 && candidate.status !== "promoted"; return <article className="team-lab-card" key={candidate.id}><div className="team-lab-card-head"><div><span className="eyebrow">{candidate.status === "promoted" ? "PROMOTED" : "CANDIDATE"}</span><h2>{candidate.id}</h2></div><StatusPill tone={candidate.validation?.ok ? "green" : "red"}>{candidate.validation?.ok ? "规则合法" : "待修复"}</StatusPill></div><div className="team-lab-members">{(candidate.team || []).map((member) => <div key={`${candidate.id}-${member.slug}-${member.item}`}><div className="team-lab-sprite"><Sprite id={member.slug || member.name} size="sm" /></div><strong>{member.name || member.slug}</strong><small>{member.role || "结构成员"}</small></div>)}</div><div className="team-lab-stats"><div><span>结构分</span><b>{Number(candidate.score || 0).toFixed(1)}</b></div><div><span>本地评估</span><b>{evaluation.games ? `${evaluation.winRate}%` : "未评估"}</b></div><div><span>战绩</span><b>{evaluation.games ? `${evaluation.wins}-${evaluation.losses}` : "-"}</b></div></div><div className="team-lab-note">{candidate.buildReport?.plan || "已通过当前规则的严格配置搜索。"}</div><div className="team-lab-actions">{canPromote && <button className="primary-button" onClick={() => promote(candidate.id)} disabled={Boolean(busy)}><Trophy size={15} />{busy === candidate.id ? "晋级中..." : "晋级为 Champion"}</button>}{!evaluation.ok && <span className="muted">需要更多本地靶队评估后才能晋级</span>}{candidate.status === "promoted" && <span className="positive"><Check size={15} />已进入规则队伍注册表</span>}</div></article>; })}</div> : <div className="empty-state">还没有候选队伍。点击“生成候选队伍”开始当前规则下的搜索实验。</div>}</section>
+    <section className="panel team-lab-panel"><SectionHeader eyebrow="FEEDBACK LOOP" title="配队反馈如何被使用" /><div className="team-lab-feedback"><div><Target size={17} /><strong>失败归因</strong><span>{(data?.summary?.failures || []).slice(0, 3).map((item) => item.label).join("、") || "完成对局后自动提取"}</span></div><div><Swords size={17} /><strong>固定靶队</strong><span>来自当前规则热门队伍，先做本地精确评估</span></div><div><ShieldCheck size={17} /><strong>规则边界</strong><span>所有候选绑定 {data?.rulesetId || "当前 rulesetId"}</span></div></div></section>
+  </div>;
+}
+
 function Models() {
   const [registries, setRegistries] = useState([]);
   const [error, setError] = useState("");
@@ -1083,6 +1170,7 @@ function App() {
   const content = useMemo(() => ({
     dashboard: <Dashboard team={team} onNavigate={setPage} agentState={agentState} onToggleAgent={toggleAgent} onOpenAccount={() => setAccountOpen(true)} registry={registry} />,
     forge: <Forge team={team} setTeam={setTeam} onNavigate={setPage} />,
+    teamlab: <TeamLab team={team} setTeam={setTeam} />,
     arena: <ArenaCommandCenter team={team} agentState={agentState} onToggleAgent={toggleAgent} onStop={stopAgent} registry={registry} />,
     replays: <Replays />,
     rules: <Rules />,

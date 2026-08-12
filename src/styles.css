@@ -546,3 +546,31 @@ kbd { padding: 2px 4px; background: rgb(127 29 29 / .75); border-radius: 3px; fo
 @media (max-width: 1180px) { .forge-layout { grid-template-columns: 300px minmax(0, 1fr); } }
 @media (max-width: 820px) { .forge-layout { grid-template-columns: 1fr; }.candidate-list { max-height: 480px; } }
 @media (max-width: 560px) { .candidate-sets { padding-left: 12px; }.candidate-set-meta { grid-template-columns: 1fr 1fr; } }
+
+/* Team research loop */
+.team-lab-switch { display: flex; align-items: center; gap: 4px; margin-bottom: 16px; padding: 4px; border: 1px solid var(--line); border-radius: 7px; background: #fff; }
+.team-lab-switch button { min-height: 36px; padding: 0 13px; color: var(--muted); background: transparent; border-radius: 5px; font-size: 12px; font-weight: 750; }
+.team-lab-switch button.is-active { color: #1d4ed8; background: #eff6ff; box-shadow: inset 0 -2px 0 #2563eb; }
+.team-lab-switch span { margin-left: 8px; color: var(--muted); font: 10px 'JetBrains Mono', ui-monospace, monospace; }
+.team-lab-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 16px; }
+.team-lab-summary .metric-row { min-height: 74px; padding: 12px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+.team-lab-panel { padding-bottom: 20px; }
+.team-lab-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 0 20px; }
+.team-lab-card { min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 7px; background: #fff; transition: border-color var(--fast), box-shadow var(--fast), transform var(--fast); }
+.team-lab-card:hover { border-color: #93c5fd; box-shadow: 0 8px 22px rgb(37 99 235 / .08); transform: translateY(-2px); }
+.team-lab-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.team-lab-card-head h2 { margin: 5px 0 0; font: 700 15px 'JetBrains Mono', ui-monospace, monospace; }
+.team-lab-members { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 5px; margin-top: 14px; }
+.team-lab-members > div { min-width: 0; display: grid; justify-items: center; gap: 2px; padding: 6px 3px; border: 1px solid #e5ebf3; border-radius: 5px; background: #f8fafc; text-align: center; }
+.team-lab-sprite { height: 42px; display: grid; place-items: center; }
+.team-lab-members strong, .team-lab-members small { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.team-lab-members strong { font-size: 10px; }.team-lab-members small { color: var(--muted); font-size: 8px; }
+.team-lab-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin-top: 13px; background: var(--line); border: 1px solid var(--line); }
+.team-lab-stats div { display: grid; gap: 4px; padding: 8px; background: #fff; }.team-lab-stats span { color: var(--muted); font-size: 9px; }.team-lab-stats b { font: 700 14px 'JetBrains Mono', monospace; }
+.team-lab-note { min-height: 38px; margin-top: 10px; padding: 9px; color: #475569; background: #f8fafc; border-left: 2px solid #60a5fa; font-size: 10px; line-height: 1.5; }
+.team-lab-actions { display: flex; align-items: center; gap: 9px; min-height: 36px; margin-top: 11px; color: var(--muted); font-size: 10px; }
+.team-lab-actions .primary-button { min-height: 34px; font-size: 11px; }
+.team-lab-feedback { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; padding: 0 20px; }
+.team-lab-feedback > div { display: grid; grid-template-columns: auto 1fr; gap: 3px 8px; padding: 12px; border: 1px solid var(--line); border-radius: 6px; background: #f8fafc; }.team-lab-feedback svg { grid-row: span 2; color: var(--blue); }.team-lab-feedback strong { font-size: 12px; }.team-lab-feedback span { color: var(--muted); font-size: 10px; line-height: 1.45; }
+@media (max-width: 900px) { .team-lab-grid { grid-template-columns: 1fr; } }
+@media (max-width: 680px) { .team-lab-summary { grid-template-columns: 1fr 1fr; }.team-lab-switch { overflow-x: auto; }.team-lab-switch span { white-space: nowrap; }.team-lab-grid, .team-lab-feedback { padding-inline: 14px; }.team-lab-feedback { grid-template-columns: 1fr; }.team-lab-members { grid-template-columns: repeat(3, 1fr); } }
