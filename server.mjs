@@ -1,4 +1,4 @@
-﻿import { createReadStream } from "node:fs";
+import { createReadStream } from "node:fs";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -11,6 +11,7 @@ import { ruleRegistry, RuleRegistryError } from "./server/rules-registry.mjs";
 import { showdownAccount } from "./server/showdown-account.mjs";
 import { agentController } from "./server/agent-controller.mjs";
 import { mergePokecampTeams, normalizePokecampPayload, repairPokecampTeam } from "./server/pokecamp-teams.mjs";
+import { syncPokecampHttp } from "./server/pokecamp-http.mjs";
 
 const ROOT = resolve(".");
 const require = createRequire(import.meta.url);
@@ -95,6 +96,9 @@ const POKECAMP_MONITOR_SOURCES = [
 ];
 const defaultPokecampMonitorState = () => ({
   enabled: false,
+  // 绕过 CF 人工验证的独立开关：开启后监听/抓取走 HTTP 直取站方静态 JSON，
+  // 不打开浏览器、不需要人工验证；关闭时保持原有 Playwright 浏览器流程。
+  bypassCf: true,
   intervalMinutes: 360,
   pages: 3,
   sources: POKECAMP_MONITOR_SOURCES.map((source) => source.id),
@@ -699,6 +703,25 @@ async function runPokecampMonitor() {
   await writePokecampMonitorState().catch(() => undefined);
   try {
     for (const source of POKECAMP_MONITOR_SOURCES.filter((item) => pokecampMonitorState.sources.includes(item.id))) {
+      if (pokecampMonitorState.bypassCf) {
+        // HTTP 直取模式：不打开浏览器、无需人工 CF 验证。
+        const result = await syncPokecampHttp({
+          sourcePageType: source.sourcePageType,
+          format: source.format,
+          season: "M-B",
+          regulation: "M-B",
+          withBuildDetails: source.sourcePageType.startsWith("team-builds"),
+        });
+        if (!result.ok) {
+          failures.push({ source: source.id, error: result.error || "HTTP 同步失败" });
+          continue;
+        }
+        scanned += result.crawl?.teams || 0;
+        added += result.imported?.added || 0;
+        updated += result.imported?.updated || 0;
+        details += result.crawl?.details || 0;
+        continue;
+      }
       const opened = await launchPokecampBrowser(source.url);
       if (!opened.ok || opened.challenge) {
         failures.push({ source: source.id, error: opened.error || "等待 PokéCamp 人工验证" });
@@ -737,6 +760,12 @@ async function handlePokecampMonitorApi(req, res) {
   if (req.method === "GET" && url.pathname.endsWith("/status")) { sendJson(res, 200, pokecampMonitorSnapshot()); return; }
   if (req.method !== "POST") { sendJson(res, 405, { ok: false, error: "未知的 PokéCamp 监听接口。" }); return; }
   const body = await readJson(req).catch(() => ({}));
+  if (url.pathname.endsWith("/bypass")) {
+    pokecampMonitorState = { ...pokecampMonitorState, bypassCf: Boolean(body.enabled) };
+    await writePokecampMonitorState();
+    sendJson(res, 200, pokecampMonitorSnapshot());
+    return;
+  }
   if (url.pathname.endsWith("/stop")) {
     pokecampMonitorState = { ...pokecampMonitorState, enabled: false, status: "STOPPED", nextRunAt: "" };
     schedulePokecampMonitor();
@@ -755,6 +784,28 @@ async function handlePokecampMonitorApi(req, res) {
     return;
   }
   sendJson(res, 404, { ok: false, error: "未知的 PokéCamp 监听接口。" });
+}
+
+async function handlePokecampHttpCrawl(req, res) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { ok: false, error: "仅支持 POST HTTP 直取。" });
+    return;
+  }
+  const body = await readJson(req).catch(() => ({}));
+  const sourcePageType = String(body.sourcePageType || "vgc-teams").trim();
+  const format = body.format === "single" || body.format === "double" ? body.format : sourcePageType.includes("single") ? "single" : "double";
+  const result = await syncPokecampHttp({
+    sourcePageType,
+    format,
+    season: String(body.season || "M-B").trim(),
+    regulation: String(body.regulation || "M-B").trim(),
+    withBuildDetails: sourcePageType.startsWith("team-builds"),
+  });
+  if (!result.ok) {
+    sendJson(res, 422, { ok: false, code: "POKECAMP_HTTP_SYNC_FAILED", error: result.error, sourcePageType });
+    return;
+  }
+  sendJson(res, 200, result);
 }
 
 async function handlePokecampTeamImport(req, res) {
@@ -815,6 +866,10 @@ function handlePokecampTeamsApi(req, res) {
     const haystack = [team.title, team.source, team.season, team.regulation, ...(team.members || []).flatMap((member) => [member.name, member.localizedName, member.slug])]
       .filter(Boolean).join(" ").toLowerCase();
     return haystack.includes(search);
+  }).sort((left, right) => {
+    const leftHttp = String(left.sourceVersion || "").startsWith("pokecamp-http-") ? 1 : 0;
+    const rightHttp = String(right.sourceVersion || "").startsWith("pokecamp-http-") ? 1 : 0;
+    return rightHttp - leftHttp || String(right.importedAt || "").localeCompare(String(left.importedAt || ""));
   });
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const currentPage = Math.min(page, totalPages);
@@ -880,16 +935,20 @@ function handlePokecampTeamsApi(req, res) {
       strategyAuthor: strategy.authorHandle,
       strategyComplete: strategy.complete,
       strategyAvailable: strategy.complete || hasConfigurationNotes || hasTeamDetails,
-      strategySource: strategy.complete ? "article" : configurationStrategyBlocks.length ? "configuration-notes" : hasTeamDetails ? "team-details" : strategy.source,
+    strategySource: strategy.complete ? "article" : configurationStrategyBlocks.length ? "configuration-notes" : hasTeamDetails ? "team-details" : strategy.source,
     members: Array.isArray(team.members) ? team.members.slice(0, 6).map((member) => {
-      const spriteCandidates = pokecampSpriteCandidates(member);
-      const baseValue = String(member.name || member.localizedName || member.slug || "").replace(/^超级\s*/i, "").replace(/\s*[（(]?[XYＸＹ][）)]?$/i, "").trim();
-      const speciesSlug = pokecampSpriteSlug(member.name || member.localizedName || member.slug) || pokecampSpriteSlug(baseValue);
+      const sourceName = String(member.name || member.localizedName || member.slug || "").trim();
+      const sourceSlug = String(member.slug || "").trim();
+      const canonicalSlug = pokecampSpriteSlug(sourceSlug) || pokecampSpriteSlug(sourceName) || sourceSlug;
+      const normalizedMember = { ...member, slug: canonicalSlug };
+      const spriteCandidates = pokecampSpriteCandidates(normalizedMember);
+      const baseValue = String(sourceName || canonicalSlug).replace(/^超级\s*/i, "").replace(/\s*[（(]?[XYＸＹ][）)]?$/i, "").trim();
+      const speciesSlug = pokecampSpriteSlug(canonicalSlug) || pokecampSpriteSlug(baseValue);
       return {
         id: member.id,
-        name: member.name || member.localizedName || member.slug,
+        name: member.name || member.localizedName || sourceSlug,
         localizedName: member.localizedName,
-        slug: member.slug,
+        slug: canonicalSlug,
         sprite: member.sprite || spriteCandidates[0] || "",
         spriteCandidates,
         types: strictTypesFor(speciesSlug || baseValue).map((type) => CANDIDATE_TYPE_LABELS[type] || type),
@@ -1982,16 +2041,20 @@ function pokecampSpriteSlug(value = "") {
 }
 
 function pokecampSpriteCandidates(member = {}) {
-  const value = String(member?.name || member?.localizedName || member?.slug || "").replace(/\u00a0/g, " ").trim();
+  const rawSlug = String(member?.slug || "").replace(/\u00a0/g, " ").trim().toLowerCase();
+  const value = String(member?.name || member?.localizedName || rawSlug || "").replace(/\u00a0/g, " ").trim();
   const candidates = [];
   const add = (url) => { if (url && !candidates.includes(url)) candidates.push(url); };
-  const primarySlug = pokecampSpriteSlug(value);
+  const canonicalSlug = /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(rawSlug) ? rawSlug : "";
+  const primarySlug = canonicalSlug || pokecampSpriteSlug(value);
   if (primarySlug) add(`https://play.pokemonshowdown.com/sprites/gen5/${primarySlug}.png`);
 
   // Showdown does not ship every new Mega sprite. Keep the base species visible
   // so a missing form asset never turns a real team member into an empty slot.
   const baseValue = value.replace(/^超级\s*/i, "").replace(/\s*[（(]?[XYＸＹ][）)]?$/i, "").trim();
-  const baseSlug = pokecampSpriteSlug(baseValue);
+  const baseSlug = canonicalSlug
+    ? canonicalSlug.replace(/-mega(?:-[xy])?$/i, "")
+    : pokecampSpriteSlug(baseValue);
   if (baseSlug) {
     add(`https://play.pokemonshowdown.com/sprites/gen5/${baseSlug}.png`);
     add(`https://img.pokemondb.net/sprites/scarlet-violet/normal/${baseSlug}.png`);
@@ -10068,6 +10131,10 @@ async function startServer() {
         handlePokecampTeamsApi(req, res);
         return;
       }
+      if (req.method === "POST" && req.url === "/api/pokecamp/http/crawl") {
+        await handlePokecampHttpCrawl(req, res);
+        return;
+      }
       if ((req.method === "GET" || req.method === "POST") && req.url?.startsWith("/api/pokecamp/monitor/")) {
         await handlePokecampMonitorApi(req, res);
         return;
@@ -10182,4 +10249,3 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
     process.exitCode = 1;
   });
 }
-
