@@ -1,670 +1,212 @@
-# PokéForge Lab
+# Champion Forge
 
-**一个面向宝可梦竞技玩家的队伍构筑工作台：用环境数据、热门队伍、AI 配队和 PKHeX 友好导出，把组队流程集中到一个页面里。**
+Champion Forge 是面向 Pokémon Champions 竞技玩家与对战 Agent 的本地工作台，覆盖配队、规则、数据、对战、回放和模型评测。
 
-![PokéForge Lab 真实页面截图](docs/screenshot-dashboard.png)
+项目的核心原则是：**规则和 Showdown 校验负责约束，结构化搜索和数值评估负责决策，模型只在可验证边界内行动。**
 
-PokéForge Lab 是一个本地运行的宝可梦竞技队伍分析与构筑工具。它会缓存环境使用率数据和公开热门队伍，支持单打/双打切换、队伍编辑、AI 配置建议、Showdown 文本导出、基础合法性提示，以及页面内补缺抓取数据。
+> README 中的截图全部来自当前分支实际运行的 http://127.0.0.1:5173，不是设计稿或旧版页面。
 
-当前版本：`v0.2.7`
-更新日志：[CHANGELOG.md](CHANGELOG.md)
+## 当前界面
 
-## 目录
+### 总览：实时工作台
 
-- [效果展示](#效果展示)
-- [功能亮点](#功能亮点)
-- [版本更新](#版本更新)
-- [安装教程](#安装教程)
-- [使用教程](#使用教程)
-- [数据更新](#数据更新)
-- [AI 功能](#ai-功能)
-- [部署说明](#部署说明)
-- [路线图](#路线图)
-- [常见问题](#常见问题)
+总览页集中显示当前规则、队伍、Agent 状态、训练进度、对局批次和近期记录。
 
-## Champion Forge Agent 工作台
+![Champion Forge 总览](docs/current-dashboard.png)
 
-`src/` 下的新工作台把动态 Champions 规则、Showdown 精确校验、专用账号和 `poke-env` sidecar 接到同一套本地 API。所有队伍、对局批次和模型注册表都按 `rulesetId` 隔离；在线规则与本地 Showdown 规则不一致时，配队和排位会进入 `RULE_DRIFT` 并停止。
+### 配队工坊：规则内配置编辑
 
-Windows 首次安装 sidecar：
+配队工坊按当前 rulesetId 加载合法候选池，支持切换 BSS 单打 / VGC 双打、查看六只成员、配置道具、特性、性格、能力点和招式，并执行当前规则校验。
 
-```powershell
-py -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r .\sidecar\requirements.txt
-```
+![Champion Forge 配队工坊](docs/current-forge.png)
 
-分别启动 API 与前端开发服务器：
+### 配队实验室：候选队伍搜索与评估
 
-```powershell
-npm run start:ai
-npm run dev:forge
-```
+实验室用于生成和比较候选队伍，展示规则校验、结构评分、本地评估和 Champion / Challenger 状态。
 
-浏览器打开 `http://127.0.0.1:5173`。API 默认位于 `http://127.0.0.1:4174`，Vite 会代理 `/api` 请求。
+![Champion Forge 配队实验室](docs/current-team-lab.png)
 
-账号向导只创建一个工作区专用账号，密码由 Windows DPAPI 加密保存。遇到官方验证码时必须由用户在已打开的 Showdown 页面完成；系统不绕过验证码、代理锁或其他反滥用限制。若 Showdown 提示当前 IP 是代理并锁定，需切换到正常网络后删除本地账号配置并重新开始。
+### 竞技场：对战设置与 Agent 控制
 
-验证核心栈：
+竞技场负责设置当前规则、对局数量、策略引擎、队伍来源和随机热门队伍。公开排位与本地评测的运行状态、紧急停止和对局计数都从这里进入。
 
-```powershell
-npm run qa:rules-registry
-npm run qa:agent-stack
-npm run build:forge
-```
+![Champion Forge 竞技场](docs/current-arena.png)
 
-当前 sidecar 的 `structured-visible-state-v1` 是只读取公开战斗状态的确定性基线策略。Challenger 只会在同一 `rulesetId` 累计真实 50 场后建立，且没有真实评测指标时不会伪造晋级结果。
+### 数据中心：PokéCamp 队伍抓取与监听
 
-## 效果展示
+数据中心通过 PokéCamp 公开静态 JSON 进行 HTTP 直取，支持赛事队伍、单打构筑、双打构筑三类来源，并按来源页面和赛制筛选。详情中的配置、战术说明、招式、道具和特性会合并到本地队伍库。
 
-### 主界面：环境数据驱动的队伍工作台
+![Champion Forge 数据中心](docs/current-data-center.png)
 
-![主界面真实截图](docs/screenshot-workbench.png)
+### 规则与战术资料
 
-### AI 配队：单打和双打分开生成
+规则页展示当前与历史规则快照；战术资料页提供赛季、宝可梦、机制、属性、伤害计算和相关参考信息。
 
-![AI 配队真实截图](docs/screenshot-ai.png)
+![Champion Forge 规则与环境](docs/current-rules.png)
 
-### PKHeX 友好导出与规则检查
+![Champion Forge 战术资料](docs/current-knowledge.png)
 
-![导出和校验真实截图](docs/screenshot-export.png)
+### 模型实验室与对局数据
 
-### 队伍分析：对局计划、速度威胁和属性分布
+模型实验室管理 Champion / Challenger、固定测试集、评测批次和晋级记录。对局与回放页保存每局的规则、队伍、策略版本、回放和失败归因。
 
-![队伍分析真实截图](docs/screenshot-analysis.png)
+![Champion Forge 模型实验室](docs/current-models.png)
 
-## 功能亮点
+## 功能说明
 
-- 支持单打 / 双打环境数据切换。
-- 支持 `初级 / 中级 / 高级` 三档界面层级，同一页面按信息密度渐进展开，并记住用户选择。
-- 从使用率排名中选择宝可梦组队。
-- 导入 `pokemon-teams.pages.dev` 的公开热门队伍。
-- 每只宝可梦可直接编辑：
-  - 道具
-  - 特性
-  - 性格
-  - 努力值
-  - 个体值
-  - 太晶属性
-  - 等级
-  - 性别
-  - 球种
-  - 语言
-  - 闪光
-  - 招式
-- 导出 Showdown 队伍文本，适合导入 PKHeX 或部分队伍机器人。
-- 支持复制 Showdown Packed Team 风格文本，方便后续对接 Showdown / poke-env 类流程。
-- 支持导出 / 导入 JSON 草稿。
-- 自动保存当前队伍，刷新页面后可恢复。
-- 根据实际队伍生成对局计划，而不是固定模板。
-- 初级模式保留推荐队伍、从零开始、按目标反制、简化热门队伍库、速度摘要和可执行结论；中级模式聚焦短板、补强和结构；高级模式展开速度档、对局回顾、AI API、抓取日志和原始导出。
-- 检查常见规则问题：
-  - 重复道具
-  - 重复宝可梦
-  - 多个 Mega 石
-  - EV 超过 510
-  - 单项 EV 超过 252
-  - 单项 IV 超过 31
-  - 招式不足 4 个
-  - 缺少道具 / 特性 / 性格 / 等级等字段
-- 展示速度威胁、属性分布、队伍定位、常见配置和对手风险。
-- 内置轻量规则/对战知识模块，按控速、撒场、清场、轮转、终盘、守住等状态给队伍评分。
-- 可选 AI 配队：分别生成单打和双打的队伍建议。
-- AI 会优先遵从目标里明确写出的单打 / 双打要求；即使页面当前停在另一种格式，主推荐、候选池和可应用队伍也会切到用户指定格式。
-- 点名核心、接棒、天气、空间、顺风等硬性要求会在生成前后校验；当前格式没有可验证的合法链条时，页面会明确说明原因，不会用相近宝可梦或泛用队替代。
-- 初级模式会直接展示本次推荐的六只宝可梦，并可一键应用这支队伍。
-- AI 建议会读取当前界面层级：初级偏“队伍怎么打 / 下一步做什么”，中级偏“短板 / 补强 / 结构”，高级偏“速度档 / 对局分支 / 配置依据”。
-- 页面两侧的宝可梦可互动：悬停显示名字，点击加入当前队伍。
-- 页面内补缺数据，并显示进度条。
-- 页面内显示本地缓存、热门队伍数量和抓取日志。
-- 首次启动如果缺少数据，会自动抓取并显示启动进度。
+### 动态规则注册中心
 
-## 版本更新
+- 自动发现当前 Pokémon Champions BSS / VGC 评级格式。
+- 每个版本生成独立的 rulesetId。
+- 保存 Showdown 格式、规则列表、合法池哈希和规则快照。
+- 在线规则、本地 Showdown 和合法池不一致时进入 RULE_DRIFT，禁止继续构筑和排位。
+- 历史规则、队伍、回放、模型和训练样本按 rulesetId 隔离。
 
-最新版本：`v0.2.7`
+### 配队与合法性
 
-主要更新：
+- BSS 单打与 VGC 双打使用独立的候选池和规则上下文。
+- 原子配置包含宝可梦、形态、道具、特性、性格、能力点、招式和机制属性。
+- 候选队伍经过 TeamValidator、合法池和当前格式联合校验。
+- Mega 形态使用基础形态 + Mega 石参与 Showdown 校验，同时保留 Mega 前后特性展示。
+- PokéCamp 中文字段会转换为 Showdown 可识别的英文名称，中文名称只用于界面展示。
 
-- 新增 `初级 / 中级 / 高级` 三档界面层级，默认初级并持久记忆。
-- 热门队伍库默认更新到 `M-3`，保留 `M-2` 历史样本；初级、中级和高级均可按赛季、来源和队伍筛选，选项会显示实际样本数量。
-- 热门队伍预览统一为稳定的成员网格，手机不再出现图标、标签和来源链接挤压错位。
-- 界面改用 GitHub 开源的 `Noto Sans SC` 简中字体，并增大队伍信息、筛选器和标签字号。
-- 所有界面层级均保留“配置 API”入口，点击后即可填写 OpenAI 兼容接口、模型和 API Key。
-- 三档工作区按实际使用顺序重新布局：初级先选热门队伍，中级空队先选队或补强，高级直接进入完整速度线与详细控制。
-- 中级会在队伍为空时收起导出和分析占位，导入或添加成员后自动显示分析与 Showdown 导出。
-- 初级首屏改为“导入推荐队伍 / 从零开始 / 按目标反制”，速度线压缩为一句摘要。
-- 中级保留常用工作台：当前队伍、热门队伍、压缩速度线、结构分析和简单导出。
-- 高级展开完整速度线、对局回顾、AI 配置、抓取状态、原始导出和日志。
-- AI 请求会携带界面层级，输出文案按新手、中手和高级玩家调整信息密度，但不降低配队结构检查要求。
-- 配队表达继续强调主轴、速度计划、安全上场、队友联动和“不硬凑 Mega / 高排名单体”。
-- 输入“单打灭队”“双打空间队”等明确格式目标时，AI 以目标格式为主答案；在初级模式中会直接显示对应的六只推荐成员和“使用这支队伍”操作。
-- “强化接棒”会锁定实际携带接棒与强化招式的传递者、独立接收者和有真实保护/转场招式的安全位，并排除无关天气、空间与重复控速轴。
+### PokéCamp 数据管线
 
-完整记录见：[CHANGELOG.md](CHANGELOG.md)
+- 读取公开静态队伍列表 JSON、VGC 队伍详情和单打 / 双打构筑详情。
+- 自动补齐每只宝可梦的配置、招式、道具、特性、性格、能力点和战术说明。
+- 监听模式可按小时、每天或手动立即检查。
+- HTTP 直取模式不打开浏览器，不需要人工验证；关闭后才使用原有浏览器会话流程。
+- 不实现验证码识别、CF 绕过、批量账号或匹配操纵。
 
-## 安装教程
+### Agent 与对战
 
-### 1. 准备环境
+- 规则状态编码 -> 合法动作 mask -> 候选动作 -> 价值评估 -> 提交动作。
+- 策略引擎包含结构化策略，并预留 Laplace 单打实验入口。
+- 可使用当前配队工坊队伍，也可从当前规则合法热门队池随机抽取。
+- 每局保存可见状态、合法动作、最终动作、队伍版本、策略版本、rating、replay 和失败归因。
+- 公开排位设置专用账号、单账号单连接、局数限制和紧急停止。
+- 本地模型对抗使用本地 Showdown / 私服，不连接公开天梯。
 
-你需要先安装：
+### 训练与评测
 
-- [Node.js](https://nodejs.org/) 18 或更高版本；
-- Git；
-- 一个现代浏览器，推荐 Chrome 或 Edge。
+- 每 50 局更新策略和价值模型，每 100 局或每日更新配队先验。
+- Challenger 必须在相同 rulesetId 下通过固定回放、热门队池、自博弈、旧模型对战和时间切分测试。
+- 综合评估包含对手强度修正胜率、Glicko / Elo、最近窗口胜率、固定测试集和跨队伍泛化。
+- 未通过评测的 Challenger 不会覆盖 Champion。
+- 规则换季时只热启动规则无关状态编码和战术知识，非法配置和旧赛季样本不会混入新规则。
 
-检查本机是否已经装好：
+## 技术架构
 
-```bash
-node -v
-npm -v
-git --version
-```
+~~~text
+React / Vite 前端 :5173
+  ├─ 总览、配队工坊、配队实验室
+  ├─ 竞技场、对局与回放、规则与战术资料
+  ├─ PokéCamp 数据中心
+  └─ 模型实验室、账号与设置
 
-如果 `node -v` 低于 18，建议先升级 Node.js。
+Node API :4174
+  ├─ Rules Registry
+  ├─ TeamValidator / Showdown Bridge
+  ├─ PokéCamp HTTP 同步与监听
+  ├─ Agent / Replay / Model API
+  └─ 账号向导与凭据状态
 
-### 2. 下载项目
+Python sidecar
+  ├─ poke-env 对战客户端
+  ├─ 本地训练与自博弈
+  ├─ 策略 / 价值评估
+  └─ 回放与训练样本存储
+~~~
 
-```bash
+## 安装与启动
+
+环境要求：Node.js 18+、Python 3.11+、Git，以及现代浏览器。
+
+~~~powershell
 git clone https://github.com/lgcr12/pokemon-champion.git
 cd pokemon-champion
-```
-
-如果你是直接下载 ZIP，解压后进入项目目录即可。
-
-### 3. 安装依赖
-
-```bash
 npm install
-```
 
-### 4. 启动完整服务
-
-推荐使用这个命令启动，它支持页面访问、数据抓取、热门队伍刷新和 AI 代理：
-
-```bash
 npm run start:ai
-```
-
-启动成功后，在浏览器打开：
-
-```text
-http://127.0.0.1:4174
-```
-
-### 5. 首次启动会发生什么
-
-项目默认不提交大型数据缓存。首次启动时，如果缺少这些文件：
-
-- `data/champion-data.json`
-- `data/team-data.json`
-
-服务端会自动抓取环境数据和热门队伍。页面会显示启动进度条，数据准备完成后会自动进入应用。
-
-如果热门队伍的 X/Twitter 详情因为没有代理抓不到，页面会给出失败原因；基础使用率数据和快速热门队伍列表仍会尽量加载。
-
-### 6. 只看静态页面
-
-不推荐新用户使用这个模式，因为它没有自动抓取、AI 和刷新 API。但如果你已经有本地 JSON 数据，也可以运行：
-
-```bash
-npm run start
-```
-
-然后打开：
-
-```text
-http://127.0.0.1:4173
-```
-
-## 使用教程
-
-### 1. 切换单打 / 双打
-
-页面右上角有 **单打** 和 **双打** 按钮。两种模式会使用不同的环境数据、热门队伍和 AI 配队上下文。
-
-### 2. 选择界面层级
-
-Hero 控制区里有 **界面层级** 下拉框：
-
-- **初级**：默认模式。优先显示“导入推荐队伍 / 从零开始 / 按目标反制”、当前队伍、简化热门队伍库、速度摘要、AI 两个主按钮和简短对局计划。
-- **中级**：常用工作台。显示热门队伍、结构分析、压缩速度线、Showdown 文本和常用 AI 模式。
-- **高级**：研究与排错模式。展开完整速度线、对局回顾、AI API 设置、抓取状态、原始导出、详细校验和日志。
-
-切换层级只改变信息密度和默认展开内容，不会清空当前队伍、AI 配置、草稿或筛选状态。选择会保存在浏览器本地，刷新后继续沿用。
-
-### 3. 添加宝可梦
-
-点击 **添加宝可梦**，或者使用 `Ctrl + K` 打开搜索面板。你可以按中文名、英文 slug 或排名搜索，然后点击宝可梦加入当前队伍。
-
-页面两侧的宝可梦也可以互动：悬停查看名字，点击后会尝试加入当前队伍。
-
-### 4. 编辑单只配置
-
-点击队伍里的宝可梦卡片，可以编辑：
-
-- 道具、特性、性格；
-- 努力值、个体值；
-- 太晶属性、等级、性别；
-- 球种、语言、闪光；
-- 4 个招式。
-
-编辑完成后点击 **保存配置**。页面会自动刷新 Showdown 文本和规则提示。
-
-### 5. 使用热门队伍
-
-在 **热门队伍构筑** 区域选择队伍，然后点击 **使用这支队伍**。项目会把能匹配到的成员导入当前队伍，并生成分析结果。
-
-热门队伍数据来自 `pokemon-teams.pages.dev`。如果深度详情抓取失败，通常是因为当前网络无法访问 X/Twitter 或 `fxtwitter` 相关域名。
-
-### 6. 查看队伍分析
-
-队伍变化后，下方会自动更新：
-
-- 平均排名；
-- Meta 评分；
-- 速度线；
-- Matchup 评分；
-- 对局计划路线；
-- 核心速度威胁；
-- 基于 Smogon 环境统计的高危对手阵容；
-- 队伍功能定位；
-- 属性分布；
-- 高频配招与核心道具。
-
-这些内容是辅助判断，不等于对局必胜方案。最终还要结合你自己的规则环境和操作习惯。
-
-### 7. 使用 AI 配队
-
-在 **AI 配置与补强** 区域可以输入目标，例如：
-
-```text
-想围绕烈咬陆鲨做单打进攻队，不要太依赖先读。
-```
-
-然后点击：
-
-- **想配置**：让 AI 给当前成员推荐配置；
-- **补全队伍**：让 AI 基于当前队伍补齐缺口。
-
-如果目标里明确写了 **单打** 或 **双打**，该要求会覆盖页面当前格式。例如页面停在双打时输入“给我一支单打灭队”，AI 会按单打环境选候选、生成单打主方案，并在初级界面直接展示可应用的六只单打成员。
-
-AI 区域还可以选择推理模式：
-
-- **快速**：优先给可直接应用的简洁建议；
-- **详细**：更重视速度控制、轮转、终盘和双打站位；
-- **多方案**：先比较多个方向，再输出最终推荐。
-
-项目会把当前队伍转换成一层类似 PokéLLMon / poke-env 的规则状态：包括控速、撒场、清场、强化、轮转、先制、守住、威吓、地面免疫等标签。AI 配队时会把这些状态一起发送给模型，避免只按热门使用率补队。
-
-AI 默认会优先尝试读取本机 Cockpit / Codex Local Access 配置。如果没有，也可以用 OpenAI 兼容接口，见下方 **AI 功能**。
-
-### 8. 导出给 PKHeX 或机器人流程
-
-队伍配置完成后，查看 **Showdown 队伍文本** 区域：
-
-- 点击 **复制文本**，可以复制到剪贴板；
-- 点击 **下载 TXT**，可以保存为文本文件；
-- 点击 **Showdown 参考校验**，可以调用本地服务端的 Pokemon Showdown TeamValidator 做辅助校验；
-- 点击 **复制 Packed**，可以复制 Showdown packed team 风格文本；
-- 点击 **导出 JSON**，可以保存当前草稿；
-- 点击 **导入 JSON**，可以恢复之前保存的草稿。
-
-导出的 Showdown 文本适合作为 PKHeX 或部分交换机器人流程的输入。项目会优先按 Pokémon Champions 当前单打/双打数据检查队伍成员、常见招式、常见道具、常见特性、重复道具、多个 Mega 石、EV 超限、招式不足等问题。Showdown 校验只是参考；它只识别英文 Showdown 名称，而且可用池和 Champions 不一定一致，不能作为 Champions 最终合法性标准。
-
-### 9. 刷新和补缺数据
-
-页面顶部有 **补缺/队伍** 按钮。点击后会只抓取本地缺失的数据，并刷新热门队伍。已有完整缓存不会重复抓取。
-
-如果你想手动执行数据脚本，可以看下一节。
-
-### 10. 规则检查开关
-
-Showdown 导出区域下方有规则检查选项：
-
-- **允许重复道具**：某些娱乐规则允许重复道具时可以打开；
-- **不检查太晶属性**：目标规则不使用太晶时可以打开。
-
-这些开关只影响页面提示，不会修改队伍文本。
-
-## 数据更新
-
-页面顶部有 **补缺/队伍** 按钮。
-
-点击后会执行快速补缺：
-
-- 只补本地缓存里缺少详情的宝可梦；
-- 已有完整数据不会重新抓；
-- 同时刷新热门队伍；
-- 热门队伍默认使用快速模式，避免抓取过重的 X/Twitter 详情；
-- 完成后自动重新加载本地 JSON；
-- 顶部会显示进度条和当前进度。
-
-也可以手动运行：
-
-```bash
-npm run fetch:data
-npm run fetch:teams
-npm run fetch:knowledge
-npm run fetch:missing-all
-npm run fetch:all
-```
-
-常用环境变量示例：
-
-```powershell
-$env:SEASON="M-2"
-$env:FORMATS="single,double"
-$env:LIMIT="120"
-$env:MISSING_ONLY="1"
-$env:TEAM_LIMIT="300"
-$env:ENRICH_TEAMS="0"
-$env:SMOGON_FORMATS="gen9ou,gen9doublesou,gen9vgc2026"
-$env:KNOWLEDGE_POKEMON_LIMIT="120"
-npm run fetch:missing-all
-```
-
-`fetch:knowledge` 会从 Pokemon Showdown 和 pkmn Smogon stats 采集规则/环境知识，生成本地 `data/battle-knowledge.json`。这个文件会被 AI 配队上下文读取，用来补充常见招式、道具、队友、太晶属性、克制关系、基础种族值和规则字段。
-
-数据优先级是：**Pokémon Champions 当前格式数据 > 热门队伍数据 > Showdown / Smogon 参考知识**。AI 配队和页面校验会优先遵守 Champions 当前可用池；Showdown / Smogon 只用于辅助理解环境趋势、英文规则和 matchup。
-
-## 截图更新
-
-README 里的展示图来自真实浏览器截图，不是设计稿。更新 UI 后可以重新生成截图：
-
-```bash
-npm run start:ai
-```
-
-保持服务运行，再打开另一个终端执行：
-
-```bash
-npm run capture:screenshots
-```
-
-默认截图地址是：
-
-```text
-http://127.0.0.1:4174
-```
-
-如果你把服务部署在其他地址，可以指定 `APP_URL`。
-
-macOS / Linux：
-
-```bash
-APP_URL=https://你的部署地址 npm run capture:screenshots
-```
-
-Windows PowerShell：
-
-```powershell
-$env:APP_URL="https://你的部署地址"
-npm run capture:screenshots
-```
-
-## AI 功能
-
-PokéForge Lab 不只支持 GPT。只要服务商提供 OpenAI 兼容接口，就可以在页面里配置使用。
-
-### 1. 页面可视化配置
-
-打开页面后，在 **AI 配置与补强** 区域点击 **API 设置**。
-
-可以填写：
-
-- 服务商：OpenAI、DeepSeek、Kimi、通义千问、MiniMax、硅基流动或其他兼容接口；
-- 接口类型：`Responses` 或 `Chat Completions`；
-- Base URL；
-- 模型：优先从下拉框选择常用模型；
-- API Key。
-
-配置只保存在当前浏览器的 `localStorage`，不会写入仓库，也不会提交到 GitHub。
-
-填好后可以点击 **测试连接**。如果失败，页面会提示常见原因，例如 API Key 错误、模型不存在、余额不足、Base URL 错误或当前网络无法访问服务商。
-
-如果下拉框里没有你要用的模型，可以先点 **获取模型列表**。项目会通过当前 API Key 和 Base URL 请求服务商的 `/v1/models`，把你账号实际可用的模型加入下拉框。
-
-如果服务商不开放 `/v1/models`，页面可能提示 404 或 405。这不代表 AI API 不能用，只表示无法自动读取模型列表；选择预设模型或 **自定义模型...**，再填写服务商控制台里显示的模型名即可。
-
-### 2. 两个接口类型怎么选
-
-页面里的两个接口不是两个不同模型，而是两种 API 格式：
-
-| 接口类型 | 实际路径 | 什么时候选 |
-| --- | --- | --- |
-| Responses | `/v1/responses` | OpenAI 新接口，主要给 GPT / OpenAI 模型用 |
-| Chat Completions | `/v1/chat/completions` | 大多数兼容模型用这个，比如 Kimi、通义千问、DeepSeek、MiniMax、硅基流动 |
-
-简单判断：
-
-- 用 OpenAI 官方 GPT：优先选 **Responses**；
-- 用 Kimi / 通义千问 / DeepSeek / MiniMax / 硅基流动：一般选 **Chat Completions**；
-- 用中转站或本地模型：看它文档，如果写的是 `/v1/chat/completions`，就选 **Chat Completions**。
-
-### 3. 常见服务商填写示例
-
-```text
-OpenAI
-Base URL: https://api.openai.com/v1
-模型: 下拉选择 gpt-5 / gpt-5-mini / gpt-4.1-mini / gpt-4.1 / gpt-4o-mini，或点击获取模型列表
-接口类型: Responses
-```
-
-```text
-DeepSeek
-Base URL: https://api.deepseek.com
-模型: 下拉选择 deepseek-chat / deepseek-reasoner / deepseek-r1 / deepseek-v4-flash，或点击获取模型列表
-接口类型: Chat Completions
-```
-
-```text
-Kimi / Moonshot
-Base URL: https://api.moonshot.cn/v1
-模型: 下拉选择 kimi-k2-0711-preview 或 moonshot-v1 系列
-接口类型: Chat Completions
-```
-
-```text
-通义千问 / 阿里云百炼
-Base URL: https://dashscope.aliyuncs.com/compatible-mode/v1
-模型: 下拉选择 qwen-plus / qwen-turbo / qwen-max / qwen-long
-接口类型: Chat Completions
-```
-
-```text
-MiniMax
-Base URL: https://api.minimax.io/v1
-模型: 下拉选择 MiniMax-M1 / MiniMax-Text-01
-接口类型: Chat Completions
-```
-
-```text
-硅基流动
-Base URL: https://api.siliconflow.cn/v1
-模型: 下拉选择 deepseek-ai/DeepSeek-V3 / deepseek-ai/DeepSeek-R1 / Qwen/Qwen3-32B
-接口类型: Chat Completions
-```
-
-如果你使用其他中转站或本地模型服务，只要它兼容 OpenAI 的 `/v1/chat/completions`，就选择 **其他兼容接口** 并填写对应地址。
-
-Base URL 可以带 `/v1`，也可以不带；项目会自动兼容，避免重复拼接 `/v1`。
-
-### 4. AI 常见错误排查
-
-| 页面提示 | 常见原因 | 处理方式 |
-| --- | --- | --- |
-| 连接失败 | Base URL 写错、网络不通、代理不可用 | 检查服务商地址，必要时开启代理 |
-| 401 / unauthorized | API Key 错误或没有权限 | 重新复制 Key，确认 Key 属于当前服务商 |
-| model not found | 模型名写错或账号未开通 | 换成控制台里可用的模型 |
-| insufficient quota | 余额不足或套餐不可用 | 充值或更换服务商 |
-| JSON 解析失败 | 模型没有稳定按 JSON 返回 | 重新生成，或换更强的模型 |
-
-### 5. Cockpit 本地访问
-
-如果本机有 Cockpit / Codex Local Access 配置，服务端会自动读取：
-
-```text
-~/.antigravity_cockpit/codex_local_access.json
-```
-
-这种方式不需要手动填写 `OPENAI_API_KEY`。
-
-### 6. 环境变量配置
-
-也可以使用环境变量：
-
-```powershell
-$env:OPENAI_API_KEY="你的 API Key"
-$env:OPENAI_MODEL="gpt-4.1-mini"
-$env:OPENAI_BASE_URL="https://api.openai.com/v1"
-npm run start:ai
-```
-
-AI 接口路径：
-
-```text
-POST /api/team-advice
-```
-
-## 数据来源
-
-- 环境使用率数据：[PokéCham DB](https://pokechamdb.com/zh-Hans)
-- 公开热门队伍：[pokemon-teams.pages.dev](https://pokemon-teams.pages.dev/)
-- 热门队伍深度补全时可能访问：`api.fxtwitter.com`
-
-如果 X/Twitter 相关数据抓取失败，页面会提示可能原因。常见原因是当前网络没有代理，无法访问 X/Twitter 或 `fxtwitter` 相关域名。
-
-默认的页面补缺模式会使用快速热门队伍抓取，尽量避免依赖 X/Twitter 深度详情。
-
-## 技术栈
-
-- 前端：原生 HTML、CSS、JavaScript Modules
-- 后端：Node.js HTTP Server
-- 数据缓存：本地 JSON 文件
-- 抓取脚本：Node.js `fetch`
-- AI 协议：OpenAI 兼容 `Responses` 和 `Chat Completions`
-- 构建方式：无构建步骤，直接运行
+# 另开终端
+npm run dev:forge
+~~~
+
+打开 http://127.0.0.1:5173。API 默认地址为 http://127.0.0.1:4174。
+
+Python sidecar：
+
+~~~powershell
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r .\sidecar\requirements.txt
+~~~
+
+## 常用验证
+
+~~~powershell
+node --check server.mjs
+node --check server/pokecamp-http.mjs
+npm run build:forge
+npm run qa:rules-registry
+npm run qa:agent-stack
+~~~
+
+## 主要接口
+
+~~~text
+GET  /api/rules/active
+GET  /api/rules/history
+POST /api/rules/sync
+POST /api/pokecamp/http/crawl
+GET  /api/pokecamp/teams
+POST /api/pokecamp/monitor/start
+POST /api/pokecamp/monitor/run
+POST /api/validate-team
+POST /api/agent/start
+POST /api/agent/stop
+GET  /api/agent/status
+GET  /api/agent/replays
+GET  /api/agent/models
+~~~
+
+## 数据与安全边界
+
+- 队伍、配置、回放、训练记录和模型注册表写入本地 data/，默认不提交大体积运行数据。
+- 账号密码使用 Windows DPAPI / Credential Manager 保存，不写入 README、日志、JSON 或前端状态。
+- 日志会过滤 assertion、cookie、challenge 和 authorization 字段。
+- 不绕过 Showdown 验证码、人机验证、代理锁或反滥用机制。
+- 公开排位必须使用用户自己的专用账号，并由用户确认平台允许自动化。
 
 ## 项目结构
 
-```text
-.
-├─ app.js                    # 前端应用逻辑
-├─ index.html                # 页面入口
-├─ styles.css                # UI、布局、动效样式
-├─ server.mjs                # 静态服务、AI 代理、数据刷新 API
-├─ scripts/
-│  ├─ fetch-data.mjs         # 环境数据抓取
-│  ├─ fetch-teams.mjs        # 热门队伍抓取
-│  └─ capture-screenshots.mjs # README 真实截图生成
-├─ data/
-│  ├─ champion-data.json     # 本地环境数据缓存，运行后生成
-│  └─ team-data.json         # 本地热门队伍缓存，运行后生成
-└─ docs/
-   ├─ screenshot-dashboard.png
-   ├─ screenshot-workbench.png
-   ├─ screenshot-ai.png
-   ├─ screenshot-export.png
-   └─ screenshot-analysis.png
-```
+~~~text
+src/app/                  React 工作台页面与组件
+server.mjs                Node API 入口
+server/rules-registry.mjs 动态规则注册中心
+server/pokecamp-http.mjs  PokéCamp 静态 JSON 同步器
+sidecar/                  Python poke-env / 训练 sidecar
+scripts/                  QA、数据同步与构建脚本
+data/                     本地缓存、回放、模型与训练记录
+docs/                     当前分支 README 界面截图
+~~~
 
-## 部署说明
+## 截图更新
 
-### 本地部署
+README 截图由 Playwright 从当前分支运行中的页面生成。更新界面后，启动前端和 API，再重新截取 docs/current-*.png，不要引用旧版设计稿或其他分支截图。
 
-本地部署推荐直接运行：
+## 当前限制
 
-```bash
-npm run start:ai
-```
+- 公开排位是否可自动化取决于平台当时的规则和账号状态。
+- 当前截图中的 Agent 可能处于离线或暂停状态；这不代表本地规则、配队和数据中心不可用。
+- PokéCamp 站方数据变化时，详情字段可能暂时缺失，监听会在下次同步重试。
+- Showdown 校验是严格规则约束的一部分，但最终游戏平台合法性仍应以当前官方赛制和客户端为准。
 
-访问：
+## 许可证与数据来源
 
-```text
-http://127.0.0.1:4174
-```
+本项目用于个人研究、配队分析和本地模型评测。PokéCamp、Pokémon、Pokémon Champions、Pokémon Showdown 与相关数据属于各自权利人。
 
-### 服务器部署
+主要数据来源：
 
-在服务器上执行：
-
-```bash
-git clone https://github.com/lgcr12/pokemon-champion.git
-cd pokemon-champion
-npm install
-npm run start:ai
-```
-
-服务默认监听 `4174` 端口。可以用 Nginx、Caddy 或平台自带反向代理，把公网域名转发到：
-
-```text
-http://127.0.0.1:4174
-```
-
-### 静态部署限制
-
-只做静态托管也可以打开页面和读取已有 JSON，但无法使用：
-
-- 首次启动自动抓取；
-- 页面内补缺数据；
-- AI 代理接口；
-- 服务端失败原因提示。
-
-所以如果希望别人部署后自动抓数据、显示进度条、使用 AI，必须运行 `npm run start:ai`，不能只把 HTML/CSS/JS 丢到静态托管。
-
-### 生产环境建议
-
-- 使用 Node.js 18 或更高版本；
-- 确认服务器能访问 `pokechamdb.com` 和 `pokemon-teams.pages.dev`；
-- 如果要抓 X/Twitter 相关详情，需要服务器网络能访问 X/Twitter 或相关镜像服务；
-- 如果要使用 AI，配置 `OPENAI_API_KEY`、`OPENAI_MODEL` 和 `OPENAI_BASE_URL`，或使用 Cockpit 本地访问；
-- 首次抓取生成的 `data/*.json` 会保存在服务器本地。
-
-## 关于 PKHeX 和合法性
-
-PokéForge Lab 提供的是队伍文本和本地草稿导出，不会绕过游戏合法性检查，也不会生成存档或自动联网交换。
-
-导出的 Showdown 文本可以作为 PKHeX 或部分机器人流程的输入，但最终是否合法，仍需要根据目标游戏版本、规则、球种、来源、等级、招式和训练家信息在 PKHeX 或目标平台中确认。
-
-## 路线图
-
-- [x] 单打 / 双打环境切换
-- [x] 热门队伍导入
-- [x] Showdown 文本导出
-- [x] Showdown Packed Team 复制
-- [x] 页面内 AI API 配置
-- [x] AI 连接测试
-- [x] 数据抓取状态和日志
-- [x] 基础合法性检查
-- [x] 轻量规则/对战知识模块
-- [x] AI 快速 / 详细 / 多方案模式
-- [ ] 更完整的规则集配置
-- [ ] 更多服务商预设
-- [ ] 使用流程 GIF
-- [ ] Release 打包版本
-
-## 常见问题
-
-### 为什么首次启动要等一会？
-
-因为项目默认不提交大型数据缓存。首次运行时会自动抓取缺失数据，生成本地 JSON。
-
-### 为什么热门队伍抓取失败？
-
-公开队伍列表一般可以抓，但深度详情可能依赖 X/Twitter 或相关镜像服务。如果没有代理，可能会失败。页面会显示失败原因。
-
-### 为什么缺少太晶属性只是提示？
-
-不同规则或导入目标不一定需要太晶属性，所以它不是强制错误。需要太晶规则时，建议手动补全。
-
-### 为什么同队重复道具会警告？
-
-当前按常见竞技规则处理：同一队伍中不允许重复道具。如果你的规则允许重复道具，可以忽略该提示。
-
-### Mega 为什么只能一个？
-
-同一队伍通常只允许一个 Mega 进化位。项目会检查携带 Mega 石的数量，超过 1 个会提示。
-## 更新记录
-
-- 修复本地模拟因热池队伍物种名不合法而整队失败的问题。
-- 统一前后端 Showdown 物种名归一化，支持日文名、地区形态、Mega / Gmax、雌雄后缀回退。
-- 优化配队逻辑，脏数据只跳过单个成员，不再硬性判整队失败。
+- [PokéCamp](https://pokecamp.cc/zh/champions/vgc-teams)
+- [52Poké Wiki](https://wiki.52poke.com/)
+- [Pokémon Showdown](https://github.com/smogon/pokemon-showdown)
