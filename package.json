@@ -6,7 +6,9 @@
   "scripts": {
     "fetch:data": "node scripts/fetch-data.mjs",
     "fetch:teams": "node scripts/fetch-teams.mjs",
+    "import:pokecamp": "node scripts/import-pokecamp-teams.mjs",
     "fetch:knowledge": "node scripts/fetch-knowledge.mjs",
+    "fetch:official-pools": "node scripts/fetch-official-regulation-pools.mjs",
     "build:zh-hans": "node scripts/build-zh-hans-dictionary.mjs",
     "fetch:teams:fast": "set ENRICH_TEAMS=0&& node scripts/fetch-teams.mjs",
     "fetch:missing-all": "node scripts/fetch-data.mjs && node scripts/fetch-teams.mjs && node scripts/fetch-knowledge.mjs",
@@ -33,15 +35,22 @@
     "preview:forge": "vite preview --host 127.0.0.1 --port 4173"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.1.12",
     "@vitejs/plugin-react": "^5.0.4",
     "playwright": "^1.60.0",
+    "tailwindcss": "^4.1.12",
     "vite": "^7.0.6"
   },
   "dependencies": {
+    "clsx": "^2.1.1",
     "framer-motion": "^13.1.0",
     "lucide-react": "^0.468.0",
+    "motion": "^12.23.24",
     "pokemon-showdown": "github:smogon/pokemon-showdown#master",
     "react": "^19.1.1",
-    "react-dom": "^19.1.1"
+    "react-dom": "^19.1.1",
+    "simplex-noise": "^4.0.3",
+    "tailwind-merge": "^3.2.0",
+    "tw-animate-css": "^1.3.8"
   }
 }

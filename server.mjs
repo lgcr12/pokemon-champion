@@ -10,6 +10,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { ruleRegistry, RuleRegistryError } from "./server/rules-registry.mjs";
 import { showdownAccount } from "./server/showdown-account.mjs";
 import { agentController } from "./server/agent-controller.mjs";
+import { mergePokecampTeams, normalizePokecampPayload, repairPokecampTeam } from "./server/pokecamp-teams.mjs";
 
 const ROOT = resolve(".");
 const require = createRequire(import.meta.url);
@@ -20,7 +21,9 @@ const BATTLE_HISTORY_PATH = join(ROOT, "data", "battle-history.json");
 const TEAM_DATA_PATH = join(ROOT, "data", "team-data.json");
 const CHAMPION_DATA_PATH = join(ROOT, "data", "champion-data.json");
 const BATTLE_KNOWLEDGE_DATA_PATH = join(ROOT, "data", "battle-knowledge.json");
-const AGENT_DATA_ROOT = join(ROOT, "data", "agent");
+const POKECAMP_REFERENCE_DATA_PATH = join(ROOT, "data", "pokecamp-reference.json");
+const POKECAMP_MONITOR_STATE_PATH = join(ROOT, "data", "pokecamp-monitor.json");
+const AGENT_DATA_ROOT = resolve(process.env.AGENT_DATA_ROOT || join(ROOT, "data", "agent"));
 const AGENT_LEARNING_ROOT = join(AGENT_DATA_ROOT, "learning");
 const TEAM_LAB_ROOT = join(AGENT_DATA_ROOT, "team-lab");
 const ZH_HANS_TERMS_PATH = join(ROOT, "data", "zh-hans-terms.json");
@@ -46,9 +49,73 @@ let refreshTask = null;
 const showdownImportBridge = new Map();
 const strictCandidateLegalityCache = new Map();
 const rulesCandidatePoolCache = new Map();
+const officialRegulationPoolCache = new Map();
+const referenceTermCache = new Map();
+let pokecampReferenceWriteTask = Promise.resolve();
+const OFFICIAL_REGULATION_POOL_SOURCES = {
+  "M-A": {
+    announcementUrl: "https://news.pokemon-home.com/sc/page/751.html",
+    sourceUrl: "https://web-view.app.pokemonchampions.jp/battle/pages/events/rs177501629259kmzbny/sc/pokemon.html",
+  },
+  "M-B": {
+    announcementUrl: "https://news.pokemon-home.com/sc/page/776.html",
+    sourceUrl: "https://web-view.app.pokemonchampions.jp/battle/pages/events/rs178066986988lmoqpm/sc/pokemon.html",
+  },
+};
+const POKEMON_REFERENCE_URL = "https://wiki.52poke.com/wiki/宝可梦列表（按全国图鉴编号）";
+const POKECAMP_REFERENCE_SOURCES = {
+  pokemon: "https://pokecamp.cc/zh/pokemon",
+  moves: "https://pokecamp.cc/zh/moves",
+  abilities: "https://pokecamp.cc/zh/abilities",
+  items: "https://pokecamp.cc/zh/items",
+};
 const SHOWDOWN_BRIDGE_PROFILE_PATH = join(ROOT, ".cache", "showdown-bridge-browser");
+const POKECAMP_BROWSER_PROFILE_PATH = join(ROOT, ".cache", "pokecamp-browser");
 let showdownBridgeContext = null;
 let showdownBridgePage = null;
+let pokecampBrowserContext = null;
+let pokecampBrowserPage = null;
+let lastPokecampCrawlPayload = null;
+let pokecampReferenceData = readPokecampReferenceData();
+let pokecampBrowserState = {
+  status: "CLOSED",
+  pageUrl: "",
+  pageTitle: "",
+  browser: "",
+  challenge: false,
+  lastReadAt: "",
+  lastError: "",
+  extracted: { scripts: 0, teams: 0 },
+  crawl: { status: "IDLE", sourcePageType: "", page: 0, pages: 0, teams: 0, details: 0, errors: 0, startedAt: "", finishedAt: "", lastError: "" },
+};
+const POKECAMP_MONITOR_SOURCES = [
+  { id: "vgc-teams", label: "VGC 队伍页", url: "https://pokecamp.cc/zh/champions/vgc-teams", sourcePageType: "vgc-teams", format: "double" },
+  { id: "team-builds-single", label: "队伍构筑 · 单打", url: "https://pokecamp.cc/zh/champions/team-builds", sourcePageType: "team-builds-single", format: "single" },
+  { id: "team-builds-double", label: "队伍构筑 · 双打", url: "https://pokecamp.cc/zh/champions/team-builds", sourcePageType: "team-builds-double", format: "double" },
+];
+const defaultPokecampMonitorState = () => ({
+  enabled: false,
+  intervalMinutes: 360,
+  pages: 3,
+  sources: POKECAMP_MONITOR_SOURCES.map((source) => source.id),
+  status: "STOPPED",
+  lastRunAt: "",
+  lastCompletedAt: "",
+  nextRunAt: "",
+  lastError: "",
+  lastResult: null,
+});
+function readPokecampMonitorState() {
+  try {
+    const saved = JSON.parse(readFileSync(POKECAMP_MONITOR_STATE_PATH, "utf8"));
+    return { ...defaultPokecampMonitorState(), ...saved, sources: Array.isArray(saved.sources) && saved.sources.length ? saved.sources : defaultPokecampMonitorState().sources };
+  } catch {
+    return defaultPokecampMonitorState();
+  }
+}
+let pokecampMonitorState = readPokecampMonitorState();
+let pokecampMonitorTimer = null;
+let pokecampMonitorRunning = false;
 const DEFAULT_ITEM_POOL = ["生命宝珠", "气势披带", "讲究围巾", "讲究眼镜", "突击背心", "剩饭"];
 const ADVICE_POKEMON_SCHEMA = {
   type: "object",
@@ -549,6 +616,669 @@ async function handleAccountApi(req, res) {
   sendJson(res, 404, { ok: false, error: "Unknown account endpoint." });
 }
 
+async function persistPokecampCrawlPayload(payload, options = {}) {
+  const sourcePageType = String(options.sourcePageType || payload?.sourcePageType || "vgc-teams").trim();
+  const format = options.format === "single" ? "single" : options.format === "double" ? "double" : sourcePageType.includes("single") ? "single" : "double";
+  const imported = normalizePokecampPayload(payload, {
+    sourcePageType,
+    format,
+    season: String(options.season || "").trim(),
+    regulation: String(options.regulation || "").trim(),
+    rulesetId: String(options.rulesetId || "").trim(),
+  });
+  if (!imported.teams.length) return { ok: false, code: "POKECAMP_NO_TEAMS", error: "抓取结果没有可导入队伍。", imported: { added: 0, updated: 0, total: 0 } };
+  const document = readTeamDataDocument();
+  const merged = mergePokecampTeams(document, imported);
+  const sourceKey = (team) => [String(team?.source || "").toLowerCase(), String(team?.sourcePageType || ""), String(team?.season || team?.regulation || ""), String(team?.title || "")].join("::");
+  const memberKey = (team) => (team?.members || []).map((member) => String(member?.name || member?.localizedName || member?.slug || "").replace(/\s+/g, "").toLowerCase()).join("|");
+  const fingerprint = (team) => createHash("sha1").update(JSON.stringify({
+    title: team?.title,
+    sourcePageType: team?.sourcePageType,
+    format: team?.format,
+    season: team?.season,
+    regulation: team?.regulation,
+    rentalCode: team?.rentalCode,
+    members: memberKey(team),
+    detailStatus: team?.detailStatus,
+    strategy: team?.strategy,
+    configurations: (team?.configurations || []).map((configuration) => ({ name: configuration?.name, item: configuration?.item, ability: configuration?.ability, nature: configuration?.nature, stats: configuration?.stats, actualStats: configuration?.actualStats, moves: configuration?.moves, notes: configuration?.notes })),
+  })).digest("hex");
+  const changed = imported.teams.reduce((count, team) => {
+    const previous = (document.teams || []).find((candidate) => String(candidate.id) === String(team.id) || sourceKey(candidate) === sourceKey(team) || (sourceKey(candidate).replace(/::[^:]*$/, "") === sourceKey(team).replace(/::[^:]*$/, "") && memberKey(candidate) === memberKey(team)));
+    if (!previous) return count;
+    const current = (merged.teams || []).find((candidate) => String(candidate.id) === String(previous.id) || sourceKey(candidate) === sourceKey(team));
+    return current && fingerprint(previous) !== fingerprint(current) ? count + 1 : count;
+  }, 0);
+  await writeFile(TEAM_DATA_PATH, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
+  return {
+    ok: true,
+    source: "PokéCamp",
+    imported: { ...merged.imported, updated: changed },
+    totalTeams: merged.teams.length,
+    formats: { single: merged.teams.filter((team) => team.format === "single").length, double: merged.teams.filter((team) => team.format === "double").length },
+    sourcePageType,
+    crawl: { teams: payload?.teams?.length || 0, sourcePageType: payload?.sourcePageType || sourcePageType },
+  };
+}
+
+async function writePokecampMonitorState() {
+  await mkdir(join(ROOT, "data"), { recursive: true });
+  await writeFile(POKECAMP_MONITOR_STATE_PATH, `${JSON.stringify(pokecampMonitorState, null, 2)}\n`, "utf8");
+}
+
+function pokecampMonitorSnapshot() {
+  return {
+    ok: true,
+    ...pokecampMonitorState,
+    running: pokecampMonitorRunning,
+    sources: POKECAMP_MONITOR_SOURCES.map((source) => ({ ...source, enabled: pokecampMonitorState.sources.includes(source.id) })),
+    browser: pokecampBrowserSnapshot(),
+  };
+}
+
+function schedulePokecampMonitor() {
+  if (pokecampMonitorTimer) clearInterval(pokecampMonitorTimer);
+  pokecampMonitorTimer = null;
+  if (!pokecampMonitorState.enabled) return;
+  const intervalMs = Math.max(15, Number(pokecampMonitorState.intervalMinutes) || 360) * 60_000;
+  pokecampMonitorState.nextRunAt = new Date(Date.now() + intervalMs).toISOString();
+  pokecampMonitorTimer = setInterval(() => { runPokecampMonitor().catch((error) => console.error(`PokéCamp monitor failed: ${error.message}`)); }, intervalMs);
+  pokecampMonitorTimer.unref();
+}
+
+async function runPokecampMonitor() {
+  if (pokecampMonitorRunning) return pokecampMonitorSnapshot();
+  pokecampMonitorRunning = true;
+  const startedAt = new Date().toISOString();
+  let scanned = 0;
+  let added = 0;
+  let updated = 0;
+  let details = 0;
+  const failures = [];
+  pokecampMonitorState = { ...pokecampMonitorState, status: "RUNNING", lastRunAt: startedAt, lastError: "", lastResult: null };
+  await writePokecampMonitorState().catch(() => undefined);
+  try {
+    for (const source of POKECAMP_MONITOR_SOURCES.filter((item) => pokecampMonitorState.sources.includes(item.id))) {
+      const opened = await launchPokecampBrowser(source.url);
+      if (!opened.ok || opened.challenge) {
+        failures.push({ source: source.id, error: opened.error || "等待 PokéCamp 人工验证" });
+        break;
+      }
+      const switched = await setPokecampFormat(source.format);
+      if (!switched.ok) { failures.push({ source: source.id, error: switched.error || "赛制切换失败" }); continue; }
+      const crawled = await crawlPokecampCurrentPage({ maxPages: pokecampMonitorState.pages, sourcePageType: source.sourcePageType });
+      if (!crawled.ok) { failures.push({ source: source.id, error: crawled.error || "抓取失败" }); continue; }
+      const imported = await persistPokecampCrawlPayload(crawled.payload, { sourcePageType: source.sourcePageType, format: source.format, season: "M-B", regulation: "M-B" });
+      if (!imported.ok) { failures.push({ source: source.id, error: imported.error }); continue; }
+      scanned += imported.crawl.teams;
+      added += imported.imported.added;
+      updated += imported.imported.updated;
+      details += crawled.preview?.details || 0;
+    }
+    const completedAt = new Date().toISOString();
+    const success = failures.length === 0;
+    pokecampMonitorState = {
+      ...pokecampMonitorState,
+      status: success ? "IDLE" : "WAITING_OR_FAILED",
+      lastCompletedAt: completedAt,
+      lastError: failures.map((item) => `${item.source}: ${item.error}`).join("；"),
+      lastResult: { scanned, added, updated, details, failures, startedAt, completedAt },
+    };
+  } finally {
+    pokecampMonitorRunning = false;
+    schedulePokecampMonitor();
+    await writePokecampMonitorState().catch(() => undefined);
+  }
+  return pokecampMonitorSnapshot();
+}
+
+async function handlePokecampMonitorApi(req, res) {
+  const url = new URL(req.url || "/api/pokecamp/monitor/status", "http://127.0.0.1");
+  if (req.method === "GET" && url.pathname.endsWith("/status")) { sendJson(res, 200, pokecampMonitorSnapshot()); return; }
+  if (req.method !== "POST") { sendJson(res, 405, { ok: false, error: "未知的 PokéCamp 监听接口。" }); return; }
+  const body = await readJson(req).catch(() => ({}));
+  if (url.pathname.endsWith("/stop")) {
+    pokecampMonitorState = { ...pokecampMonitorState, enabled: false, status: "STOPPED", nextRunAt: "" };
+    schedulePokecampMonitor();
+    await writePokecampMonitorState();
+    sendJson(res, 200, pokecampMonitorSnapshot());
+    return;
+  }
+  if (url.pathname.endsWith("/run")) { sendJson(res, 202, { ...pokecampMonitorSnapshot(), accepted: true }); runPokecampMonitor().catch((error) => console.error(`PokéCamp monitor failed: ${error.message}`)); return; }
+  if (url.pathname.endsWith("/start")) {
+    const sources = Array.isArray(body.sources) ? body.sources.filter((id) => POKECAMP_MONITOR_SOURCES.some((source) => source.id === id)) : pokecampMonitorState.sources;
+    pokecampMonitorState = { ...pokecampMonitorState, enabled: true, status: "IDLE", intervalMinutes: Math.max(15, Math.min(1440, Number(body.intervalMinutes || pokecampMonitorState.intervalMinutes || 360))), pages: Math.max(1, Math.min(30, Number(body.pages || pokecampMonitorState.pages || 3))), sources: sources.length ? sources : POKECAMP_MONITOR_SOURCES.map((source) => source.id) };
+    schedulePokecampMonitor();
+    await writePokecampMonitorState();
+    sendJson(res, 202, { ...pokecampMonitorSnapshot(), accepted: true });
+    runPokecampMonitor().catch((error) => console.error(`PokéCamp monitor failed: ${error.message}`));
+    return;
+  }
+  sendJson(res, 404, { ok: false, error: "未知的 PokéCamp 监听接口。" });
+}
+
+async function handlePokecampTeamImport(req, res) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { ok: false, error: "仅支持 POST 导入 PokéCamp 队伍数据。" });
+    return;
+  }
+  const body = await readJson(req).catch(() => ({}));
+  const payload = body.payload ?? body.data ?? body.teams ?? body.items ?? body;
+  let imported;
+  try {
+    imported = normalizePokecampPayload(payload, {
+      format: body.format === "double" ? "double" : body.format === "single" ? "single" : "",
+      season: String(body.season || "").trim(),
+      regulation: String(body.regulation || "").trim(),
+      rulesetId: String(body.rulesetId || "").trim(),
+      sourcePageType: String(body.sourcePageType || "").trim(),
+    });
+  } catch (error) {
+    sendJson(res, 422, { ok: false, code: "POKECAMP_PAYLOAD_INVALID", error: `PokéCamp 数据无法解析：${error.message || "JSON 格式错误"}` });
+    return;
+  }
+  if (!imported.teams.length) {
+    sendJson(res, 422, { ok: false, code: "POKECAMP_NO_TEAMS", error: "没有识别到包含至少 3 只宝可梦且带单双打标记的队伍。请导入页面导出的 JSON，或补充 format 字段。" });
+    return;
+  }
+  const document = readTeamDataDocument();
+  const merged = mergePokecampTeams(document, imported);
+  await writeFile(TEAM_DATA_PATH, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
+  sendJson(res, 200, {
+    ok: true,
+    source: "PokéCamp",
+    imported: merged.imported,
+    totalTeams: merged.teams.length,
+    formats: { single: merged.teams.filter((team) => team.format === "single").length, double: merged.teams.filter((team) => team.format === "double").length },
+    seasons: merged.availableSeasons,
+    sourcePages: ["https://pokecamp.cc/zh/champions/vgc-teams", "https://pokecamp.cc/zh/champions/team-builds"],
+  });
+}
+
+function handlePokecampTeamsApi(req, res) {
+  const url = new URL(req.url || "/api/pokecamp/teams", "http://127.0.0.1");
+  const document = readTeamDataDocument();
+  const allTeams = Array.isArray(document?.teams) ? document.teams : [];
+  const source = String(url.searchParams.get("source") || "pokecamp").trim().toLowerCase();
+  const format = String(url.searchParams.get("format") || "all").trim().toLowerCase();
+  const pageType = String(url.searchParams.get("pageType") || "all").trim().toLowerCase();
+  const search = String(url.searchParams.get("search") || "").trim().toLowerCase();
+  const pageSize = Math.max(1, Math.min(48, Number(url.searchParams.get("pageSize") || 24)));
+  const page = Math.max(1, Number(url.searchParams.get("page") || 1));
+  const filtered = allTeams.filter((team) => {
+    const isPokecamp = String(team.source || "").toLowerCase().includes("pokecamp");
+    if (source === "pokecamp" && !isPokecamp) return false;
+    if (pageType === "vgc-teams" && team.sourcePageType !== "vgc-teams") return false;
+    if (pageType === "team-builds" && !String(team.sourcePageType || "").startsWith("team-builds")) return false;
+    if (format !== "all" && team.format !== format) return false;
+    if (!search) return true;
+    const haystack = [team.title, team.source, team.season, team.regulation, ...(team.members || []).flatMap((member) => [member.name, member.localizedName, member.slug])]
+      .filter(Boolean).join(" ").toLowerCase();
+    return haystack.includes(search);
+  });
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const teams = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize).map((team) => {
+    const repaired = repairPokecampTeam(team);
+    const quality = (configurations = []) => (configurations || []).reduce((score, configuration) => score + [configuration.item, configuration.ability, configuration.nature, configuration.stats, configuration.moves?.length].filter(Boolean).length, 0);
+    const sourceConfigurations = repaired.configurations?.length >= Math.min(6, team.members?.length || 0)
+      ? repaired.configurations
+      : (quality(repaired.configurations) > quality(team.configurations) ? repaired.configurations : team.configurations);
+    const strategy = pokecampStrategySummary(team);
+    const configurations = Array.isArray(sourceConfigurations) ? sourceConfigurations.slice(0, 6).map((configuration) => {
+      const cleanConfiguration = cleanStoredPokecampConfiguration(configuration);
+      return {
+        name: cleanConfiguration.name,
+        item: cleanConfiguration.item,
+        ability: cleanConfiguration.ability,
+        abilities: cleanConfiguration.abilities,
+        abilityTransition: cleanConfiguration.abilityTransition,
+        nature: cleanConfiguration.nature,
+        stats: cleanConfiguration.stats,
+        actualStats: cleanConfiguration.actualStats,
+        teraType: cleanConfiguration.teraType,
+        role: cleanConfiguration.role,
+        moves: cleanConfiguration.moves,
+        notes: cleanConfiguration.notes,
+        noteLinks: cleanConfiguration.noteLinks,
+        references: cleanConfiguration.references,
+      };
+    }) : [];
+    const hasConfigurationNotes = configurations.some((configuration) => configuration.notes?.some((note) => String(note).replace(/\s+/g, "").length >= 20));
+    const hasTeamDetails = Object.values(team.details || {}).some((value) => Array.isArray(value) && value.some((item) => String(item || "").replace(/\s+/g, "").length >= 8));
+    const configurationStrategyBlocks = configurations.flatMap((configuration) => {
+      const note = (configuration.notes || []).join(" ").replace(/^使用方法、详细：\s*/i, "").trim();
+      if (note.replace(/\s+/g, "").length < 20) return [];
+      return [
+        { type: "heading", text: `${configuration.name || "宝可梦"} · 配置思路` },
+        { type: "paragraph", text: note },
+      ];
+    });
+    const effectiveStrategyBlocks = strategy.complete && strategy.blocks.length ? strategy.blocks : configurationStrategyBlocks;
+    const effectiveStrategyText = strategy.complete ? strategy.text : configurationStrategyBlocks.filter((block) => block.type === "paragraph").map((block) => block.text).join("\n\n");
+    return {
+    id: team.id,
+    title: team.title,
+    source: team.source,
+    sourcePageType: team.sourcePageType,
+    detailStatus: team.detailStatus || "UNKNOWN",
+    format: team.format,
+    formatLabel: team.formatLabel,
+    season: team.season,
+    regulation: team.regulation,
+    rate: team.rate,
+    rank: team.rank,
+    author: team.author,
+    href: team.href || team.articleUrl || team.sourceUrl,
+    description: team.description,
+    strategy: team.strategy,
+      strategyText: effectiveStrategyText,
+      strategyBlocks: effectiveStrategyBlocks,
+      strategyLinks: mergePokecampLinks(strategy.links, pokecampConfigurationLinks(configurations, team.members || [])),
+      strategyTitle: strategy.headline,
+      strategyPublished: strategy.published,
+      strategyAuthor: strategy.authorHandle,
+      strategyComplete: strategy.complete,
+      strategyAvailable: strategy.complete || hasConfigurationNotes || hasTeamDetails,
+      strategySource: strategy.complete ? "article" : configurationStrategyBlocks.length ? "configuration-notes" : hasTeamDetails ? "team-details" : strategy.source,
+    members: Array.isArray(team.members) ? team.members.slice(0, 6).map((member) => {
+      const spriteCandidates = pokecampSpriteCandidates(member);
+      const baseValue = String(member.name || member.localizedName || member.slug || "").replace(/^超级\s*/i, "").replace(/\s*[（(]?[XYＸＹ][）)]?$/i, "").trim();
+      const speciesSlug = pokecampSpriteSlug(member.name || member.localizedName || member.slug) || pokecampSpriteSlug(baseValue);
+      return {
+        id: member.id,
+        name: member.name || member.localizedName || member.slug,
+        localizedName: member.localizedName,
+        slug: member.slug,
+        sprite: member.sprite || spriteCandidates[0] || "",
+        spriteCandidates,
+        types: strictTypesFor(speciesSlug || baseValue).map((type) => CANDIDATE_TYPE_LABELS[type] || type),
+        item: member.item,
+      };
+    }) : [],
+    configurations,
+    details: team.details || {},
+    };
+  });
+  const formatCounts = {
+    all: allTeams.filter((team) => String(team.source || "").toLowerCase().includes("pokecamp")).length,
+    single: allTeams.filter((team) => String(team.source || "").toLowerCase().includes("pokecamp") && team.format === "single").length,
+    double: allTeams.filter((team) => String(team.source || "").toLowerCase().includes("pokecamp") && team.format === "double").length,
+  };
+  sendJson(res, 200, {
+    ok: true,
+    source: "PokéCamp",
+    fetchedAt: document.fetchedAt || "",
+    total: filtered.length,
+    totalAll: formatCounts.all,
+    formatCounts,
+    page: currentPage,
+    pageSize,
+    totalPages,
+    pageType,
+    pageTypeCounts: {
+      all: formatCounts.all,
+      vgc: allTeams.filter((team) => String(team.source || "").toLowerCase().includes("pokecamp") && team.sourcePageType === "vgc-teams").length,
+      builds: allTeams.filter((team) => String(team.source || "").toLowerCase().includes("pokecamp") && String(team.sourcePageType || "").startsWith("team-builds")).length,
+    },
+    teams,
+  });
+}
+
+async function importLatestPokecampCrawl(req, res) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { ok: false, error: "仅支持 POST 导入最近一次 PokéCamp 抓取结果。" });
+    return;
+  }
+  if (!lastPokecampCrawlPayload?.teams?.length) {
+    sendJson(res, 404, { ok: false, code: "POKECAMP_NO_CRAWL", error: "暂无可导入的抓取结果。请先完成抓取。" });
+    return;
+  }
+  const body = await readJson(req).catch(() => ({}));
+  const sourcePageType = String(body.sourcePageType || lastPokecampCrawlPayload.sourcePageType || "vgc-teams").trim();
+  const format = body.format === "single" ? "single" : body.format === "double" ? "double" : sourcePageType.includes("single") ? "single" : "double";
+  const result = await persistPokecampCrawlPayload(lastPokecampCrawlPayload, {
+    sourcePageType,
+    format,
+    season: String(body.season || "").trim(),
+    regulation: String(body.regulation || "").trim(),
+    rulesetId: String(body.rulesetId || "").trim(),
+  });
+  if (!result.ok) {
+    sendJson(res, 422, { ok: false, code: result.code, error: result.error, preview: { rawTeams: lastPokecampCrawlPayload.teams.length, sourcePageType, format } });
+    return;
+  }
+  sendJson(res, 200, result);
+}
+
+function pokecampBrowserSnapshot() {
+  return { ok: true, ...pokecampBrowserState, open: Boolean(pokecampBrowserContext && !pokecampBrowserPage?.isClosed()) };
+}
+
+function pokecampChallengePage(title = "", body = "") {
+  return /just a moment|checking your browser|verify you are human|cf-chl|cloudflare|正在进行安全验证|安全服务防护|请稍候/i.test(`${title}\n${body}`);
+}
+
+async function launchPokecampBrowser(url = "") {
+  const executable = await localShowdownBrowserExecutable();
+  if (!executable) return { ok: false, status: 503, error: "未找到可用于读取 PokéCamp 的 Chrome 或 Edge 浏览器。" };
+  try {
+    const { chromium } = await import("playwright");
+    await mkdir(POKECAMP_BROWSER_PROFILE_PATH, { recursive: true });
+    if (!pokecampBrowserContext || !pokecampBrowserContext.pages) {
+      pokecampBrowserContext = await chromium.launchPersistentContext(POKECAMP_BROWSER_PROFILE_PATH, {
+        headless: false,
+        executablePath: executable,
+        args: ["--no-first-run", "--no-default-browser-check"],
+      });
+      pokecampBrowserContext.on("close", () => {
+        pokecampBrowserContext = null;
+        pokecampBrowserPage = null;
+        pokecampBrowserState = { ...pokecampBrowserState, status: "CLOSED", challenge: false };
+      });
+    }
+    pokecampBrowserPage = pokecampBrowserPage && !pokecampBrowserPage.isClosed()
+      ? pokecampBrowserPage
+      : await pokecampBrowserContext.newPage();
+    const target = /^https:\/\/pokecamp\.cc\/zh\/(?:champions\/(?:vgc-teams|team-builds)|pokemon|moves|abilities|items)(?:[/?#]|$)/i.test(url)
+      ? url
+      : "https://pokecamp.cc/zh/champions/vgc-teams";
+    await pokecampBrowserPage.goto(target, { waitUntil: "domcontentloaded", timeout: 60000 });
+    const info = await pokecampBrowserPage.evaluate(() => ({ title: document.title, body: document.body?.innerText || "", url: location.href }));
+    const challenge = pokecampChallengePage(info.title, info.body);
+    pokecampBrowserState = {
+      ...pokecampBrowserState,
+      status: challenge ? "WAITING_FOR_HUMAN_VERIFICATION" : "READY_TO_READ",
+      pageUrl: info.url,
+      pageTitle: info.title,
+      browser: executable.toLowerCase().includes("msedge") ? "Edge" : "Chrome",
+      challenge,
+      lastError: "",
+    };
+    return pokecampBrowserSnapshot();
+  } catch (error) {
+    pokecampBrowserState = { ...pokecampBrowserState, status: "FAILED", lastError: error.message || "浏览器启动失败" };
+    return { ok: false, status: 503, error: pokecampBrowserState.lastError };
+  }
+}
+
+async function readPokecampBrowser() {
+  if (!pokecampBrowserPage || pokecampBrowserPage.isClosed()) return { ok: false, status: 409, error: "PokéCamp 浏览器尚未打开。" };
+  try {
+    const extracted = await pokecampBrowserPage.evaluate(() => {
+      const text = document.body?.innerText || "";
+      const json = [];
+      for (const node of document.querySelectorAll('script[type="application/json"], script#__NEXT_DATA__, script')) {
+        const value = node.textContent?.trim();
+        if (!value || value.length < 20 || value.length > 8_000_000) continue;
+        try { const parsed = JSON.parse(value); if (parsed && typeof parsed === "object") json.push(parsed); } catch { /* public script may not be JSON */ }
+      }
+      const links = [...document.querySelectorAll("a")].map((node) => ({ title: node.textContent?.trim(), href: node.href })).filter((item) => item.title || item.href);
+      const pokemonLinks = links.filter((item) => /\/zh\/champions\/pokemon\//i.test(item.href || "") && item.title);
+      const format = /\u53cc\u6253|\bVGC\b/i.test(text) ? "double" : /\u5355\u6253|\bBSS\b/i.test(text) ? "single" : "";
+      const regulation = (text.match(/\u8d5b\u5236\s*([A-Z]-[A-Z0-9]+)/i) || [])[1] || "";
+      const domTeams = [];
+      for (let index = 0; index + 5 < pokemonLinks.length; index += 6) {
+        const members = pokemonLinks.slice(index, index + 6).map((item) => ({ name: item.title, localizedName: item.title, href: item.href }));
+        domTeams.push({ title: `PokéCamp ${regulation || "team"} #${Math.floor(index / 6) + 1}`, format, season: regulation, regulation, sourcePage: location.href, sourceUrl: location.href, members });
+      }
+      return { title: document.title, url: location.href, text: text.slice(0, 500_000), json, links, domTeams };
+    });
+    if (pokecampChallengePage(extracted.title, extracted.text)) {
+      pokecampBrowserState = { ...pokecampBrowserState, status: "WAITING_FOR_HUMAN_VERIFICATION", challenge: true, pageTitle: extracted.title, pageUrl: extracted.url, lastError: "仍处于 Cloudflare 验证页，请完成验证后再读取。" };
+      return { ok: false, status: 409, code: "WAITING_FOR_HUMAN_VERIFICATION", error: pokecampBrowserState.lastError, state: pokecampBrowserSnapshot() };
+    }
+    const payload = { sourcePage: extracted.url, title: extracted.title, pageText: extracted.text, links: extracted.links, pageData: extracted.domTeams.length ? { teams: extracted.domTeams } : extracted.json };
+    let imported;
+    try {
+      imported = normalizePokecampPayload(extracted.domTeams.length ? { teams: extracted.domTeams } : extracted.json, { sourcePageType: /team-builds/i.test(extracted.url) ? "team-builds" : "vgc-teams" });
+    } catch { imported = { teams: [] }; }
+    pokecampBrowserState = { ...pokecampBrowserState, status: imported.teams.length ? "DATA_READY" : "READY_TO_READ", challenge: false, lastReadAt: new Date().toISOString(), extracted: { scripts: extracted.json.length, teams: imported.teams.length }, pageTitle: extracted.title, pageUrl: extracted.url, lastError: imported.teams.length ? "" : "页面已读取，但未发现可导入的结构化队伍数据。" };
+    return { ok: true, state: pokecampBrowserSnapshot(), payload, preview: { teams: imported.teams.length, scripts: extracted.json.length, pageUrl: extracted.url } };
+  } catch (error) {
+    pokecampBrowserState = { ...pokecampBrowserState, status: "FAILED", lastError: error.message || "页面读取失败" };
+    return { ok: false, status: 503, error: pokecampBrowserState.lastError, state: pokecampBrowserSnapshot() };
+  }
+}
+
+async function debugPokecampBrowser() {
+  if (!pokecampBrowserPage || pokecampBrowserPage.isClosed()) return { ok: false, status: 409, error: "PokéCamp 浏览器尚未打开。" };
+  const data = await pokecampBrowserPage.evaluate(() => {
+    const visible = (node) => { const rect = node.getBoundingClientRect(); const style = getComputedStyle(node); return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none"; };
+    const exact = [...document.querySelectorAll("body *")].filter((node) => visible(node) && /^(查看.*详情|添加到我的队伍|More pages|下一页|下一頁|单打|双打)$/.test((node.textContent || "").trim())).slice(-80).map((node) => ({ tag: node.tagName, text: (node.textContent || "").trim(), role: node.getAttribute("role"), cls: String(node.className || "").slice(0, 180), html: node.outerHTML.slice(0, 900) }));
+    const pokemonAnchors = [...document.querySelectorAll('a[href*="/zh/champions/pokemon/"], a[href*="/zh/pokemon/"]')].filter(visible);
+    const cards = pokemonAnchors.slice(0, 12).map((anchor) => {
+      let node = anchor;
+      for (let depth = 0; depth < 8 && node.parentElement; depth += 1) {
+        node = node.parentElement;
+        const count = node.querySelectorAll('a[href*="/zh/champions/pokemon/"], a[href*="/zh/pokemon/"]').length;
+        if (count === 6) return { tag: node.tagName, cls: String(node.className || "").slice(0, 180), text: (node.innerText || "").slice(0, 1000), html: node.outerHTML.slice(0, 5000) };
+      }
+      return null;
+    }).filter(Boolean);
+    const formatNodes = [...document.querySelectorAll("body *")].filter((node) => visible(node) && /单打|双打/.test((node.textContent || "").trim()) && (node.textContent || "").trim().length < 80).slice(0, 20).map((node) => ({ text: (node.textContent || "").trim(), tag: node.tagName, role: node.getAttribute("role"), cls: String(node.className || "").slice(0, 180), html: node.outerHTML.slice(0, 2000), parent: node.parentElement?.outerHTML?.slice(0, 2500) }));
+    const formatTargets = [...document.querySelectorAll("body *")].filter((node) => visible(node) && /^(单打|双打)\s*\d+\s*支$/.test((node.textContent || "").trim())).map((node) => {
+      const ancestors = [];
+      let current = node;
+      for (let depth = 0; depth < 7 && current; depth += 1, current = current.parentElement) ancestors.push({ tag: current.tagName, role: current.getAttribute("role"), href: current.getAttribute("href"), cls: String(current.className || "").slice(0, 180), html: current.outerHTML.slice(0, 2400) });
+      return { text: (node.textContent || "").trim(), ancestors, clickable: node.closest("button,a,[role=button]")?.outerHTML?.slice(0, 3500) || "" };
+    });
+    return { url: location.href, title: document.title, exact, formatNodes, formatTargets, cards, body: (document.body?.innerText || "").slice(-1200) };
+  });
+  return { ok: true, data };
+}
+
+async function setPokecampFormat(format = "double") {
+  if (!pokecampBrowserPage || pokecampBrowserPage.isClosed()) return { ok: false, status: 409, error: "PokéCamp 浏览器尚未打开。" };
+  const desired = format === "single" ? "单打" : "双打";
+  const result = await pokecampBrowserPage.evaluate(async (desired) => {
+    const visible = (node) => { const rect = node.getBoundingClientRect(); const style = getComputedStyle(node); return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none"; };
+    const selector = document.querySelector('button[aria-label^="数据与赛制"]');
+    if (selector && selector.getAttribute("aria-expanded") !== "true") selector.click();
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const popupCandidates = [...document.querySelectorAll('[role="dialog"], [role="menu"], [role="listbox"], [data-slot="dialog-content"], [data-slot="popover-content"], [data-radix-popper-content-wrapper], [data-base-ui-popup], [data-base-ui-popup-trigger] + *')].filter(visible);
+    const popup = popupCandidates.find((node) => /单打|双打/.test(node.innerText || ""));
+    const popupDebug = popup ? { text: (popup.innerText || "").slice(0, 8000), html: popup.outerHTML.slice(0, 12000) } : null;
+    const popupLabels = popup ? [...popup.querySelectorAll("button,[role=button],a")].filter((node) => visible(node) && (node.textContent || "").trim() === desired) : [];
+    const popupTarget = popupLabels[0];
+    if (popupTarget) {
+      const formatButton = popupTarget.closest("button,[role=button],a") || popupTarget;
+      formatButton.click();
+      await new Promise((resolve) => setTimeout(resolve, 180));
+      // Both build-page formats are sourced from the in-game ladder. The
+      // VGC teams page uses Limitless; choosing it for build-page doubles
+      // silently leaves the page on singles.
+      const sourceName = /\/team-builds(?:[/?#]|$)/i.test(location.pathname) ? "游戏内" : "Limitless";
+      const sourceGroup = [...document.querySelectorAll('[role="group"][aria-label="数据来源"]')].find(visible);
+      const sourceButton = sourceGroup && [...sourceGroup.querySelectorAll("button")].find((node) => visible(node) && (node.innerText || "").trim().startsWith(sourceName));
+      sourceButton?.click();
+      await new Promise((resolve) => setTimeout(resolve, 650));
+      return { ok: true, found: [{ tag: formatButton.tagName, popup: true }, ...(sourceButton ? [{ tag: sourceButton.tagName, source: sourceName }] : [])], popupDebug };
+    }
+    const candidates = [...document.querySelectorAll("button,[role=button],a")]
+      .filter((node) => visible(node) && (node.textContent || "").trim() === desired)
+      .filter((node, index, list) => list.indexOf(node) === index);
+    const target = candidates.find((node) => node.getAttribute("aria-pressed") !== "true" && !node.className?.toString().includes("bg-primary")) || candidates[0];
+    if (!target) return { ok: false, found: [], popupDebug, popupCandidates: popupCandidates.map((node) => ({ text: (node.innerText || "").slice(0, 1500), html: node.outerHTML.slice(0, 3000) })) };
+    target.click();
+    return { ok: true, found: candidates.map((node) => ({ tag: node.tagName, cls: String(node.className || "").slice(0, 120), pressed: node.getAttribute("aria-pressed") })) };
+  }, desired);
+  await pokecampBrowserPage.waitForTimeout(800);
+  const info = await pokecampBrowserPage.evaluate(() => ({ title: document.title, url: location.href, text: document.body?.innerText || "" }));
+  return { ok: result.ok, format, result, pageTitle: info.title, pageUrl: info.url, preview: (info.text.match(/单打\s+\d+\s+支|双打\s+\d+\s+支/) || [])[0] || "" };
+}
+
+async function crawlPokecampCurrentPage({ maxPages = 1, sourcePageType = "vgc-teams" } = {}) {
+  if (!pokecampBrowserPage || pokecampBrowserPage.isClosed()) return { ok: false, status: 409, error: "PokéCamp 浏览器尚未打开。" };
+  const page = pokecampBrowserPage;
+  const limit = Math.max(1, Math.min(30, Number(maxPages) || 1));
+  const allTeams = [];
+  let details = 0;
+  let errors = 0;
+  let pageCount = 0;
+  pokecampBrowserState = { ...pokecampBrowserState, status: "CRAWLING", crawl: { status: "RUNNING", sourcePageType, page: 0, pages: limit, teams: 0, details: 0, errors: 0, startedAt: new Date().toISOString(), finishedAt: "", lastError: "" } };
+  try {
+    // Format changes preserve the last pagination page on PokéCamp. Always
+    // reset to page 1 before a crawl so a requested page budget is complete.
+    await page.evaluate(() => {
+      const visible = (node) => { const rect = node.getBoundingClientRect(); const style = getComputedStyle(node); return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none"; };
+      const firstPage = [...document.querySelectorAll("button,a")].find((node) => visible(node) && (node.textContent || "").trim() === "1" && !node.disabled);
+      firstPage?.click();
+    });
+    await page.waitForTimeout(650);
+    for (let pageIndex = 1; pageIndex <= limit; pageIndex += 1) {
+      pageCount = pageIndex;
+      await page.waitForTimeout(250);
+      const result = await page.evaluate(({ sourcePageType, pageIndex }) => {
+        const visible = (node) => { const rect = node.getBoundingClientRect(); const style = getComputedStyle(node); return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none"; };
+        const formatText = [...document.querySelectorAll("[data-slot=badge],h2,h3")].map((node) => (node.textContent || "").trim()).find((value) => /^(\u5355\u6253|\u53cc\u6253)$/.test(value)) || "";
+        const format = formatText === "\u5355\u6253" ? "single" : formatText === "\u53cc\u6253" ? "double" : sourcePageType === "team-builds-single" ? "single" : sourcePageType === "team-builds-double" || sourcePageType === "vgc-teams" ? "double" : "";
+        const text = document.body?.innerText || "";
+        const regulation = (text.match(/\u8d5b\u5236\s*([A-Z]-[A-Z0-9]+)/i) || [])[1] || "";
+        const cards = [];
+        const detailButtons = [...document.querySelectorAll("button")].filter((button) => visible(button) && /^(查看队伍详情|查看构筑详情)$/.test((button.textContent || "").trim()));
+        for (const button of detailButtons) {
+          let card = button;
+          for (let depth = 0; depth < 10 && card.parentElement; depth += 1) {
+            card = card.parentElement;
+            const members = [...card.querySelectorAll('a[href*="/zh/champions/pokemon/"], a[href*="/zh/pokemon/"]')].filter(visible);
+            if (members.length >= 6) {
+              const memberData = members.slice(0, 6).map((anchor) => ({ name: anchor.getAttribute("aria-label") || anchor.textContent?.trim(), href: new URL(anchor.getAttribute("href"), location.href).href, item: anchor.querySelector("[title]")?.getAttribute("title") || "" }));
+              const cardText = (card.innerText || "").trim();
+              const cardLines = cardText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+              const formatIndex = cardLines.findIndex((line) => line === "单打" || line === "双打");
+              const title = cardLines.slice(formatIndex + 1).find((line) => line && !/^(有租借队伍|查看队伍详情|查看构筑详情|添加到我的队伍|添加到我的队伍)$/.test(line) && !/^@/.test(line) && !/^\d{4}[-/]\d{1,2}[-/]\d{1,2}/.test(line)) || `PokéCamp ${regulation || "team"} p${pageIndex}-${cards.length + 1}`;
+              cards.push({ title, format, season: regulation, regulation, sourcePage: location.href, sourceUrl: location.href, members: memberData, cardText, detailButtonIndex: detailButtons.indexOf(button), detailStatus: "PENDING" });
+              break;
+            }
+          }
+        }
+        const next = [...document.querySelectorAll("button,a")].find((node) => visible(node) && /^(下一页|下一頁|Next|›|>)$/.test((node.textContent || "").trim()) && !node.disabled);
+        const numbered = [...document.querySelectorAll("button,a")].filter((node) => visible(node) && /^(\d+)$/.test((node.textContent || "").trim()));
+        return { cards, format, hasNext: Boolean(next), numbered: numbered.map((node) => (node.textContent || "").trim()), pageUrl: location.href };
+      }, { sourcePageType, pageIndex });
+      if (sourcePageType !== "vgc-teams" && result.format && result.format !== (sourcePageType === "team-builds-single" ? "single" : "double")) {
+        throw new Error(`页面赛制与请求不一致：请求 ${sourcePageType}，页面显示 ${result.format}`);
+      }
+      // Read each card's dialog before changing pages. The site only keeps the current
+      // page's dialog triggers mounted in the DOM.
+      for (const [cardIndex, card] of result.cards.entries()) {
+        let detail = null;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          // A failed close leaves the previous Radix dialog mounted. Dismiss it
+          // before selecting the next card so detailButtonIndex always belongs
+          // to the visible list page, not a stale dialog behind it.
+          await page.keyboard.press("Escape").catch(() => undefined);
+          await page.waitForTimeout(140);
+          detail = await page.evaluate(async (target) => {
+          const visible = (node) => { const rect = node.getBoundingClientRect(); const style = getComputedStyle(node); return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none"; };
+          const closeDialog = (dialog) => {
+            const close = [...dialog.querySelectorAll('button,[role="button"]')].find((node) =>
+              node.getAttribute("data-slot") === "dialog-close" ||
+              /^(关闭|關閉|Close|×|X)$/i.test((node.textContent || "").trim()) ||
+              /close|关闭|關閉/i.test(`${node.getAttribute("aria-label") || ""} ${node.getAttribute("title") || ""}`));
+            close?.click();
+          };
+          // Escape normally handles PokéCamp's icon-only close control. This
+          // fallback covers a dialog that was left open after a transient load.
+          for (const dialog of [...document.querySelectorAll('[role="dialog"], [data-slot="dialog-content"]')].filter(visible)) closeDialog(dialog);
+          const buttons = [...document.querySelectorAll("button")].filter((button) => visible(button) && /^(查看队伍详情|查看构筑详情)$/.test((button.textContent || "").trim()));
+          const button = buttons[target.index];
+          if (!button) return null;
+          button.click();
+          await new Promise((resolve) => setTimeout(resolve, 900));
+          const dialogs = [...document.querySelectorAll('[role="dialog"], [data-slot="dialog-content"]')].filter(visible);
+          const dialog = dialogs[dialogs.length - 1];
+          if (!dialog) return null;
+          const cards = [...dialog.querySelectorAll('a[href*="/zh/champions/pokemon/"], a[href*="/zh/pokemon/"]')].filter(visible).map((anchor) => {
+            let cardNode = anchor;
+            for (let depth = 0; depth < 8 && cardNode.parentElement; depth += 1) {
+              cardNode = cardNode.parentElement;
+              const text = (cardNode.innerText || "").trim();
+              if (/道具|性格|特性|招式/.test(text) && text.length < 2500) return { text, html: cardNode.outerHTML.slice(0, 9000), name: anchor.getAttribute("aria-label") || anchor.textContent?.trim(), href: new URL(anchor.getAttribute("href"), location.href).href };
+            }
+            return { text: (anchor.parentElement?.parentElement?.innerText || "").trim(), name: anchor.getAttribute("aria-label") || anchor.textContent?.trim(), href: new URL(anchor.getAttribute("href"), location.href).href };
+          });
+          const content = (dialog.innerText || "").slice(0, 30_000);
+          const configuredCards = cards.filter((entry) => /道具|性格|特性|招式/.test(entry.text || "")).length;
+          // A title-only dialog is not a successful detail read. It is usually
+          // the previous dialog or a still-loading current dialog; force the
+          // outer retry loop to reopen this exact card.
+          const expected = Math.min(6, Math.max(1, target.expectedMembers || 6));
+          const complete = configuredCards >= expected && content.length >= 450;
+          closeDialog(dialog);
+          return { content, cards, configuredCards, expected, complete };
+          }, {
+            index: Number.isInteger(card.detailButtonIndex) ? card.detailButtonIndex : cardIndex,
+            expectedMembers: card.members?.length || 6,
+          });
+          await page.keyboard.press("Escape").catch(() => undefined);
+          await page.waitForTimeout(100);
+          if (detail?.complete && !/详情加载失败|请稍后重试/.test(detail.content)) break;
+          await page.waitForTimeout(700 * (attempt + 1));
+        }
+        if (detail?.complete && !/详情加载失败|请稍后重试/.test(detail.content)) {
+          card.detailText = detail.content;
+          card.detailConfigurations = detail.cards || [];
+          card.detailStatus = "COMPLETE";
+          details += 1;
+        } else {
+          card.detailStatus = "RETRY_REQUIRED";
+          errors += 1;
+        }
+        allTeams.push(card);
+        pokecampBrowserState = { ...pokecampBrowserState, crawl: { ...pokecampBrowserState.crawl, page: pageCount, teams: allTeams.length, details, errors } };
+      }
+      if (pageIndex >= limit || (!result.hasNext && !result.numbered.some((value) => Number(value) > pageIndex))) break;
+      const moved = await page.evaluate((targetPage) => {
+        const visible = (node) => { const rect = node.getBoundingClientRect(); const style = getComputedStyle(node); return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none"; };
+        const next = [...document.querySelectorAll("button,a")].find((node) => visible(node) && /^(下一页|下一頁|Next|›|>)$/.test((node.textContent || "").trim()) && !node.disabled);
+        if (next) { next.click(); return true; }
+        const numbered = [...document.querySelectorAll("button,a")].find((node) => visible(node) && (node.textContent || "").trim() === String(targetPage));
+        if (numbered) { numbered.click(); return true; }
+        return false;
+      }, pageIndex + 1);
+      if (!moved) break;
+      await page.waitForTimeout(650);
+    }
+    const payload = { teams: allTeams, sourcePageType, sourcePage: page.url() };
+    lastPokecampCrawlPayload = payload;
+    pokecampBrowserState = { ...pokecampBrowserState, status: "DATA_READY", lastReadAt: new Date().toISOString(), crawl: { ...pokecampBrowserState.crawl, status: "COMPLETED", page: pageCount, teams: allTeams.length, details, errors, finishedAt: new Date().toISOString() } };
+    return { ok: true, state: pokecampBrowserSnapshot(), payload, preview: { pages: pageCount, teams: allTeams.length, details, errors, pageUrl: page.url() } };
+  } catch (error) {
+    pokecampBrowserState = { ...pokecampBrowserState, status: "FAILED", crawl: { ...pokecampBrowserState.crawl, status: "FAILED", page: pageCount, teams: allTeams.length, details, errors, finishedAt: new Date().toISOString(), lastError: error.message || "抓取失败" }, lastError: error.message || "抓取失败" };
+    return { ok: false, status: 503, error: pokecampBrowserState.lastError, state: pokecampBrowserSnapshot(), partial: { teams: allTeams.length, details, errors, pages: pageCount } };
+  }
+}
+
+async function handlePokecampBrowserApi(req, res) {
+  const url = new URL(req.url || "/api/pokecamp/browser/status", "http://127.0.0.1");
+  const body = req.method === "POST" ? await readJson(req).catch(() => ({})) : {};
+  if (req.method === "GET" && url.pathname.endsWith("/status")) { sendJson(res, 200, pokecampBrowserSnapshot()); return; }
+  if (req.method === "POST" && url.pathname.endsWith("/open")) { sendJson(res, 200, await launchPokecampBrowser(String(body.url || ""))); return; }
+  if (req.method === "POST" && url.pathname.endsWith("/read")) { sendJson(res, 200, await readPokecampBrowser()); return; }
+  if (req.method === "POST" && url.pathname.endsWith("/crawl")) {
+    const maxPages = Math.max(1, Math.min(30, Number(body.pages || body.maxPages || (String(body.sourcePageType || "").includes("build") ? 30 : 30))));
+    sendJson(res, 200, await crawlPokecampCurrentPage({ maxPages, sourcePageType: String(body.sourcePageType || "vgc-teams") }));
+    return;
+  }
+  if (req.method === "GET" && url.pathname.endsWith("/crawl/latest")) {
+    if (!lastPokecampCrawlPayload) { sendJson(res, 404, { ok: false, error: "暂无已完成的 PokéCamp 抓取结果。" }); return; }
+    sendJson(res, 200, { ok: true, payload: lastPokecampCrawlPayload, preview: { teams: lastPokecampCrawlPayload.teams.length, sourcePageType: lastPokecampCrawlPayload.sourcePageType } });
+    return;
+  }
+  if (req.method === "POST" && url.pathname.endsWith("/crawl/import")) { await importLatestPokecampCrawl(req, res); return; }
+  if (req.method === "GET" && url.pathname.endsWith("/debug")) { sendJson(res, 200, await debugPokecampBrowser()); return; }
+  if (req.method === "POST" && url.pathname.endsWith("/format")) { sendJson(res, 200, await setPokecampFormat(String(body.format || "double"))); return; }
+  if (req.method === "POST" && url.pathname.endsWith("/close")) {
+    await pokecampBrowserContext?.close().catch(() => {});
+    pokecampBrowserContext = null; pokecampBrowserPage = null;
+    pokecampBrowserState = { ...pokecampBrowserState, status: "CLOSED", challenge: false, pageUrl: "", pageTitle: "" };
+    sendJson(res, 200, pokecampBrowserSnapshot()); return;
+  }
+  sendJson(res, 405, { ok: false, error: "未知的 PokéCamp 浏览器接口。" });
+}
+
 async function handleAgentApi(req, res) {
   const url = new URL(req.url || "/api/agent/status", "http://127.0.0.1");
   if (req.method === "GET" && url.pathname === "/api/agent/hot-teams") {
@@ -561,7 +1291,7 @@ async function handleAgentApi(req, res) {
       dataSeason: pool[0]?.sourceSeason || "",
       seasonMatched: pool.some((item) => item.seasonMatched),
       total: pool.length,
-      items: preview.slice(0, Math.max(1, Math.min(120, Number(url.searchParams.get("limit") || 48)))),
+      items: pool.slice(0, Math.max(1, Math.min(500, Number(url.searchParams.get("limit") || 240)))),
       selected,
     });
     return;
@@ -569,6 +1299,14 @@ async function handleAgentApi(req, res) {
   if (req.method === "GET" && url.pathname === "/api/agent/status") {
     const state = await agentController.status();
     sendJson(res, 200, { ok: true, ...state, account: showdownAccount.publicState(), rules: ruleRegistry.publicState().status });
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/agent/ratings") {
+    const data = await agentController.ratings(
+      String(url.searchParams.get("rulesetId") || ""),
+      String(url.searchParams.get("showdownFormatId") || ""),
+    );
+    sendJson(res, 200, { ok: true, ...data });
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/agent/replays") {
@@ -607,6 +1345,7 @@ async function handleAgentApi(req, res) {
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/agent/models") {
+    await Promise.all(ruleRegistry.publicState().active.map((snapshot) => syncPolicyTrainingMilestones(snapshot.rulesetId, snapshot.battleType)));
     const data = await agentController.models(String(url.searchParams.get("rulesetId") || ""));
     sendJson(res, 200, { ok: true, ...data });
     return;
@@ -617,13 +1356,17 @@ async function handleAgentApi(req, res) {
     const snapshot = learningSnapshot(format, requestedRulesetId);
     const root = join(AGENT_LEARNING_ROOT, snapshot.rulesetId);
     await importLocalAgentReplays(snapshot, format);
-    const [summary, failures, matchups, teamRegistry] = await Promise.all([
+    await syncPolicyTrainingMilestones(snapshot.rulesetId, format);
+    const [summary, failures, matchups, teamRegistry, modelRegistry, evaluations, trainingProgress] = await Promise.all([
       learnFromAgentTraces(snapshot.rulesetId, format),
       readFile(join(root, "failure-memory.json"), "utf8").then(JSON.parse).catch(() => null),
       readFile(join(root, "opponent-matchups.json"), "utf8").then(JSON.parse).catch(() => null),
       readAgentTeamRegistry(snapshot.rulesetId),
+      readPolicyModelRegistry(snapshot.rulesetId),
+      listModelEvaluations(snapshot.rulesetId),
+      policyTrainingProgress(snapshot.rulesetId, format),
     ]);
-    sendJson(res, 200, { ok: true, ...rulesetMetadata(snapshot), historical: Boolean(snapshot.historical), summary, failures, matchups, teamRegistry });
+    sendJson(res, 200, { ok: true, ...rulesetMetadata(snapshot), historical: Boolean(snapshot.historical), summary, failures, matchups, teamRegistry, modelRegistry, evaluations: evaluations.items, trainingProgress });
     return;
   }
   const body = await readJson(req).catch(() => ({}));
@@ -633,7 +1376,46 @@ async function handleAgentApi(req, res) {
   }
   if (req.method === "POST" && url.pathname === "/api/agent/promote") {
     const snapshot = ruleRegistry.operational({ format: body.format || "double", rulesetId: String(body.rulesetId || "") });
-    sendJson(res, 200, { ok: true, ...(await agentController.promote({ ...body, rulesetId: snapshot.rulesetId })) });
+    const version = String(body.version || "").trim();
+    const registry = await readPolicyModelRegistry(snapshot.rulesetId);
+    const challenger = (registry.challengers || []).find((item) => item.version === version);
+    if (!challenger || challenger.status !== "ready_to_promote") {
+      sendJson(res, 409, { ok: false, code: "MODEL_NOT_READY", error: "该 Challenger 尚未通过私服对抗评测，不能晋级。", status: challenger?.status || "not_found" });
+      return;
+    }
+    registry.champion = { version, status: "active", promotedAt: new Date().toISOString(), evaluationId: challenger.evaluationId };
+    challenger.status = "promoted";
+    await writePolicyModelRegistry(snapshot.rulesetId, registry);
+    sendJson(res, 200, { ok: true, ...registry });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/agent/train") {
+    const format = body.format === "double" ? "double" : "single";
+    const snapshot = ruleRegistry.operational({ format, rulesetId: String(body.rulesetId || "") });
+    const result = await trainAgentPolicy({ ...body, format, rulesetId: snapshot.rulesetId });
+    if (result.ok && result.status === "trained") {
+      const registry = await readPolicyModelRegistry(snapshot.rulesetId);
+      registry.challengers = [
+        { version: result.policy.version, status: "trained", trainingGames: result.policy.dataset.selected, trainingSamples: result.policy.dataset.train, trainingFingerprint: result.policy.trainingFingerprint, parentVersion: result.policy.parentVersion, createdAt: result.policy.trainedAt },
+        ...(registry.challengers || []).filter((item) => item.version !== result.policy.version),
+      ].slice(0, 20);
+      await writePolicyModelRegistry(snapshot.rulesetId, registry);
+      result.modelRegistry = registry;
+      result.trainingProgress = await policyTrainingProgress(snapshot.rulesetId, format, null, registry);
+    }
+    sendJson(res, result.ok ? 200 : 422, { ok: result.ok, ...result });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/agent/evaluate") {
+    const format = body.format === "double" ? "double" : "single";
+    const snapshot = ruleRegistry.operational({ format, rulesetId: String(body.rulesetId || "") });
+    const registry = await readPolicyModelRegistry(snapshot.rulesetId);
+    const challengerVersion = String(body.challengerVersion || body.version || "").trim();
+    const challenger = await readPolicySnapshot(snapshot.rulesetId, challengerVersion);
+    const champion = await readPolicySnapshot(snapshot.rulesetId, registry.champion?.version);
+    if (!challenger) { sendJson(res, 404, { ok: false, code: "POLICY_NOT_FOUND", error: "找不到 Challenger 策略快照，请先训练。" }); return; }
+    const evaluation = await runPolicyAdversarial({ rulesetId: snapshot.rulesetId, format, championVersion: registry.champion?.version, challengerVersion, games: Number(body.games || 20) });
+    sendJson(res, evaluation.ok ? 200 : 422, evaluation);
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/agent/analyze") {
@@ -641,6 +1423,7 @@ async function handleAgentApi(req, res) {
     const snapshot = learningSnapshot(format, String(body.rulesetId || "").trim());
     await importLocalAgentReplays(snapshot, format);
     const summary = await learnFromAgentTraces(snapshot.rulesetId, format);
+    await syncPolicyTrainingMilestones(snapshot.rulesetId, format);
     sendJson(res, 200, { ok: true, ...rulesetMetadata(snapshot), historical: Boolean(snapshot.historical), summary });
     return;
   }
@@ -678,6 +1461,36 @@ async function handleAgentApi(req, res) {
     }
     const credential = await showdownAccount.credential();
     const games = Math.max(1, Math.min(Number(body.games || 1) || 1, Number(process.env.AGENT_MAX_BATCH_GAMES || 10)));
+    const requestedTeamPool = Array.isArray(body.teamPool) ? body.teamPool.slice(0, 500) : [];
+    const preparedTeamPool = [];
+    for (const candidate of requestedTeamPool) {
+      const candidateText = String(candidate?.teamText || "").trim();
+      if (!candidateText) continue;
+      let candidatePrepared;
+      try { candidatePrepared = prepareBattleTeam(candidateText, format, `热门队伍 ${candidate?.id || "unknown"}`, snapshot.rulesetId); } catch { continue; }
+      if (!candidatePrepared.ok || !candidatePrepared.strictLegal) continue;
+      const candidateMembers = (Teams.import(candidatePrepared.showdownTeamText) || []).slice(0, 6).map((member) => ({
+        id: strictKey(member.species || member.name || ""),
+        name: member.species || member.name || "",
+        sprite: strictKey(member.species || member.name || ""),
+        item: member.item || "",
+        ability: member.ability || "",
+        moves: Array.isArray(member.moves) ? member.moves.slice(0, 4) : [],
+        nature: member.nature || "",
+        stats: member.evs || "",
+      })).filter((member) => member.id && member.name);
+      if (candidateMembers.length !== 6) continue;
+      preparedTeamPool.push({
+        id: String(candidate.id || `hot-${preparedTeamPool.length + 1}`),
+        title: String(candidate.title || "当前规则热门队伍"),
+        source: String(candidate.source || "热门队伍数据"),
+        rate: Number(candidate.rate || 0),
+        rank: Number(candidate.rank || 9999),
+        team: candidatePrepared.showdownTeamText,
+        teamMembers: candidateMembers,
+        packedTeam: Teams.pack(Teams.import(candidatePrepared.showdownTeamText) || []),
+      });
+    }
     const state = await agentController.start({
       rulesetId: snapshot.rulesetId,
       showdownFormatId: snapshot.showdownFormatId,
@@ -691,6 +1504,9 @@ async function handleAgentApi(req, res) {
       teamSource: String(body.teamSource || "workbench"),
       teamId: String(body.teamId || ""),
       teamTitle: String(body.teamTitle || ""),
+      teamPool: preparedTeamPool,
+      continuous: body.continuous === true,
+      sessionId: String(body.sessionId || ""),
       games,
       policy: String(body.policy || "structured").trim().toLowerCase(),
     });
@@ -983,14 +1799,140 @@ function validateShowdownTeam(text = "", format = "single", rulesetId = "") {
       teamSize: 0,
     };
   }
+  const officialPool = officialRegulationPool(snapshot.regulation);
+  if (!officialPool) {
+    return {
+      ok: false,
+      format: formatId,
+      ...rulesetMetadata(snapshot),
+      problems: [`官方赛制 ${snapshot.regulation} 的可用宝可梦名单资产缺失，已禁止配队和排位。`],
+      teamSize: team.length,
+      officialPoolCount: 0,
+    };
+  }
+  const officialIds = officialPool ? new Set(officialPool.entries.flatMap((entry) => entry.showdownIds || officialPoolEntryKeys(entry))) : null;
+  const unavailable = officialIds
+    ? team.filter((member) => !officialIds.has(strictKey(member.species || member.name || ""))).map((member) => member.species || member.name || "未知宝可梦")
+    : [];
   const validator = TeamValidator.get(formatId);
-  const problems = (validator.validateTeam(team) || []).filter((problem) => !/is level 50, but this format allows level 100/i.test(problem));
+  const problems = [
+    ...(validator.validateTeam(team) || []).filter((problem) => !/is level 50, but this format allows level 100/i.test(problem)),
+    ...(unavailable.length ? [`以下宝可梦不在官方赛制 ${snapshot.regulation} 可用名单：${unavailable.join("、")}`] : []),
+  ];
   return {
     ok: problems.length === 0,
     format: formatId,
     ...rulesetMetadata(snapshot),
     problems,
     teamSize: team.length,
+    officialPoolCount: officialPool?.count || 0,
+  };
+}
+
+function officialPoolEntryKeys(entry = {}) {
+  const keys = new Set();
+  for (const id of entry.showdownIds || []) keys.add(strictKey(id));
+  const homeId = String(entry.homeId || "").trim();
+  const dex = String(Number(entry.dex || 0));
+  if (homeId) keys.add(strictKey(homeId));
+  if (entry.slug) keys.add(strictKey(entry.slug));
+  if (entry.name) keys.add(strictKey(entry.name));
+  if (dex && dex !== "0") keys.add(strictKey(entry.dex));
+  return [...keys];
+}
+
+function officialSpeciesAllowed(speciesId = "", rulesetId = "") {
+  const snapshot = ruleRegistry.get(rulesetId);
+  const pool = officialRegulationPool(snapshot?.regulation);
+  if (!pool) return false;
+  const id = strictKey(speciesId);
+  return pool.entries.some((entry) => (entry.showdownIds || officialPoolEntryKeys(entry)).some((candidate) => strictKey(candidate) === id));
+}
+
+function officialRegulationPool(regulation = "") {
+  const key = String(regulation || "").trim().toUpperCase();
+  if (!key || !OFFICIAL_REGULATION_POOL_SOURCES[key]) return null;
+  if (officialRegulationPoolCache.has(key)) return officialRegulationPoolCache.get(key);
+  const filePath = join(ROOT, "data", "official-regulation-pools.json");
+  try {
+    const document = JSON.parse(readFileSync(filePath, "utf8"));
+    const saved = document?.regulations?.[key];
+    if (saved?.entries?.length) {
+      const value = { ...saved, entries: saved.entries.map((entry) => ({ ...entry, keys: officialPoolEntryKeys(entry) })) };
+      officialRegulationPoolCache.set(key, value);
+      return value;
+    }
+  } catch {}
+  return null;
+}
+
+function officialPoolForSnapshot(snapshot = {}) {
+  const pool = officialRegulationPool(snapshot.regulation);
+  if (!pool) return null;
+  return {
+    regulation: snapshot.regulation,
+    count: pool.entries.length,
+    sourceUrl: pool.sourceUrl,
+    announcementUrl: pool.announcementUrl,
+    entries: pool.entries.map(({ keys, ...entry }) => entry),
+  };
+}
+
+async function handleOfficialPoolApi(req, res) {
+  const url = new URL(req.url || "/api/rules/pool", "http://127.0.0.1");
+  const requestedRulesetId = String(url.searchParams.get("rulesetId") || "").trim();
+  const requestedFormat = url.searchParams.get("format") === "single" ? "single" : "double";
+  const requestedRegulation = String(url.searchParams.get("regulation") || "").trim().toUpperCase();
+  const snapshot = requestedRulesetId
+    ? ruleRegistry.get(requestedRulesetId)
+    : ruleRegistry.activeFor(requestedFormat);
+  const regulation = requestedRegulation || snapshot?.regulation || "";
+  const pool = officialRegulationPool(regulation);
+  if (!pool) {
+    sendJson(res, 404, { ok: false, code: "OFFICIAL_POOL_NOT_FOUND", error: `没有找到赛制 ${regulation || "unknown"} 的官方可用宝可梦名单。` });
+    return;
+  }
+  sendJson(res, 200, {
+    ok: true,
+    regulation,
+    rulesetId: requestedRulesetId || snapshot?.rulesetId || "",
+    battleType: snapshot?.battleType || "",
+    count: pool.entries.length,
+    sourceUrl: pool.sourceUrl,
+    announcementUrl: pool.announcementUrl,
+    entries: pool.entries.map(({ keys, ...entry }) => ({
+      ...entry,
+      showdownIds: entry.showdownIds || [],
+      ...officialPokemonDetails(entry),
+    })),
+    referenceUrl: POKEMON_REFERENCE_URL,
+  });
+}
+
+function officialPokemonDetails(entry = {}) {
+  const species = (entry.showdownIds || [])
+    .map((id) => SHOWDOWN_SPECIES_BY_ID.get(strictKey(id)))
+    .find((item) => item?.exists);
+  if (!species) return { forme: "", spriteId: "", types: [], baseStats: {}, baseStatTotal: 0, abilities: [] };
+  const baseStats = {
+    hp: Number(species.baseStats?.hp || 0),
+    atk: Number(species.baseStats?.atk || 0),
+    def: Number(species.baseStats?.def || 0),
+    spa: Number(species.baseStats?.spa || 0),
+    spd: Number(species.baseStats?.spd || 0),
+    spe: Number(species.baseStats?.spe || 0),
+  };
+  const abilities = Object.entries(species.abilities || {})
+    .filter(([, id]) => id)
+    .map(([slot, id]) => ({ id, name: id, localizedName: candidateTerm("abilities", id), hidden: slot === "H" }));
+  return {
+    englishName: species.name,
+    forme: species.forme || "",
+    spriteId: species.spriteid || species.id,
+    types: (species.types || []).map((id) => ({ id, name: CANDIDATE_TYPE_LABELS[id] || id })),
+    baseStats,
+    baseStatTotal: Object.values(baseStats).reduce((sum, value) => sum + value, 0),
+    abilities,
   };
 }
 
@@ -1005,6 +1947,716 @@ function readTeamDataDocument() {
 function readTeamDataFile() {
   const data = readTeamDataDocument();
   return Array.isArray(data?.teams) ? data.teams : [];
+}
+
+function pokecampSpriteSlug(value = "") {
+  const original = String(value || "").replace(/\u00a0/g, " ").trim();
+  if (!original) return "";
+  let name = original.replace(/\s+/g, "");
+  let suffix = "";
+  const localizedAliases = {
+    清洗洛托姆: "rotom-wash",
+    加热洛托姆: "rotom-heat",
+    结冰洛托姆: "rotom-frost",
+    旋转洛托姆: "rotom-fan",
+    切割洛托姆: "rotom-mow",
+  };
+  if (localizedAliases[name]) return localizedAliases[name];
+  const dictionary = candidateReferenceData.terms?.pokemon || {};
+  const findSlug = (localized) => Object.entries(dictionary).find(([, translated]) => String(translated).replace(/\s+/g, "") === localized)?.[0] || "";
+  const mega = name.match(/^超级(.+)$/i);
+  if (mega) {
+    const rest = mega[1];
+    const form = rest.match(/^(.+?)([XYＸＹ])$/i);
+    name = form && findSlug(form[1]) ? form[1] : rest;
+    suffix = `-mega${form ? `-${(form[2] || "").replace(/[ＸＹ]/g, (letter) => letter === "Ｘ" ? "X" : "Y").toLowerCase()}` : ""}`;
+  }
+  const form = name.match(/^(.*?)[（(](阿罗拉|伽勒尔|洗翠|帕底亚|黄昏|黑夜|白昼|午夜)的样子[）)]$/);
+  if (form) {
+    name = form[1];
+    suffix = `-${({ 阿罗拉: "alola", 伽勒尔: "galar", 洗翠: "hisui", 帕底亚: "paldea", 黄昏: "dusk", 黑夜: "midnight", 白昼: "midday", 午夜: "midnight" })[form[2]] || ""}`;
+  }
+  const slug = findSlug(name);
+  if (!slug) return "";
+  return `${slug}${suffix}`.replace(/[^a-z0-9-]/gi, "").toLowerCase();
+}
+
+function pokecampSpriteCandidates(member = {}) {
+  const value = String(member?.name || member?.localizedName || member?.slug || "").replace(/\u00a0/g, " ").trim();
+  const candidates = [];
+  const add = (url) => { if (url && !candidates.includes(url)) candidates.push(url); };
+  const primarySlug = pokecampSpriteSlug(value);
+  if (primarySlug) add(`https://play.pokemonshowdown.com/sprites/gen5/${primarySlug}.png`);
+
+  // Showdown does not ship every new Mega sprite. Keep the base species visible
+  // so a missing form asset never turns a real team member into an empty slot.
+  const baseValue = value.replace(/^超级\s*/i, "").replace(/\s*[（(]?[XYＸＹ][）)]?$/i, "").trim();
+  const baseSlug = pokecampSpriteSlug(baseValue);
+  if (baseSlug) {
+    add(`https://play.pokemonshowdown.com/sprites/gen5/${baseSlug}.png`);
+    add(`https://img.pokemondb.net/sprites/scarlet-violet/normal/${baseSlug}.png`);
+    const species = SHOWDOWN_SPECIES_BY_ID.get(strictKey(baseSlug));
+    const dexNumber = Number(species?.num || 0);
+    if (dexNumber > 0) add(`https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/${dexNumber}.png`);
+  }
+  const dex = Number(member?.id || member?.dex || member?.nationalDex || 0);
+  if (dex > 0) add(`https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/${dex}.png`);
+  return candidates;
+}
+
+function cleanPokecampInlineText(value = "") {
+  return String(value || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\[([^\[\]]{0,160})\]/gs, (_, inner) => inner.replace(/\s+/g, " ").trim())
+    .replace(/[\[\]]/g, "")
+    .replace(/[ \t]+([，。！？、：；）》）】])/g, "$1")
+    .replace(/([（(【])\s+/g, "$1")
+    .replace(/([。！？])\s*(战术与解说|组队思路|常规选出|基本选出|对战思路|对策|对知名构筑的应对|首发|后排|感想|备注)(?=\S)/g, "$1\n$2");
+}
+
+function pokecampStrategyBlocks(value = "") {
+  const headings = /^(战术与解说|组队思路|常规选出|基本选出|对战思路|对策|对知名构筑的应对|首发|后排|感想|备注)$/;
+  const headingWithBody = /^(战术与解说|组队思路|常规选出|基本选出|对战思路|对策|对知名构筑的应对|首发|后排|感想|备注)(?=\S)(.*)$/;
+  const blocks = [];
+  let paragraph = [];
+  const flushParagraph = () => {
+    const text = paragraph.join(" ").replace(/\s+/g, " ").trim();
+    if (text) blocks.push({ type: "paragraph", text });
+    paragraph = [];
+  };
+  for (const rawLine of cleanPokecampInlineText(value).split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) { flushParagraph(); continue; }
+    const split = headingWithBody.exec(line);
+    if (split) {
+      flushParagraph();
+      blocks.push({ type: "heading", text: split[1] });
+      if (split[2].trim()) paragraph.push(split[2].trim());
+      continue;
+    }
+    if (headings.test(line)) {
+      flushParagraph();
+      blocks.push({ type: "heading", text: line });
+      continue;
+    }
+    paragraph.push(line);
+  }
+  flushParagraph();
+  return blocks;
+}
+
+function pokecampStrategyLinks(value = "", members = []) {
+  const memberNames = new Set(members.map((member) => String(member.name || member.localizedName || member.slug || "").trim()).filter(Boolean));
+  const ignored = new Set(["宝可梦", "对方", "自己", "我方", "对手"]);
+  const compact = (label) => String(label || "").replace(/\s+/g, "").trim();
+  const canonicalLabel = (label) => {
+    const compactLabel = compact(label);
+    const member = [...memberNames].find((name) => compact(name) === compactLabel);
+    if (member) return member;
+    for (const dictionary of Object.values(candidateReferenceData.terms || {})) {
+      const translated = Object.values(dictionary || {}).find((name) => compact(name) === compactLabel);
+      if (translated) return String(translated);
+    }
+    return String(label || "").replace(/\s+/g, " ").trim();
+  };
+  const seen = new Set();
+  return [...String(value || "").matchAll(/\[([^\[\]]{1,160})\]/gs)]
+    .map((match) => canonicalLabel(match[1]))
+    .filter(Boolean)
+    .filter((label) => !ignored.has(label))
+    .filter((label) => { if (seen.has(label)) return false; seen.add(label); return true; })
+    .map((label) => {
+      const kind = memberNames.has(label) ? "pokemon" : referenceTermCategory(label);
+      const id = referenceTermId(kind, label);
+      return {
+        text: label,
+        kind,
+        href: referencePokecampUrl(kind, label, id) || referenceWikiUrl(label),
+      };
+    });
+}
+
+function splitAbilityChain(value = "") {
+  const cleaned = cleanPokecampInlineText(value)
+    .replace(/推荐(?:的)?(?:能力点数|努力值|配点)(?:\s*[:：]?\s*)/gi, "")
+    .replace(/能力点数推荐|推荐能力点数/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned
+    .split(/\s*(?:→|->|=>)\s*/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function pokecampConfigurationLinks(configurations = [], members = []) {
+  const memberNames = new Map((members || []).map((member) => [strictKey(member.name || member.localizedName || member.slug), String(member.name || member.localizedName || member.slug || "").trim()]));
+  const links = [];
+  const seen = new Set();
+  const add = (label, kind) => {
+    const normalized = String(label || "").replace(/\s+/g, " ").trim();
+    if (!normalized || normalized === "推荐能力点数" || normalized === "能力点数") return;
+    const key = `${kind}:${strictKey(normalized)}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const id = referenceTermId(kind, normalized);
+    links.push({ text: normalized, kind, href: referencePokecampUrl(kind, normalized, id) || referenceWikiUrl(normalized) });
+  };
+  for (const configuration of configurations || []) {
+    const pokemon = String(configuration.name || configuration.localizedName || configuration.slug || "").trim();
+    const memberName = memberNames.get(strictKey(pokemon));
+    add(memberName || pokemon, "pokemon");
+    add(configuration.itemLabel || configuration.item, "item");
+    for (const ability of splitAbilityChain(configuration.ability || configuration.abilityLabel || "")) add(ability, "ability");
+    for (const move of Array.isArray(configuration.moves) ? configuration.moves : []) add(typeof move === "string" ? move : move?.name, "move");
+  }
+  return links;
+}
+
+function mergePokecampLinks(...groups) {
+  const result = [];
+  const seen = new Set();
+  for (const group of groups) for (const link of Array.isArray(group) ? group : []) {
+    if (!link?.text || !link?.kind) continue;
+    const key = `${link.kind}:${strictKey(link.text)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(link);
+  }
+  return result;
+}
+
+function pokecampStrategySummary(team = {}) {
+  const raw = String(team.strategy || team.description || "").replace(/\r/g, "").trim();
+  if (!raw) return { text: "", complete: false, source: "missing" };
+  const names = (team.members || []).map((member) => String(member.name || member.localizedName || member.slug || "").trim()).filter(Boolean);
+  let cut = raw.length;
+  for (const name of names) {
+    if (!name) continue;
+    const pattern = new RegExp(`(?:^|\\n)\\s*${name.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}\\s*(?:\\n[^\\n]{1,18}){1,3}\\n道具`, "m");
+    const match = pattern.exec(raw);
+    if (match && match.index < cut) cut = match.index;
+  }
+  const article = raw.slice(0, cut).replace(/\n{3,}/g, "\n\n").trim();
+  const links = pokecampStrategyLinks(article, team.members || []);
+  const parsedBlocks = pokecampStrategyBlocks(article);
+  const headline = parsedBlocks[0]?.type === "paragraph" ? parsedBlocks[0].text : "";
+  const published = (article.match(/(?:^|\n)\s*发布于\s*([^\n]+)/) || [])[1]?.trim() || "";
+  const authorHandle = (article.match(/(?:^|\n)\s*(@[^\n\s]+)/) || [])[1]?.trim() || "";
+  const blocks = parsedBlocks.map((block) => {
+    if (block.type === "paragraph") return { ...block, text: block.text.replace(/^@[^\s]+\s+/, "").trim() };
+    return block;
+  }).filter((block, index) => {
+    if (index === 0 && headline && block.text === headline) return false;
+    if (/^发布于\s*/.test(block.text) || /^@[^\s]+$/.test(block.text)) return false;
+    return true;
+  });
+  const content = blocks.map((block) => block.text).join("\n\n").trim();
+  const text = content;
+  const meaningful = text.replace(/[^\u4e00-\u9fffA-Za-z0-9]/g, "").length;
+  const complete = meaningful >= 80 || /战术与解说|组队思路|常规选出|基本选出|对策|首发/.test(text);
+  return { text, blocks, links, complete, headline, published, authorHandle, source: complete ? "article" : "configuration-only" };
+}
+
+function referenceCategoryKey(category = "") {
+  return ({ item: "items", items: "items", move: "moves", moves: "moves", ability: "abilities", abilities: "abilities", pokemon: "pokemon" })[String(category).toLowerCase()] || String(category).toLowerCase();
+}
+
+function referenceTermCategory(label = "") {
+  const text = String(label || "").trim();
+  const compact = strictKey(text);
+  const dictionaries = candidateReferenceData.terms || {};
+  for (const [category, dictionary] of Object.entries(dictionaries)) {
+    if (!["pokemon", "moves", "abilities", "items"].includes(category)) continue;
+    if (Object.entries(dictionary || {}).some(([key, value]) => strictKey(key) === compact || strictKey(value) === compact)) return category === "moves" ? "move" : category === "abilities" ? "ability" : category === "items" ? "item" : "pokemon";
+  }
+  if (Dex.species.get(text)?.exists || /^超级/.test(text)) return "pokemon";
+  if (Dex.moves.get(text)?.exists) return "move";
+  if (Dex.abilities.get(text)?.exists) return "ability";
+  if (Dex.items.get(text)?.exists) return "item";
+  return "move";
+}
+
+function referenceTermId(category, label = "") {
+  const categoryKey = referenceCategoryKey(category);
+  const text = String(label || "").trim();
+  const dictionary = candidateReferenceData.terms?.[categoryKey] || {};
+  const key = Object.keys(dictionary).find((candidate) => strictKey(candidate) === strictKey(text) || strictKey(dictionary[candidate]) === strictKey(text));
+  if (key) return key;
+  if (categoryKey === "pokemon") {
+    const mega = text.match(/^超级\s*(.+)$/);
+    if (mega) {
+      const baseKey = Object.keys(dictionary).find((candidate) => strictKey(dictionary[candidate]) === strictKey(mega[1]));
+      if (baseKey) return `${baseKey}-mega`;
+    }
+  }
+  return strictKey(text);
+}
+
+function referenceWikiUrl(label = "") {
+  return `https://wiki.52poke.com/wiki/${encodeURIComponent(String(label || "").trim())}`;
+}
+
+function referencePokecampUrl(category, label = "", id = "") {
+  const route = { pokemon: "pokemon", moves: "moves", move: "moves", items: "items", item: "items", abilities: "abilities", ability: "abilities" }[String(category || "").toLowerCase()];
+  if (!route) return "";
+  const categoryKey = referenceCategoryKey(category);
+  const raw = String(id || label || "").trim();
+  if (!raw) return `https://pokecamp.cc/zh/${route}`;
+  if (categoryKey === "pokemon") {
+    const species = Dex.species.get(raw);
+    if (species?.num > 0) return `https://pokecamp.cc/zh/pokemon/${encodeURIComponent(String(species.num))}`;
+    if (/^\d+$/.test(raw)) return `https://pokecamp.cc/zh/pokemon/${encodeURIComponent(raw)}`;
+  }
+  const slugAliases = {
+    flashfire: "flash-fire",
+    focussash: "focus-sash",
+    sitrusberry: "sitrus-berry",
+    quickclaw: "quick-claw",
+    leftovers: "leftovers",
+  };
+  const slug = slugAliases[strictKey(raw)] || raw
+    .replace(/[._\s]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/[^a-zA-Z0-9\u3400-\u9fff-]/g, "")
+    .replace(/^-|-$/g, "")
+    .toLowerCase();
+  return `https://pokecamp.cc/zh/${route}/${encodeURIComponent(slug)}`;
+}
+
+function referencePokecampDetailUrls(category, label = "", id = "") {
+  const categoryKey = referenceCategoryKey(category);
+  const route = { pokemon: "pokemon", moves: "moves", abilities: "abilities", items: "items" }[categoryKey];
+  if (!route) return [];
+  const raw = String(id || label || "").trim();
+  const terms = candidateReferenceData.terms?.[categoryKey] || {};
+  const translatedKey = Object.keys(terms).find((key) => strictKey(key) === strictKey(raw) || strictKey(terms[key]) === strictKey(raw));
+  const dexEntry = categoryKey === "pokemon" ? Dex.species.get(translatedKey || raw) : categoryKey === "moves" ? Dex.moves.get(translatedKey || raw) : categoryKey === "abilities" ? Dex.abilities.get(translatedKey || raw) : Dex.items.get(translatedKey || raw);
+  const candidates = new Set();
+  const add = (value) => { const text = String(value || "").trim(); if (text) candidates.add(text); };
+  if (categoryKey === "pokemon") {
+    const numeric = Number(dexEntry?.num || raw);
+    if (Number.isFinite(numeric) && numeric > 0) add(String(numeric));
+    add(dexEntry?.id);
+    add(translatedKey);
+    const megaMatch = String(label).match(/^超级\s*(.+)$/);
+    if (megaMatch) {
+      const baseKey = Object.keys(terms).find((key) => strictKey(terms[key]) === strictKey(megaMatch[1]));
+      const base = Dex.species.get(baseKey || megaMatch[1]);
+      add(base?.num);
+      add(base?.id);
+    }
+  } else {
+    add(dexEntry?.id);
+    add(translatedKey);
+    add(raw);
+  }
+  return [...candidates].map((candidate) => referencePokecampUrl(categoryKey, label, candidate));
+}
+
+function decodePokecampText(value = "") {
+  return String(value || "")
+    .replace(/\\u([0-9a-f]{4})/gi, (_, code) => String.fromCharCode(parseInt(code, 16)))
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .trim();
+}
+
+function parsePokecampNextData(html = "") {
+  const match = String(html).match(/<script[^>]+id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
+  if (!match?.[1]) return null;
+  try { return JSON.parse(decodePokecampText(match[1])); } catch { return null; }
+}
+
+function pokecampDescriptionFromHtml(html = "") {
+  const meta = String(html).match(/<meta[^>]+name=["']description["'][^>]+content=["']([\s\S]*?)["'][^>]*>/i);
+  return decodePokecampText(meta?.[1] || "").replace(/\s+/g, " ").trim();
+}
+
+function pokecampAbsoluteAsset(url = "") {
+  const value = String(url || "").trim();
+  if (!value) return "";
+  return value.startsWith("http") ? value : `https://pokecamp.cc${value.startsWith("/") ? "" : "/"}${value}`;
+}
+
+function pokecampPageRecord(category, pageProps = {}, html = "", url = "") {
+  const categoryKey = referenceCategoryKey(category);
+  const raw = pageProps?.[categoryKey === "moves" ? "move" : categoryKey === "abilities" ? "ability" : categoryKey === "items" ? "item" : "pokemon"] || {};
+  if (!raw || typeof raw !== "object" || !Object.keys(raw).length) return null;
+  const displayName = String(raw.nameZh || raw.displayName || raw.localizedName || raw.name || "").trim();
+  const englishName = String(raw.nameEn || raw.identifier || raw.name || "").trim();
+  const effectText = String(raw.effectText || raw.flavorText || pokecampDescriptionFromHtml(html) || "").trim();
+  if (!displayName && !effectText) return null;
+  const result = {
+    id: String(raw.identifier || raw.id || strictKey(englishName || displayName)),
+    name: displayName || englishName,
+    localizedName: displayName || englishName,
+    englishName,
+    description: effectText,
+    source: "PokéCamp",
+    sourceUrl: url,
+    href: url,
+  };
+  if (categoryKey === "moves") Object.assign(result, { basePower: raw.power || 0, accuracy: raw.accuracy || 0, pp: raw.pp || 0, priority: raw.priority || 0, type: raw.type || "", category: raw.damageClassLabel || raw.damageClass || "" });
+  if (categoryKey === "abilities") Object.assign(result, { generation: raw.generationId || 0 });
+  if (categoryKey === "pokemon") {
+    const stats = Array.isArray(raw.stats) ? raw.stats : [];
+    const statMap = { hp: "hp", attack: "atk", defense: "def", "special-attack": "spa", "special-defense": "spd", speed: "spe" };
+    const baseStats = Object.fromEntries(stats.map((entry) => [statMap[entry?.stat?.name] || entry?.stat?.name, Number(entry?.base_stat || 0)]).filter(([key, value]) => key && value));
+    const types = (raw.types || []).map((entry) => {
+      const rawType = String(entry?.type?.name || entry?.name || "").trim();
+      const titleType = rawType ? `${rawType[0].toUpperCase()}${rawType.slice(1)}` : "";
+      return CANDIDATE_TYPE_LABELS[rawType] || CANDIDATE_TYPE_LABELS[titleType] || rawType;
+    }).filter(Boolean);
+    const abilities = (raw.abilities || []).map((entry) => ({ name: candidateTerm("abilities", entry?.ability?.name || entry?.name || ""), englishName: entry?.ability?.name || entry?.name || "", hidden: Boolean(entry?.is_hidden) })).filter((entry) => entry.name);
+    const spriteUrl = pokecampAbsoluteAsset(raw.sprites?.other?.["official-artwork"]?.front_default || raw.sprites?.front_default);
+    Object.assign(result, { types, baseStats, abilities, spriteUrl, spriteCandidates: [spriteUrl, `https://play.pokemonshowdown.com/sprites/gen5/${raw.identifier || result.id}.png`].filter(Boolean) });
+  }
+  return result;
+}
+
+async function persistPokecampReferenceRecord(category, record) {
+  if (!record) return;
+  const categoryKey = referenceCategoryKey(category);
+  const next = { ...pokecampReferenceData, fetchedAt: new Date().toISOString(), records: { pokemon: {}, moves: {}, abilities: {}, items: {}, ...(pokecampReferenceData.records || {}) } };
+  const key = String(record.id || strictKey(record.name || record.localizedName || ""));
+  next.records[categoryKey] = { ...(next.records[categoryKey] || {}), [key]: record };
+  next.sources = { ...(next.sources || {}), [categoryKey]: { ...(next.sources?.[categoryKey] || {}), url: POKECAMP_REFERENCE_SOURCES[categoryKey] || record.sourceUrl, fetchedAt: next.fetchedAt, count: Object.keys(next.records[categoryKey]).length } };
+  pokecampReferenceData = next;
+  pokecampReferenceWriteTask = pokecampReferenceWriteTask.then(async () => {
+    await mkdir(join(ROOT, "data"), { recursive: true });
+    await writeFile(POKECAMP_REFERENCE_DATA_PATH, JSON.stringify(next, null, 2), "utf8");
+  }).catch(() => undefined);
+  await pokecampReferenceWriteTask;
+}
+
+async function fetchPokecampDetail(category, label, id = "") {
+  for (const url of referencePokecampDetailUrls(category, label, id)) {
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(12000), headers: { "user-agent": "Mozilla/5.0 ChampionForge/1.0", accept: "text/html" } });
+      const html = await response.text();
+      if (!response.ok) continue;
+      const next = parsePokecampNextData(html);
+      const record = pokecampPageRecord(category, next?.props?.pageProps || {}, html, url);
+      if (record?.description && /[\u4e00-\u9fff]/.test(record.description)) {
+        await persistPokecampReferenceRecord(category, record);
+        return record;
+      }
+    } catch {}
+  }
+  return null;
+}
+
+function battleTermReference(category, value = "") {
+  const label = String(value || "").trim();
+  if (!label) return null;
+  const categoryKey = referenceCategoryKey(category);
+  const lookupLabel = label.split(/[→>]/)[0].trim();
+  const terms = candidateReferenceData.terms?.[categoryKey] || {};
+  const key = Object.keys(terms).find((candidate) => strictKey(candidate) === strictKey(lookupLabel) || String(terms[candidate]).trim() === lookupLabel);
+  const id = key || strictKey(lookupLabel);
+  const knowledge = candidateReferenceData.knowledge?.[categoryKey] || {};
+  const entry = knowledge[id]
+    || knowledge[strictKey(id)]
+    || Object.entries(knowledge).find(([candidate]) => strictKey(candidate) === strictKey(id))?.[1]
+    || Object.values(knowledge).find((item) => strictKey(item?.name) === strictKey(lookupLabel));
+  const dexEntry = categoryKey === "moves" ? Dex.moves.get(id) : categoryKey === "items" ? Dex.items.get(id) : categoryKey === "abilities" ? Dex.abilities.get(id) : null;
+  const wikiLabel = terms[lookupLabel] || candidateTerm(categoryKey, id) || lookupLabel;
+  if (!entry && !dexEntry?.exists) return { id, label, name: wikiLabel, description: "暂无本地资料，悬停时将从 PokéCamp 获取。", href: referencePokecampUrl(categoryKey, wikiLabel, id) || referenceWikiUrl(wikiLabel), sourceUrl: referencePokecampUrl(categoryKey, wikiLabel, id) || referenceWikiUrl(wikiLabel), wikiUrl: referenceWikiUrl(wikiLabel) };
+  const description = entry?.shortDesc || entry?.desc || dexEntry?.shortDesc || dexEntry?.desc || "暂无说明";
+  return {
+    id: entry?.id || dexEntry?.id || id,
+    label,
+    name: entry?.name || dexEntry?.name || candidateTerm(categoryKey, id) || label,
+    englishName: dexEntry?.name || entry?.name || id,
+    description,
+    href: referencePokecampUrl(categoryKey, wikiLabel, id) || referenceWikiUrl(wikiLabel),
+    sourceUrl: referencePokecampUrl(categoryKey, wikiLabel, id) || referenceWikiUrl(wikiLabel),
+    wikiUrl: referenceWikiUrl(wikiLabel),
+    type: dexEntry?.type || "",
+    category: dexEntry?.category || "",
+    basePower: dexEntry?.basePower || 0,
+    accuracy: dexEntry?.accuracy || 0,
+    pp: dexEntry?.pp || 0,
+    priority: dexEntry?.priority || 0,
+  };
+}
+
+function referencePokemonDetails(label = "") {
+  const dictionary = candidateReferenceData.terms?.pokemon || {};
+  const normalizedLabel = String(label || "").replace(/\s+/g, "").trim();
+  const megaMatch = normalizedLabel.match(/^超级(.+)$/);
+  const baseLabel = megaMatch?.[1] || normalizedLabel;
+  const translatedKey = Object.keys(dictionary).find((key) => String(dictionary[key]).replace(/\s+/g, "") === baseLabel);
+  const raw = translatedKey || baseLabel;
+  const candidates = [
+    ...(megaMatch ? [`${raw}-Mega`, `${raw}-Mega-X`, `${raw}-Mega-Y`] : []),
+    raw, strictKey(raw), strictKey(raw).replace(/^mega/, ""),
+  ].filter(Boolean);
+  const species = candidates.map((candidate) => Dex.species.get(candidate)).find((entry) => entry?.exists);
+  if (!species) return { name: label, description: "暂无本地资料，悬停时将从 PokéCamp 获取。", href: referencePokecampUrl("pokemon", label, raw) || referenceWikiUrl(label), sourceUrl: referencePokecampUrl("pokemon", label, raw) || referenceWikiUrl(label), wikiUrl: referenceWikiUrl(label) };
+  const baseStats = { hp: species.baseStats?.hp || 0, atk: species.baseStats?.atk || 0, def: species.baseStats?.def || 0, spa: species.baseStats?.spa || 0, spd: species.baseStats?.spd || 0, spe: species.baseStats?.spe || 0 };
+  const localizedAbilities = Object.values(species.abilities || {}).filter(Boolean).map((ability) => ({ name: candidateTerm("abilities", ability), englishName: ability }));
+  const typeLabels = (species.types || []).map((type) => CANDIDATE_TYPE_LABELS[type] || type);
+  const spriteCandidates = [
+    `https://play.pokemonshowdown.com/sprites/gen5/${species.id}.png`,
+    Number(species.num) > 0 ? `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/${species.num}.png` : "",
+  ].filter(Boolean);
+  const localizedName = megaMatch ? `超级${dictionary[translatedKey] || baseLabel}` : dictionary[translatedKey] || label;
+  return { id: species.id, name: localizedName, englishName: species.name, description: `${typeLabels.join(" / ")}属性 · 种族值总和 ${Object.values(baseStats).reduce((sum, value) => sum + Number(value || 0), 0)}`, href: referencePokecampUrl("pokemon", localizedName, species.num || species.id) || referenceWikiUrl(localizedName), sourceUrl: referencePokecampUrl("pokemon", localizedName, species.num || species.id) || referenceWikiUrl(localizedName), wikiUrl: referenceWikiUrl(localizedName), types: typeLabels, baseStats, abilities: localizedAbilities, spriteUrl: spriteCandidates[0] || "", spriteCandidates };
+}
+
+async function fetchReferenceTerm(category, value) {
+  const categoryKey = referenceCategoryKey(category);
+  const label = String(value || "").trim();
+  if (!label) return null;
+  const cacheKey = `${categoryKey}:${strictKey(label)}`;
+  if (referenceTermCache.has(cacheKey)) return referenceTermCache.get(cacheKey);
+  const records = pokecampReferenceData?.records?.[categoryKey] || {};
+  const record = Object.values(records).find((item) => strictKey(item?.name) === strictKey(label) || strictKey(item?.localizedName) === strictKey(label) || strictKey(item?.id) === strictKey(label));
+  if (record) {
+    const localizedTypes = categoryKey === "pokemon" && Array.isArray(record.types) ? record.types.map((type) => {
+      const rawType = String(type?.name || type || "").trim();
+      const titleType = rawType ? `${rawType[0].toUpperCase()}${rawType.slice(1)}` : "";
+      return CANDIDATE_TYPE_LABELS[rawType] || CANDIDATE_TYPE_LABELS[titleType] || rawType;
+    }).filter(Boolean) : record.types;
+    if (categoryKey === "pokemon" && JSON.stringify(localizedTypes) !== JSON.stringify(record.types)) await persistPokecampReferenceRecord(categoryKey, { ...record, types: localizedTypes });
+    const result = { ...record, ...(localizedTypes ? { types: localizedTypes } : {}), name: record.localizedName || record.name || label, label, source: "PokéCamp", sourceUrl: record.sourceUrl || POKECAMP_REFERENCE_SOURCES[categoryKey] || referenceWikiUrl(label), href: record.sourceUrl || POKECAMP_REFERENCE_SOURCES[categoryKey] || referenceWikiUrl(label) };
+    if (record.description && !/暂无资料|暂无本地资料|暂无说明/.test(record.description)) { referenceTermCache.set(cacheKey, result); return result; }
+  }
+  const local = categoryKey === "pokemon" ? referencePokemonDetails(label) : battleTermReference(categoryKey, label);
+  const hasLocalDescription = local && local.description && /[\u4e00-\u9fff]/.test(local.description) && !/暂无本地资料|暂无说明/.test(local.description);
+  const isMegaPokemon = categoryKey === "pokemon" && /^超级\s*/.test(label);
+  const remote = !isMegaPokemon ? await fetchPokecampDetail(categoryKey, label, local?.id || referenceTermId(categoryKey, label)) : null;
+  if (remote) {
+    const result = { ...local, ...remote, label, name: remote.localizedName || remote.name || local?.name || label, source: "PokéCamp", sourceUrl: remote.sourceUrl, href: remote.href };
+    referenceTermCache.set(cacheKey, result);
+    return result;
+  }
+  if (hasLocalDescription) { referenceTermCache.set(cacheKey, local); return local; }
+  const fallback = local
+    ? { ...local, englishDescription: local.description, description: "暂无中文资料，悬停时将从 PokéCamp 获取。" }
+    : { label, name: label, href: referenceWikiUrl(label), sourceUrl: referenceWikiUrl(label), description: "暂无中文资料，悬停时将从 PokéCamp 获取。" };
+  try {
+    const apiUrl = `https://wiki.52poke.com/api.php?action=query&prop=extracts&exintro=1&explaintext=1&redirects=1&titles=${encodeURIComponent(fallback.name || label)}&format=json&origin=*`;
+    const response = await fetch(apiUrl, { signal: AbortSignal.timeout(8000), headers: { "user-agent": "ChampionForge/1.0" } });
+    const payload = await response.json();
+    const page = Object.values(payload?.query?.pages || {})[0];
+    const extract = String(page?.extract || "").trim();
+    const result = { ...fallback, name: page?.title || fallback.name || label, description: extract || fallback.description, sourceUrl: referenceWikiUrl(page?.title || fallback.name || label), href: referenceWikiUrl(page?.title || fallback.name || label), source: "52Poké" };
+    referenceTermCache.set(cacheKey, result);
+    return result;
+  } catch (error) {
+    const result = { ...fallback, source: "52Poké", sourceError: error.message };
+    referenceTermCache.set(cacheKey, result);
+    return result;
+  }
+}
+
+function readPokecampReferenceData() {
+  try {
+    const data = JSON.parse(readFileSync(POKECAMP_REFERENCE_DATA_PATH, "utf8"));
+    return { records: { pokemon: {}, moves: {}, abilities: {}, items: {}, ...(data.records || {}) }, ...data };
+  } catch {
+    return { records: { pokemon: {}, moves: {}, abilities: {}, items: {} }, sources: {}, fetchedAt: "" };
+  }
+}
+
+function mergeReferenceRecords(category, payload) {
+  const records = {};
+  const add = (value = {}) => {
+    if (!value || typeof value !== "object") return;
+    const name = String(value.localizedName || value.name || value.title || value.label || value.cnName || "").trim();
+    if (!name || name.length > 120) return;
+    const id = String(value.id || value.slug || value.key || strictKey(name)).trim();
+    const description = String(value.description || value.desc || value.effect || value.shortDesc || value.effectText || "").replace(/\s+/g, " ").trim();
+    records[id] = {
+      id,
+      name: String(value.name || value.slug || id),
+      localizedName: String(value.localizedName || value.cnName || value.title || name),
+      description,
+      sourceUrl: String(value.sourceUrl || value.href || POKECAMP_REFERENCE_SOURCES[category] || ""),
+      ...(value.types ? { types: value.types } : {}),
+      ...(value.baseStats ? { baseStats: value.baseStats } : {}),
+      ...(value.abilities ? { abilities: value.abilities } : {}),
+      ...(value.spriteUrl ? { spriteUrl: value.spriteUrl } : {}),
+      ...(value.basePower ? { basePower: value.basePower } : {}),
+      ...(value.accuracy ? { accuracy: value.accuracy } : {}),
+      ...(value.pp ? { pp: value.pp } : {}),
+      ...(value.priority ? { priority: value.priority } : {}),
+    };
+  };
+  const walk = (value, depth = 0) => {
+    if (!value || depth > 8) return;
+    if (Array.isArray(value)) { value.forEach((item) => walk(item, depth + 1)); return; }
+    if (typeof value !== "object") return;
+    if (value.name || value.localizedName || value.cnName || value.title) add(value);
+    Object.values(value).forEach((item) => { if (item && typeof item === "object") walk(item, depth + 1); });
+  };
+  walk(payload.json);
+  for (const item of payload.links || []) {
+    const name = String(item.title || "").replace(/\s+/g, " ").trim();
+    if (!name || name.length > 80) continue;
+    const sourceUrl = String(item.href || "");
+    if (!sourceUrl || !new RegExp(`/zh/${category === "moves" ? "moves" : category}(?:/|$)`, "i").test(sourceUrl)) continue;
+    add({ name, localizedName: name, slug: sourceUrl.split("/").filter(Boolean).pop(), sourceUrl });
+  }
+  return records;
+}
+
+async function syncPokecampReferenceData(categories = Object.keys(POKECAMP_REFERENCE_SOURCES)) {
+  if (!pokecampBrowserPage || pokecampBrowserPage.isClosed()) return { ok: false, status: 409, error: "请先在数据中心打开并完成 PokéCamp 验证。" };
+  const selected = categories.map((category) => referenceCategoryKey(category)).filter((category) => POKECAMP_REFERENCE_SOURCES[category]);
+  const next = { ...pokecampReferenceData, fetchedAt: new Date().toISOString(), sources: { ...(pokecampReferenceData.sources || {}) }, records: { pokemon: {}, moves: {}, abilities: {}, items: {}, ...(pokecampReferenceData.records || {}) } };
+  const summary = [];
+  for (const category of selected) {
+    const sourceUrl = POKECAMP_REFERENCE_SOURCES[category];
+    await pokecampBrowserPage.goto(sourceUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await pokecampBrowserPage.waitForTimeout(900);
+    const gate = await pokecampBrowserPage.evaluate(() => ({ title: document.title, text: document.body?.innerText || "", url: location.href }));
+    if (pokecampChallengePage(gate.title, gate.text)) {
+      pokecampBrowserState = { ...pokecampBrowserState, status: "WAITING_FOR_HUMAN_VERIFICATION", challenge: true, pageTitle: gate.title, pageUrl: gate.url, lastError: "请在打开的 PokéCamp 页面完成一次验证后再同步资料。" };
+      return { ok: false, status: 409, code: "WAITING_FOR_HUMAN_VERIFICATION", error: pokecampBrowserState.lastError, state: pokecampBrowserSnapshot() };
+    }
+    const payload = await pokecampBrowserPage.evaluate(() => {
+      const json = [];
+      for (const node of document.querySelectorAll('script[type="application/json"], script#__NEXT_DATA__, script[type="application/ld+json"]')) {
+        const value = node.textContent?.trim();
+        if (!value || value.length > 12_000_000) continue;
+        try { json.push(JSON.parse(value)); } catch {}
+      }
+      const links = [...document.querySelectorAll("a[href]")].map((node) => ({ title: (node.textContent || "").replace(/\s+/g, " ").trim(), href: node.href })).filter((item) => item.title && item.href);
+      return { json, links, text: (document.body?.innerText || "").slice(0, 200000) };
+    });
+    const records = mergeReferenceRecords(category, payload);
+    if (!Object.keys(records).length && !payload.json.length && !payload.links.length) {
+      pokecampBrowserState = { ...pokecampBrowserState, status: "FAILED", challenge: false, pageTitle: gate.title, pageUrl: gate.url, lastError: `未能从 PokéCamp ${category} 页面读取资料。` };
+      return { ok: false, status: 503, error: pokecampBrowserState.lastError, state: pokecampBrowserSnapshot() };
+    }
+    next.records[category] = { ...(next.records[category] || {}), ...records };
+    next.sources[category] = { url: sourceUrl, fetchedAt: next.fetchedAt, count: Object.keys(next.records[category]).length };
+    summary.push({ category, count: Object.keys(records).length, total: Object.keys(next.records[category]).length, url: sourceUrl });
+  }
+  pokecampReferenceData = next;
+  await mkdir(join(ROOT, "data"), { recursive: true });
+  await writeFile(POKECAMP_REFERENCE_DATA_PATH, JSON.stringify(next, null, 2), "utf8");
+  referenceTermCache.clear();
+  return { ok: true, fetchedAt: next.fetchedAt, summary, sources: next.sources };
+}
+
+async function handleReferenceApi(req, res) {
+  const url = new URL(req.url || "/api/reference/status", "http://127.0.0.1");
+  if (req.method === "GET" && url.pathname.endsWith("/status")) { sendJson(res, 200, { ok: true, fetchedAt: pokecampReferenceData.fetchedAt, sources: pokecampReferenceData.sources, counts: Object.fromEntries(Object.entries(pokecampReferenceData.records || {}).map(([key, value]) => [key, Object.keys(value || {}).length])) }); return; }
+  if (req.method === "POST" && url.pathname.endsWith("/sync")) { const body = await readJson(req).catch(() => ({})); sendJson(res, 200, await syncPokecampReferenceData(Array.isArray(body.categories) && body.categories.length ? body.categories : Object.keys(POKECAMP_REFERENCE_SOURCES))); return; }
+  sendJson(res, 405, { ok: false, error: "未知的 PokéCamp 资料接口。" });
+}
+
+async function handleReferenceTermApi(req, res) {
+  const url = new URL(req.url || "/api/reference/term", "http://127.0.0.1");
+  const category = String(url.searchParams.get("category") || "").trim();
+  const name = String(url.searchParams.get("name") || "").trim();
+  if (!name || !["pokemon", "move", "moves", "item", "items", "ability", "abilities"].includes(category.toLowerCase())) {
+    sendJson(res, 400, { ok: false, error: "资料分类或名称无效。" });
+    return;
+  }
+  const reference = await fetchReferenceTerm(category, name);
+  sendJson(res, 200, { ok: true, ...reference, category: referenceCategoryKey(category), label: name });
+}
+
+function pokecampLabeledBlock(raw = "", label = "", stopLabels = []) {
+  const lines = String(raw || "").split(/\r?\n/).map((line) => cleanPokecampInlineText(line).trim()).filter(Boolean);
+  const start = lines.findIndex((line) => line === label || line.startsWith(`${label}:`) || line.startsWith(`${label}：`));
+  if (start < 0) return "";
+  const firstLine = lines[start].slice(label.length).replace(/^\s*[:：]\s*/, "").trim();
+  const stops = new Set(stopLabels);
+  const values = [];
+  if (firstLine) values.push(firstLine);
+  for (let index = start + 1; index < lines.length; index += 1) {
+    if (stops.has(lines[index])) break;
+    values.push(lines[index]);
+  }
+  return values.join(" ").replace(/\s*(→|->|=>)\s*/g, " $1 ").replace(/\s+/g, " ").trim();
+}
+
+function pokecampStatsFromRaw(raw = "") {
+  const block = pokecampLabeledBlock(raw, "能力点数", ["实数值", "招式", "道具", "性格", "特性", "太晶属性"]);
+  if (!block || /推荐能力点数|能力点数推荐/.test(block)) return "";
+  const inline = [...block.matchAll(/(HP|攻击|防御|特攻|特防|速度)\s*[:：]?\s*(\d+)/g)]
+    .map((match) => `${match[1]} ${match[2]}`);
+  if (inline.length) return inline.join(" / ");
+  const lines = block.split(/\s+/).filter(Boolean);
+  const result = [];
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    if (/^(HP|攻击|防御|特攻|特防|速度)$/.test(lines[index]) && /^\d+$/.test(lines[index + 1])) result.push(`${lines[index]} ${lines[index + 1]}`);
+  }
+  return result.join(" / ");
+}
+
+function cleanStoredPokecampConfiguration(configuration = {}) {
+  const raw = Array.isArray(configuration.notes) ? configuration.notes.join("\n") : String(configuration.notes || "");
+  const cleanLine = (line) => cleanPokecampInlineText(line).replace(/\s+/g, " ").trim();
+  const fallbackMoves = (Array.isArray(configuration.moves) ? configuration.moves : [])
+    .map((move) => cleanLine(move))
+    .filter((move) => move && move.length <= 18 && !/[。！？；，]/.test(move))
+    .slice(0, 4);
+  let moves = fallbackMoves;
+  let notes = [];
+  let noteLinks = [];
+  let actualStats = "";
+  let stats = typeof configuration.stats === "string" ? configuration.stats : "";
+  const rawAbility = pokecampLabeledBlock(raw, "特性", ["能力点数", "努力值", "推荐能力点数", "道具", "性格", "招式", "太晶属性", "等级"]);
+  const abilities = splitAbilityChain(rawAbility || configuration.ability || "");
+  const ability = abilities.join(" → ");
+  if (raw) {
+    const actual = raw.match(/实数值\s*([0-9]+(?:\s*-\s*[0-9]+){5})/s);
+    actualStats = actual?.[1]?.replace(/\s+/g, "") || "";
+    stats = pokecampStatsFromRaw(raw) || stats;
+    const lines = raw.split(/\r?\n/).map(cleanLine).filter(Boolean);
+    const moveStart = lines.findIndex((line) => line === "招式");
+    if (moveStart >= 0) {
+      const parsedMoves = [];
+      let noteStart = lines.length;
+      for (let index = moveStart + 1; index < lines.length; index += 1) {
+        const line = lines[index];
+        if (!line) continue;
+        const looksLikeNote = /[。！？；，]/.test(line) || line.length > 18 || /^(调整|以前|这个队伍|至少|连败|只要|不需要|被|和|剩下)/.test(line);
+        if (looksLikeNote || parsedMoves.length >= 4) { noteStart = index; break; }
+        parsedMoves.push(line);
+      }
+      if (parsedMoves.length) moves = parsedMoves;
+      if (noteStart < lines.length) {
+        const rawLines = raw.split(/\r?\n/);
+        const sourceIndex = rawLines.findIndex((line) => cleanLine(line) === lines[noteStart]);
+        const noteRawText = rawLines.slice(Math.max(0, sourceIndex)).join("\n").trim();
+        const noteText = cleanPokecampInlineText(noteRawText).replace(/\s+/g, " ").trim();
+        if (noteText) {
+          notes = [noteText];
+          noteLinks = pokecampStrategyLinks(noteRawText);
+        }
+      }
+    }
+  }
+  const abilityReferences = abilities.map((item) => battleTermReference("abilities", item)).filter(Boolean);
+  const result = {
+    ...configuration,
+    ability,
+    abilities,
+    abilityTransition: abilities.length > 1,
+    stats,
+    actualStats,
+    moves,
+    notes,
+    noteLinks: mergePokecampLinks(noteLinks, pokecampConfigurationLinks([{ ...configuration, ability, abilities, moves }], [])),
+    references: {
+      item: battleTermReference("items", configuration.item),
+      ability: abilityReferences[0] || battleTermReference("abilities", ability),
+      abilities: abilityReferences,
+      moves: moves.map((move) => battleTermReference("moves", move)).filter(Boolean),
+    },
+  };
+  return result;
 }
 
 function readChampionDataFile() {
@@ -1197,6 +2849,10 @@ function rulesCandidatePool(snapshot) {
   const formatData = readChampionDataFile()?.formats?.[format] || {};
   const ranked = formatData.pokemon || [];
   const modDex = Dex.mod(Dex.formats.get(snapshot.showdownFormatId).mod || "base");
+  const officialPool = officialRegulationPool(snapshot.regulation);
+  const officialSpeciesIds = officialPool
+    ? new Set(officialPool.entries.flatMap((entry) => entry.showdownIds || []).map(strictKey))
+    : new Set();
   const configurations = readTeamDataFile()
     .filter((team) => team.format === format)
     .flatMap((team) => team.configurations || []);
@@ -1215,6 +2871,7 @@ function rulesCandidatePool(snapshot) {
   const pool = ranked.flatMap((entry) => {
     const species = candidateSpecies(modDex, entry.slug || entry.name, entry);
     if (!species?.exists) return [];
+    if (!officialSpeciesIds.has(strictKey(species.id))) return [];
     const baseSpecies = modDex.species.get(species.baseSpecies || species.name);
     const familyId = baseSpecies.id || species.id;
     const requiredItemIds = new Set([...(species.requiredItems || []), species.requiredItem].filter(Boolean).map(strictKey));
@@ -1268,6 +2925,7 @@ async function handleRulesCandidatesApi(req, res) {
   const offset = Math.max(0, Number(url.searchParams.get("offset") || 0));
   const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit") || 24)));
   const pool = rulesCandidatePool(snapshot);
+  const officialPool = officialRegulationPool(snapshot.regulation);
   const sourceTotal = readChampionDataFile()?.formats?.[format]?.pokemon?.length || pool.length;
   const filtered = pool.flatMap((item) => {
     const itemText = [item.name, item.localizedName, item.role, item.meta, ...(item.types || []), ...(item.typeLabels || [])].join(" ").toLowerCase();
@@ -1286,6 +2944,8 @@ async function handleRulesCandidatesApi(req, res) {
     items: filtered.slice(offset, offset + limit),
     total: filtered.length,
     poolTotal: pool.length,
+    officialPoolCount: officialPool?.entries?.length || 0,
+    officialPoolSourceUrl: officialPool?.sourceUrl || "",
     sourceTotal,
     excludedTotal: Math.max(0, sourceTotal - pool.length),
     configurationTotal,
@@ -1453,7 +3113,8 @@ function strictIsDistinctFromAvoidedTeam(team = [], constraints = {}) {
       : [];
   // Every previous result must differ by at least two members. Comparing each
   // team independently avoids the false failures caused by merging histories.
-  return avoidedTeams.every((avoided) => team.filter((member) => avoided.has(strictFamilyKey(member.slug))).length <= 4);
+  const maxShared = Math.max(0, Math.min(5, Number(constraints.maxSharedWithAvoided ?? 4)));
+  return avoidedTeams.every((avoided) => team.filter((member) => avoided.has(strictFamilyKey(member.slug))).length <= maxShared);
 }
 
 function strictThemeInfo(member = {}, theme = "") {
@@ -1783,6 +3444,519 @@ async function learnFromAgentTraces(rulesetId = "", format = "single") {
   return summary;
 }
 
+function policySnapshotPath(rulesetId, version) {
+  return join(AGENT_DATA_ROOT, "models", rulesetId, "policies", `${version}.json`);
+}
+
+async function readPolicyModelRegistry(rulesetId) {
+  try { return JSON.parse(await readFile(join(AGENT_DATA_ROOT, "models", rulesetId, "registry.json"), "utf8")); }
+  catch { return { rulesetId, champion: { version: "structured-visible-state-v1", status: "active" }, challengers: [], evaluations: [], updatedAt: "" }; }
+}
+
+async function writePolicyModelRegistry(rulesetId, registry) {
+  const root = join(AGENT_DATA_ROOT, "models", rulesetId);
+  await mkdir(root, { recursive: true });
+  registry.rulesetId = rulesetId;
+  registry.evaluations = (registry.evaluations || []).map(summarizeModelEvaluation);
+  registry.challengers = (registry.challengers || []).map((item) => item.evaluation
+    ? { ...item, evaluation: summarizeModelEvaluation(item.evaluation) }
+    : item);
+  registry.updatedAt = new Date().toISOString();
+  await writeFile(join(root, "registry.json"), `${JSON.stringify(registry, null, 2)}\n`, "utf8");
+  return registry;
+}
+
+async function persistModelEvaluation(rulesetId, evaluation) {
+  const root = join(AGENT_DATA_ROOT, "models", rulesetId, "evaluations");
+  await mkdir(root, { recursive: true });
+  await writeFile(join(root, `${evaluation.id}.json`), `${JSON.stringify(evaluation, null, 2)}\n`, "utf8");
+  const summary = summarizeModelEvaluation(evaluation);
+  const registry = await readPolicyModelRegistry(rulesetId);
+  registry.evaluations = [summary, ...(registry.evaluations || []).filter((item) => item.id !== evaluation.id)].slice(0, 50);
+  registry.challengers = (registry.challengers || []).map((item) => item.version === evaluation.challengerVersion
+    ? { ...item, status: evaluation.passed ? "ready_to_promote" : "rejected", evaluationId: evaluation.id, evaluation: summary }
+    : item);
+  await writePolicyModelRegistry(rulesetId, registry);
+  return evaluation;
+}
+
+function summarizeModelEvaluation(evaluation = {}) {
+  return {
+    id: evaluation.id,
+    rulesetId: evaluation.rulesetId,
+    format: evaluation.format,
+    championVersion: evaluation.championVersion,
+    challengerVersion: evaluation.challengerVersion,
+    type: evaluation.type,
+    createdAt: evaluation.createdAt,
+    games: evaluation.games,
+    wins: evaluation.wins,
+    losses: evaluation.losses,
+    ties: evaluation.ties,
+    winRate: evaluation.winRate,
+    challengerWinRate: evaluation.challengerWinRate,
+    wilsonLowerBound: evaluation.wilsonLowerBound,
+    illegalActions: evaluation.illegalActions,
+    recoveries: evaluation.recoveries,
+    eloDelta: evaluation.eloDelta,
+    generalization: evaluation.generalization,
+    compositeScore: evaluation.compositeScore,
+    fixedTestSet: evaluation.fixedTestSet ? { games: evaluation.fixedTestSet.games, wins: evaluation.fixedTestSet.wins, losses: evaluation.fixedTestSet.losses, ties: evaluation.fixedTestSet.ties, winRate: evaluation.fixedTestSet.winRate, illegalActions: evaluation.fixedTestSet.illegalActions, fixtureHash: evaluation.fixedTestSet.fixtureHash } : null,
+    environment: evaluation.environment,
+    passed: Boolean(evaluation.passed),
+  };
+}
+
+async function listModelEvaluations(rulesetId) {
+  const registry = await readPolicyModelRegistry(rulesetId);
+  return { items: registry.evaluations || [] };
+}
+
+function fixedTestSetPath(rulesetId) {
+  return join(AGENT_DATA_ROOT, "models", rulesetId, "fixed-test-set.json");
+}
+
+async function loadOrCreateFixedTestSet(snapshot, format, limit = 12) {
+  const file = fixedTestSetPath(snapshot.rulesetId);
+  try {
+    const existing = JSON.parse(await readFile(file, "utf8"));
+    if (existing?.rulesetId === snapshot.rulesetId && Array.isArray(existing.teams) && existing.teams.length) return existing;
+  } catch {}
+  const teams = [];
+  for (const team of hotOpponentPool(format).slice(0, 120)) {
+    const prepared = prepareBattleTeam(team.showdownText || "", format, team.title || team.id || "固定测试队", snapshot.rulesetId);
+    if (!prepared.ok || !prepared.strictLegal) continue;
+    teams.push({ id: team.id, title: team.title, rate: team.rate, rank: team.rank, packedTeam: prepared.packedTeam, teamText: prepared.showdownTeamText });
+    if (teams.length >= Math.max(4, Math.min(24, limit))) break;
+  }
+  const fixture = {
+    schemaVersion: 1,
+    rulesetId: snapshot.rulesetId,
+    format,
+    createdAt: new Date().toISOString(),
+    source: "same-ruleset-hot-team-pool",
+    teams,
+    hash: createHash("sha256").update(JSON.stringify(teams)).digest("hex").slice(0, 16),
+  };
+  await mkdir(join(AGENT_DATA_ROOT, "models", snapshot.rulesetId), { recursive: true });
+  await writeFile(file, `${JSON.stringify(fixture, null, 2)}\n`, "utf8");
+  return fixture;
+}
+
+async function evaluatePolicyOnFixedSet({ rulesetId = "", format = "single", policy, games = 2 } = {}) {
+  const snapshot = ruleRegistry.operational({ format, rulesetId });
+  const fixture = await loadOrCreateFixedTestSet(snapshot, format, 12);
+  const baseline = { version: "fixed-baseline-v1", weights: {}, deterministic: true };
+  const results = [];
+  for (const [index, team] of fixture.teams.entries()) {
+    for (let game = 0; game < Math.max(1, Math.min(4, games)); game += 1) {
+      const candidateFirst = (index + game) % 2 === 0;
+      const result = await runLocalBattle({
+        format,
+        formatId: snapshot.showdownFormatId,
+        p1Team: team.packedTeam,
+        p2Team: fixture.teams[(index + game + 1) % fixture.teams.length]?.packedTeam || team.packedTeam,
+        p1Name: candidateFirst ? "Challenger" : "Fixed",
+        p2Name: candidateFirst ? "Fixed" : "Challenger",
+        candidateName: "Challenger",
+        p1Policy: candidateFirst ? policyForAgent(policy) : baseline,
+        p2Policy: candidateFirst ? baseline : policyForAgent(policy),
+        maxTurns: 80,
+        seed: [index + 1, game + 3, 17, 29],
+      });
+      results.push({ fixtureTeamId: team.id, game: game + 1, ...result });
+    }
+  }
+  return { ...policyEvaluationMetrics(results), fixtureHash: fixture.hash, fixtureGames: fixture.teams.length, results };
+}
+
+async function readPolicySnapshot(rulesetId, version) {
+  try { return JSON.parse(await readFile(policySnapshotPath(rulesetId, version), "utf8")); } catch { return null; }
+}
+
+async function ensurePolicySnapshot(rulesetId, format, version = "structured-visible-state-v1") {
+  const existing = await readPolicySnapshot(rulesetId, version);
+  if (existing) return existing;
+  if (version !== "structured-visible-state-v1") return null;
+  const policy = {
+    schemaVersion: 1,
+    id: version,
+    version,
+    rulesetId,
+    format,
+    parentVersion: "",
+    weights: normalizePolicyWeights({}),
+    deterministic: true,
+    trainedAt: "",
+    source: "built-in-structured-policy",
+  };
+  await mkdir(join(AGENT_DATA_ROOT, "models", rulesetId, "policies"), { recursive: true });
+  await writeFile(policySnapshotPath(rulesetId, version), `${JSON.stringify(policy, null, 2)}\n`, "utf8");
+  return policy;
+}
+
+function policyTrainingFeatures(trace = {}) {
+  const features = {};
+  const add = (key, amount = 1) => { features[key] = (features[key] || 0) + amount; };
+  for (const event of trace.events || []) {
+    if (event.type !== "agent-action") continue;
+    const command = String(event.command || "").toLowerCase();
+    if (command.includes("switch")) add("switch");
+    if (command.includes("protect") || command.includes("detect")) add("protect");
+    if (command.includes("tailwind") || command.includes("trick room") || command.includes("icy wind") || command.includes("electroweb")) add("speed-control");
+    if (command.includes("u-turn") || command.includes("volt switch") || command.includes("parting shot") || command.includes("baton pass")) add("pivot");
+    if (command.includes("swords dance") || command.includes("nasty plot") || command.includes("dragon dance") || command.includes("quiver dance")) add("setup");
+    if (command.includes("move")) add("damage");
+  }
+  for (const event of trace.events || []) {
+    const line = String(event.line || event.command || "").toLowerCase();
+    if (/tailwind|trick room|icy wind|electroweb|thunder wave|glare/.test(line)) add("speed-control", 0.25);
+    if (/protect|detect|wide guard/.test(line)) add("protect", 0.25);
+  }
+  return features;
+}
+
+function normalizePolicyWeights(weights = {}) {
+  const normalized = {};
+  for (const key of ["damage", "protect", "speed-control", "pivot", "setup", "switch", "disrupt", "spread", "recovery", "hazard", "removal"]) {
+    const value = Number(weights[key] || 0);
+    normalized[key] = Math.max(-24, Math.min(24, Math.round(value * 100) / 100));
+  }
+  return normalized;
+}
+
+function policyTrainingSplit(traces = [], maxSamples = 0) {
+  const eligible = traces.filter((trace) => trace.policyVersion !== "replay-import" && ["win", "loss", "tie"].includes(trace.result));
+  const ordered = [...eligible].sort((a, b) => {
+    const byTime = String(a.finishedAt || a.startedAt || "").localeCompare(String(b.finishedAt || b.startedAt || ""));
+    if (byTime) return byTime;
+    return String(a.battleId || a.replayFile || "").localeCompare(String(b.battleId || b.replayFile || ""));
+  });
+  const selected = maxSamples > 0 ? ordered.slice(0, maxSamples) : ordered;
+  const trainEnd = Math.floor(selected.length * 0.7);
+  const validationEnd = Math.floor(selected.length * 0.85);
+  return { eligible: ordered.length, selected: selected.length, selectedTraces: selected, train: selected.slice(0, trainEnd), validation: selected.slice(trainEnd, validationEnd), test: selected.slice(validationEnd) };
+}
+
+function policyTraceIdentity(trace = {}) {
+  return {
+    id: String(trace.battleId || trace.replayFile || trace.id || ""),
+    result: String(trace.result || ""),
+    policyVersion: String(trace.policyVersion || "structured-visible-state-v1"),
+  };
+}
+
+function policyTrainingFingerprint({ rulesetId = "", format = "single", baseVersion = "", traces = [] } = {}) {
+  return createHash("sha256").update(JSON.stringify({
+    rulesetId,
+    format,
+    baseVersion,
+    traces: traces.map(policyTraceIdentity),
+  })).digest("hex");
+}
+
+async function policySnapshotsForRegistry(rulesetId, registry) {
+  return (await Promise.all((registry.challengers || []).map(async (item) => {
+    const policy = await readPolicySnapshot(rulesetId, item.version);
+    return policy ? { item, policy } : null;
+  }))).filter(Boolean);
+}
+
+async function policyTrainingProgress(rulesetId, format, traces = null, registry = null) {
+  const allTraces = traces || await readAgentTraces(rulesetId);
+  const split = policyTrainingSplit(allTraces);
+  const modelRegistry = registry || await readPolicyModelRegistry(rulesetId);
+  const snapshots = await policySnapshotsForRegistry(rulesetId, modelRegistry);
+  const latestSelected = snapshots.reduce((maximum, entry) => Math.max(maximum, Number(entry.policy.dataset?.selected || entry.item.trainingGames || 0)), 0);
+  const newEligibleGames = Math.max(0, split.selected - latestSelected);
+  const minimumNewGames = 5;
+  const nextAutomaticCheckpoint = (Math.floor(split.eligible / 50) + 1) * 50;
+  return {
+    eligibleGames: split.eligible,
+    lastTrainingGames: latestSelected,
+    newEligibleGames,
+    minimumNewGames,
+    gamesUntilManualTraining: Math.max(0, minimumNewGames - newEligibleGames),
+    nextAutomaticCheckpoint,
+    gamesUntilAutomaticCheckpoint: Math.max(0, nextAutomaticCheckpoint - split.eligible),
+  };
+}
+
+function addPolicyTrainingExample(accumulator, trace) {
+  const direction = trace.result === "win" ? 1 : trace.result === "loss" ? -1 : 0;
+  const features = policyTrainingFeatures(trace);
+  for (const [key, value] of Object.entries(features)) accumulator[key] = (accumulator[key] || 0) + direction * Number(value || 0);
+}
+
+async function trainAgentPolicy({ rulesetId = "", format = "single", baseVersion = "structured-visible-state-v1", maxSamples = 0, version = "" } = {}) {
+  const snapshot = learningSnapshot(format, rulesetId);
+  const traces = await readAgentTraces(snapshot.rulesetId);
+  const split = policyTrainingSplit(traces, Number(maxSamples || 0));
+  if (split.train.length < 4) return { ok: false, status: "insufficient_data", error: "至少需要 4 局非回放导入的已完成对局才能训练策略。", ruleset: rulesetMetadata(snapshot), samples: split.train.length };
+  const registry = await readPolicyModelRegistry(snapshot.rulesetId);
+  const trainingFingerprint = policyTrainingFingerprint({ rulesetId: snapshot.rulesetId, format, baseVersion, traces: split.selectedTraces });
+  const snapshots = await policySnapshotsForRegistry(snapshot.rulesetId, registry);
+  const duplicate = snapshots.find(({ policy }) => policy.trainingFingerprint === trainingFingerprint);
+  if (duplicate) {
+    return {
+      ok: true,
+      status: "no_new_data",
+      message: "没有新增有效排位数据，未生成新 Challenger。",
+      existingVersion: duplicate.policy.version,
+      trainingProgress: await policyTrainingProgress(snapshot.rulesetId, format, traces, registry),
+      ruleset: rulesetMetadata(snapshot),
+    };
+  }
+  const latestSelected = snapshots
+    .filter(({ policy }) => policy.parentVersion === baseVersion)
+    .reduce((maximum, { policy, item }) => Math.max(maximum, Number(policy.dataset?.selected || item.trainingGames || 0)), 0);
+  const newEligibleGames = Math.max(0, split.selected - latestSelected);
+  if (!version && latestSelected > 0 && newEligibleGames < 5) {
+    return {
+      ok: true,
+      status: "no_new_data",
+      message: newEligibleGames
+        ? `仅新增 ${newEligibleGames} 局有效排位数据；至少新增 5 局才会生成新 Challenger。`
+        : "没有新增有效排位数据，未生成新 Challenger。",
+      existingVersion: snapshots.sort((a, b) => Number(b.policy.dataset?.selected || 0) - Number(a.policy.dataset?.selected || 0))[0]?.policy.version || "",
+      trainingProgress: await policyTrainingProgress(snapshot.rulesetId, format, traces, registry),
+      ruleset: rulesetMetadata(snapshot),
+    };
+  }
+  const rawWeights = {};
+  split.train.forEach((trace) => addPolicyTrainingExample(rawWeights, trace));
+  const parentPolicy = await ensurePolicySnapshot(snapshot.rulesetId, format, baseVersion);
+  const learnedDelta = Object.fromEntries(Object.entries(rawWeights).map(([key, value]) => [key, Number(value) / Math.max(1, split.train.length)]));
+  const weights = normalizePolicyWeights(Object.fromEntries(
+    [...new Set([...Object.keys(parentPolicy?.weights || {}), ...Object.keys(learnedDelta)])]
+      .map((key) => [key, Number(parentPolicy?.weights?.[key] || 0) + Number(learnedDelta[key] || 0)]),
+  ));
+  const trainedVersion = version || `${baseVersion}-trained-${split.train.length}-${trainingFingerprint.slice(0, 10)}`;
+  const policy = {
+    schemaVersion: 1,
+    id: trainedVersion,
+    version: trainedVersion,
+    rulesetId: snapshot.rulesetId,
+    format,
+    parentVersion: baseVersion,
+    trainingFingerprint,
+    weights,
+    learnedDelta: normalizePolicyWeights(learnedDelta),
+    deterministic: true,
+    trainedAt: new Date().toISOString(),
+    dataset: { total: traces.length, eligible: split.eligible, selected: split.selected, train: split.train.length, validation: split.validation.length, test: split.test.length, excludedReplayImports: traces.length - split.eligible },
+    sourceTraceIds: split.train.map((trace) => trace.battleId).filter(Boolean).slice(-500),
+    selectedTraceIds: split.selectedTraces.map((trace) => trace.battleId).filter(Boolean).slice(-1000),
+  };
+  await mkdir(join(AGENT_DATA_ROOT, "models", snapshot.rulesetId, "policies"), { recursive: true });
+  await writeFile(policySnapshotPath(snapshot.rulesetId, trainedVersion), `${JSON.stringify(policy, null, 2)}\n`, "utf8");
+  return { ok: true, status: "trained", policy, trainingProgress: await policyTrainingProgress(snapshot.rulesetId, format, traces, registry), ruleset: rulesetMetadata(snapshot) };
+}
+
+async function syncPolicyTrainingMilestones(rulesetId, format) {
+  const snapshot = learningSnapshot(format, rulesetId);
+  const traces = await readAgentTraces(snapshot.rulesetId);
+  const eligibleGames = policyTrainingSplit(traces).eligible;
+  if (eligibleGames < 50) return readPolicyModelRegistry(snapshot.rulesetId);
+  const registry = await readPolicyModelRegistry(snapshot.rulesetId);
+  let changed = false;
+  const challengerCount = (registry.challengers || []).length;
+  registry.challengers = (registry.challengers || []).filter((item) => {
+    const isLegacyPlaceholder = /^challenger-\d+$/.test(String(item.version || "")) && item.status === "pending_evaluation";
+    return !isLegacyPlaceholder;
+  });
+  changed ||= registry.challengers.length !== challengerCount;
+  for (let checkpoint = 50; checkpoint <= Math.floor(eligibleGames / 50) * 50; checkpoint += 50) {
+    const version = `challenger-${checkpoint}`;
+    const existingSnapshot = await readPolicySnapshot(snapshot.rulesetId, version);
+    if (existingSnapshot) continue;
+    const result = await trainAgentPolicy({
+      rulesetId: snapshot.rulesetId,
+      format,
+      baseVersion: registry.champion?.version || "structured-visible-state-v1",
+      maxSamples: checkpoint,
+      version,
+    });
+    if (!result.ok || result.status !== "trained") continue;
+    registry.challengers = [
+      { version, status: "trained", trainingGames: checkpoint, trainingSamples: result.policy.dataset.train, trainingFingerprint: result.policy.trainingFingerprint, parentVersion: result.policy.parentVersion, createdAt: result.policy.trainedAt },
+      ...(registry.challengers || []).filter((item) => item.version !== version),
+    ].slice(0, 20);
+    changed = true;
+  }
+  if (changed) await writePolicyModelRegistry(snapshot.rulesetId, registry);
+  return registry;
+}
+
+function policyForAgent(policy = null) {
+  return policy ? { version: policy.version || policy.id, weights: policy.weights || {}, deterministic: Boolean(policy.deterministic) } : null;
+}
+
+function policyEvaluationMetrics(results = []) {
+  const games = results.length;
+  const wins = results.filter((item) => item.result === "win").length;
+  const losses = results.filter((item) => item.result === "loss").length;
+  const ties = results.filter((item) => item.result === "tie").length;
+  const illegalActions = results.reduce((sum, item) => sum + Number(item.actions?.errors?.length || 0), 0);
+  const recoveries = results.reduce((sum, item) => sum + Number(item.actions?.recoveries?.length || 0), 0);
+  return { games, wins, losses, ties, winRate: games ? Math.round((wins / games) * 1000) / 10 : 0, illegalActions, recoveries };
+}
+
+function policyEloDelta(results = [], kFactor = 24) {
+  let challengerRating = 1500;
+  let championRating = 1500;
+  for (const item of results) {
+    const expected = 1 / (1 + 10 ** ((championRating - challengerRating) / 400));
+    const actual = item.result === "win" ? 1 : item.result === "tie" ? 0.5 : 0;
+    const delta = kFactor * (actual - expected);
+    challengerRating += delta;
+    championRating -= delta;
+  }
+  return Math.round((challengerRating - 1500) * 10) / 10;
+}
+
+function policyGeneralization(results = []) {
+  const matchups = new Map();
+  for (const item of results) {
+    const key = [item.challengerTeamId || item.teamId || "unknown", item.championTeamId || item.opponentTeamId || "unknown"].join("::");
+    const record = matchups.get(key) || { wins: 0, games: 0 };
+    record.games += 1;
+    if (item.result === "win") record.wins += 1;
+    matchups.set(key, record);
+  }
+  if (!matchups.size) return 0;
+  const successful = [...matchups.values()].filter((item) => item.wins / item.games >= 0.5).length;
+  return Math.round((successful / matchups.size) * 1000) / 10;
+}
+
+function policyCompositeScore(results = [], fixedTestSet = {}) {
+  const metrics = policyEvaluationMetrics(results);
+  const recent = policyEvaluationMetrics(results.slice(-Math.max(1, Math.ceil(results.length / 2))));
+  const eloScore = Math.max(0, Math.min(100, 50 + policyEloDelta(results)));
+  const generalization = policyGeneralization(results);
+  const score = (metrics.winRate * 0.35) + (eloScore * 0.25) + (recent.winRate * 0.15) + (Number(fixedTestSet.winRate || 0) * 0.15) + (generalization * 0.1);
+  return {
+    eloDelta: policyEloDelta(results),
+    recentWinRate: recent.winRate,
+    generalization,
+    compositeScore: Math.round(score * 10) / 10,
+  };
+}
+
+function wilsonLowerBound(wins, games, z = 1.96) {
+  if (!games) return 0;
+  const p = wins / games;
+  const denominator = 1 + (z * z) / games;
+  const centre = p + (z * z) / (2 * games);
+  const spread = z * Math.sqrt((p * (1 - p) + (z * z) / (4 * games)) / games);
+  return Math.round(((centre - spread) / denominator) * 1000) / 10;
+}
+
+async function evaluatePolicyAgainstTeams({ rulesetId = "", format = "single", candidatePolicy, opponentPolicy, gamesPerTeam = 2, teams = null, role = "candidate" } = {}) {
+  const snapshot = ruleRegistry.operational({ format, rulesetId });
+  const rulesEngine = championsRulesEngine(format, snapshot.rulesetId);
+  if (!rulesEngine.ok) return { ok: false, error: rulesEngine.error, results: [] };
+  const pool = (teams || hotOpponentPool(format)).slice(0, 12);
+  const results = [];
+  for (const [teamIndex, team] of pool.entries()) {
+    const prepared = prepareBattleTeam(team.showdownText || "", format, team.title || team.id || "评测队伍", snapshot.rulesetId);
+    if (!prepared.ok || !prepared.strictLegal) continue;
+    for (let index = 0; index < Math.max(1, Math.min(4, gamesPerTeam)); index += 1) {
+      const opponentSource = pool[(teamIndex + index + 1) % Math.max(1, pool.length)] || team;
+      const opponentPrepared = prepareBattleTeam(opponentSource.showdownText || "", format, opponentSource.title || opponentSource.id || "对手队伍", snapshot.rulesetId);
+      if (!opponentPrepared.ok || !opponentPrepared.strictLegal) continue;
+      const candidateTeam = prepared.packedTeam;
+      const opponentTeam = opponentPrepared.packedTeam;
+      const result = await runLocalBattle({
+        format,
+        formatId: rulesEngine.id,
+        p1Team: candidateTeam,
+        p2Team: opponentTeam,
+        p1Name: "Challenger",
+        p2Name: "Champion",
+        candidateName: role === "champion" ? "Champion" : "Challenger",
+        p1Policy: policyForAgent(candidatePolicy),
+        p2Policy: policyForAgent(opponentPolicy),
+        maxTurns: 80,
+        seed: [index + 1, 2, 3, 4].map((value) => value + results.length),
+      });
+      results.push({ teamId: team.id, teamTitle: team.title, ...result });
+    }
+  }
+  return { ok: results.length > 0, ...policyEvaluationMetrics(results), wilsonLowerBound: wilsonLowerBound(results.filter((item) => item.result === "win").length, results.length), results };
+}
+
+async function runPolicyAdversarial({ rulesetId = "", format = "single", championVersion = "", challengerVersion = "", games = 20 } = {}) {
+  const snapshot = ruleRegistry.operational({ format, rulesetId });
+  const registry = await readPolicyModelRegistry(snapshot.rulesetId);
+  const resolvedChampionVersion = championVersion || registry.champion?.version || "structured-visible-state-v1";
+  const champion = await ensurePolicySnapshot(snapshot.rulesetId, format, resolvedChampionVersion);
+  const challenger = await readPolicySnapshot(snapshot.rulesetId, challengerVersion);
+  if (!champion) return { ok: false, status: "missing_policy", error: "Champion 策略快照不存在，不能进行可复现对抗。", ruleset: rulesetMetadata(snapshot) };
+  if (!challenger) return { ok: false, status: "missing_policy", error: "Challenger 尚未训练出可加载的策略快照。", ruleset: rulesetMetadata(snapshot) };
+  if (challenger.version === champion.version) return { ok: false, status: "same_policy", error: "Champion 与 Challenger 必须是不同模型版本。", ruleset: rulesetMetadata(snapshot) };
+  if (champion.rulesetId !== snapshot.rulesetId || challenger.rulesetId !== snapshot.rulesetId || champion.format !== format || challenger.format !== format) {
+    return { ok: false, status: "policy_scope_mismatch", error: "模型快照与当前 rulesetId 或单双打类型不一致。", ruleset: rulesetMetadata(snapshot) };
+  }
+  const baseline = champion;
+  const fixture = await loadOrCreateFixedTestSet(snapshot, format, 12);
+  const teams = fixture.teams || [];
+  if (teams.length < 2) return { ok: false, status: "missing_fixture", error: "当前规则下没有足够的合法私服对抗队伍。", ruleset: rulesetMetadata(snapshot) };
+  const gameCount = Math.max(2, Math.min(100, Number(games) || 20));
+  const results = [];
+  for (let index = 0; index < gameCount; index += 1) {
+    const pairIndex = Math.floor(index / 2);
+    const challengerTeam = teams[pairIndex % teams.length];
+    const championTeam = teams[(pairIndex * 5 + 3) % teams.length];
+    if (!challengerTeam?.packedTeam || !championTeam?.packedTeam || challengerTeam.id === championTeam.id) continue;
+    const challengerFirst = index % 2 === 0;
+    const result = await runLocalBattle({
+      format,
+      formatId: snapshot.showdownFormatId,
+      p1Team: challengerFirst ? challengerTeam.packedTeam : championTeam.packedTeam,
+      p2Team: challengerFirst ? championTeam.packedTeam : challengerTeam.packedTeam,
+      p1Name: challengerFirst ? "Challenger" : "Champion",
+      p2Name: challengerFirst ? "Champion" : "Challenger",
+      candidateName: "Challenger",
+      p1Policy: policyForAgent(challengerFirst ? challenger : baseline),
+      p2Policy: policyForAgent(challengerFirst ? baseline : challenger),
+      maxTurns: 80,
+      seed: [index + 11, 22, 33, 44],
+    });
+    results.push({ game: index + 1, pair: pairIndex + 1, side: challengerFirst ? "p1" : "p2", challengerTeamId: challengerTeam.id, championTeamId: championTeam.id, ...result });
+  }
+  const metrics = policyEvaluationMetrics(results);
+  const fixed = await evaluatePolicyOnFixedSet({ rulesetId: snapshot.rulesetId, format, policy: challenger, games: 1 });
+  const comparison = policyCompositeScore(results, fixed);
+  const lowerBound = wilsonLowerBound(metrics.wins, metrics.games);
+  const passed = metrics.games >= 20
+    && fixed.games > 0
+    && metrics.illegalActions === 0
+    && fixed.illegalActions === 0
+    && metrics.winRate >= 55
+    && lowerBound >= 45
+    && fixed.winRate >= 52;
+  const evaluation = {
+    id: `evaluation-${Date.now()}`,
+    rulesetId: snapshot.rulesetId,
+    format,
+    championVersion: baseline.version,
+    challengerVersion: challenger.version,
+    type: "private-adversarial",
+    environment: { runtime: "local-showdown-battlestream", network: false, accountRequired: false, players: "owned-model-vs-owned-model", fixtureHash: fixture.hash },
+    createdAt: new Date().toISOString(),
+    ...metrics,
+    ...comparison,
+    challengerWinRate: metrics.winRate,
+    fixedTestSet: fixed,
+    wilsonLowerBound: lowerBound,
+    passed,
+    results,
+  };
+  await persistModelEvaluation(snapshot.rulesetId, evaluation);
+  return { ok: true, status: evaluation.passed ? "ready_to_promote" : "rejected", evaluation, ruleset: rulesetMetadata(snapshot) };
+}
+
 function extractLocalReplayLog(html = "") {
   const match = String(html).match(/<script[^>]*class=["']battle-log-data["'][^>]*>([\s\S]*?)<\/script>/i);
   return match ? match[1].replace(/^\s+|\s+$/g, "") : "";
@@ -1945,15 +4119,58 @@ function teamLabCandidateKey(candidate = {}) {
     .join("|");
 }
 
+function teamLabCandidateScore(candidate = {}) {
+  const evaluation = candidate.evaluation || {};
+  const buildReport = candidate.build?.buildReport || candidate.buildReport || {};
+  const team = candidate.build?.team || candidate.team || [];
+  const validation = candidate.validation || { ok: Boolean(candidate.build?.ok) };
+  const games = Number(evaluation.games || 0);
+  const winRate = Math.max(0, Math.min(100, Number(evaluation.winRate || 0)));
+  const battle = games > 0 ? winRate * 0.55 : 0;
+  const structure =
+    (validation.ok ? 10 : 0)
+    + (team.length === 6 ? 5 : 0)
+    + (buildReport.plan ? 2 : 0)
+    + (buildReport.evolution || buildReport.synergies?.length >= 2 ? 3 : 0);
+
+  const matchupResults = new Map();
+  for (const result of evaluation.results || []) {
+    const key = String(result.opponentId || result.opponentTitle || "unknown");
+    const item = matchupResults.get(key) || { points: 0, games: 0 };
+    item.games += 1;
+    item.points += result.result === "win" ? 1 : result.result === "tie" ? 0.5 : 0;
+    matchupResults.set(key, item);
+  }
+  const matchupRates = [...matchupResults.values()].map((item) => item.games ? item.points / item.games : 0);
+  const generalization = matchupRates.length
+    ? (matchupRates.reduce((sum, value) => sum + value, 0) / matchupRates.length) * 15
+    : 0;
+
+  const synergies = Math.min(4, Number(buildReport.synergies?.length || 0));
+  const risks = Math.min(6, Number(buildReport.risks?.length || 0));
+  const synergyRisk = Math.max(0, Math.min(10, synergies * 2.5 - risks * 1.5));
+  const total = Math.max(0, Math.min(100, battle + structure + generalization + synergyRisk));
+  return {
+    total: Math.round(total * 10) / 10,
+    battle: Math.round(battle * 10) / 10,
+    structure: Math.round(structure * 10) / 10,
+    generalization: Math.round(generalization * 10) / 10,
+    synergyRisk: Math.round(synergyRisk * 10) / 10,
+  };
+}
+
 function teamLabCandidateSummary(candidate = {}) {
   const evaluation = candidate.evaluation || {};
+  const score = teamLabCandidateScore(candidate);
   return {
     id: candidate.id,
     rulesetId: candidate.rulesetId,
     format: candidate.format,
     createdAt: candidate.createdAt,
     status: candidate.status || "pending_evaluation",
-    score: Number(candidate.score || 0),
+    score: score.total,
+    scoreScale: 100,
+    scoreBreakdown: score,
     team: candidate.build?.team || candidate.team || [],
     buildReport: candidate.build?.buildReport || {},
     validation: candidate.validation || { ok: Boolean(candidate.build?.ok) },
@@ -2005,18 +4222,30 @@ async function handleTeamLabApi(req, res) {
     const lab = await readTeamLab(snapshot.rulesetId);
     const generated = [];
     const seen = new Set(lab.experiments.map(teamLabCandidateKey));
+    const corePokemon = strictUniquePokemonRefs(Array.isArray(body.corePokemon) ? body.corePokemon : []).slice(0, 3);
+    const historicalTeams = lab.experiments
+      .map((candidate) => candidate.build?.team || candidate.team || [])
+      .filter((team) => team.length === 6)
+      .slice(0, 20);
     for (let index = 0; index < count; index += 1) {
+      const avoidTeams = [
+        ...generated.map((candidate) => candidate.build?.team || candidate.team || []),
+        ...historicalTeams,
+      ];
       const built = strictBuildTeam({
         format,
         rulesetId: snapshot.rulesetId,
         userGoal: String(body.userGoal || ""),
-        currentTeam: Array.isArray(body.currentTeam) ? body.currentTeam : [],
+        currentTeam: corePokemon,
+        goalConstraints: { requiredPokemon: corePokemon },
         buildMethod: "evolution",
         evolution: true,
         forceGenerated: true,
         variationSeed: `team-lab-${Date.now()}-${index}`,
         battleHistory: feedback,
-        avoidTeam: generated[0]?.build?.team || [],
+        avoidTeams,
+        avoidTeam: avoidTeams[0] || [],
+        maxSharedWithAvoided: 3,
       });
       if (!built.ok) continue;
       const key = teamLabCandidateKey({ team: built.team });
@@ -2028,13 +4257,7 @@ async function handleTeamLabApi(req, res) {
       const evaluation = body.evaluate === false
         ? { ok: false, games: 0, wins: 0, losses: 0, ties: 0, winRate: 0, results: [], error: "等待本地对战评估" }
         : await evaluateGeneratedTeam(teamText, format, snapshot.rulesetId, gamesPerOpponent);
-      const score = Math.round((
-        (evaluation.games ? evaluation.winRate * 8 : 0) +
-        (built.buildReport?.synergies?.length || 0) * 4 +
-        Math.min(20, Number(summary.games || 0)) -
-        (built.buildReport?.risks?.length || 0) * 1.5
-      ) * 10) / 10;
-      generated.push({
+      const candidate = {
         id: `lab-${Date.now()}-${index + 1}`,
         createdAt: new Date().toISOString(),
         rulesetId: snapshot.rulesetId,
@@ -2045,9 +4268,11 @@ async function handleTeamLabApi(req, res) {
         evaluation,
         feedbackGames: summary.games,
         feedbackFailures: (summary.failures || []).slice(0, 8),
-        score,
+        corePokemon: corePokemon.map((item) => item.slug || item.id || item.name),
         status: evaluation.ok && evaluation.games >= 4 && evaluation.winRate >= 50 ? "challenger" : "pending_evaluation",
-      });
+      };
+      candidate.score = teamLabCandidateScore(candidate).total;
+      generated.push(candidate);
     }
     lab.experiments = [...generated, ...lab.experiments].slice(0, 40);
     const saved = await writeTeamLab(snapshot.rulesetId, lab);
@@ -2055,6 +4280,7 @@ async function handleTeamLabApi(req, res) {
       ok: true,
       ...rulesetMetadata(snapshot),
       summary,
+      corePokemon,
       experiments: generated.map(teamLabCandidateSummary),
       totalExperiments: saved.experiments.length,
     });
@@ -2213,6 +4439,9 @@ function strictGoalConstraints(payload = {}, available = []) {
     avoidTeamFamilySets: strictAvoidedTeamFamilySets(payload.avoidTeams, payload.avoidTeam || payload.avoidPreviousTeam || []),
     feedbackPriorities: feedback.priorities,
     feedbackNotes: feedback.notes,
+    maxSharedWithAvoided: Number.isFinite(Number(payload.maxSharedWithAvoided ?? incoming.maxSharedWithAvoided))
+      ? Number(payload.maxSharedWithAvoided ?? incoming.maxSharedWithAvoided)
+      : 4,
   };
 }
 
@@ -2225,7 +4454,7 @@ function strictShowdownCandidateIsLegal(candidate = {}, format = "single", rules
   const nature = showdownLegalValue(candidate.nature, "", "natures");
   const moves = (candidate.moves || []).map((move) => showdownLegalValue(move, "", "moves")).filter(Boolean).slice(0, 4);
   const minimumMoves = strictKey(species) === "ditto" ? 1 : 4;
-  if (!species || !item || !ability || moves.length < minimumMoves) {
+  if (!species || !officialSpeciesAllowed(species, rulesetId) || !item || !ability || moves.length < minimumMoves) {
     strictCandidateLegalityCache.set(key, false);
     return false;
   }
@@ -2252,6 +4481,9 @@ function strictCandidateGraph(format = "single", rulesetId = "") {
   const knownPokemon = Object.values(champion?.formats || {}).flatMap((formatData) => formatData?.pokemon || []);
   const knownByKey = new Map(knownPokemon.map((mon) => [strictKey(mon.slug || mon.id || mon.name), mon]));
   const availableByKey = new Map((champion?.formats?.[format]?.pokemon || []).map((mon) => [strictKey(mon.slug || mon.id || mon.name), mon]));
+  for (const [key, mon] of availableByKey) {
+    if (!officialSpeciesAllowed(mon.slug || mon.id || mon.name, snapshot.rulesetId)) availableByKey.delete(key);
+  }
   for (const team of sourceTeams) {
     for (const config of team.configurations || []) {
       const key = strictKey(config.slug || config.name || config.id);
@@ -2387,6 +4619,7 @@ function strictTeamValidation(team = [], format = "single", constraints = {}) {
   const mega = team.filter((member) => member.mega);
   const typeCounts = new Map();
   for (const member of team) {
+    if (constraints.rulesetId && !officialSpeciesAllowed(member.slug || member.id || member.name, constraints.rulesetId)) failures.push(`队伍成员 ${member.name || member.slug || "未知宝可梦"} 不在当前赛制官方可用名单。`);
     for (const type of member.types || strictTypesFor(member.slug)) typeCounts.set(type, (typeCounts.get(type) || 0) + 1);
   }
   if (team.length !== 6) failures.push(`只构筑出 ${team.length}/6 个有验证配置的位置。`);
@@ -2669,7 +4902,7 @@ function strictBuildTeam(payload = {}) {
   const format = payload.format === "double" ? "double" : "single";
   const rulesetId = String(payload.rulesetId || "").trim();
   const graph = strictCandidateGraph(format, rulesetId);
-  const constraints = strictGoalConstraints(payload, graph.available);
+  const constraints = { ...strictGoalConstraints(payload, graph.available), rulesetId: graph.ruleset.rulesetId };
   const variantsFor = (ref = "", exactOnly = false) => {
     const exact = graph.bySpecies.get(strictKey(ref));
     if (exact?.length) return exact;
@@ -3131,32 +5364,46 @@ function replayMatchesRulesEngine(tier = "", rulesEngine = {}) {
 
 function parseShowdownReplayLog(log = "", playerName = "", playerSide = "") {
   const players = {};
+  const playerRatings = {};
   const moves = { p1: [], p2: [] };
+  const actionEvents = { p1: [], p2: [] };
   const switches = { p1: 0, p2: 0 };
   const faints = { p1: 0, p2: 0 };
   const trace = [];
   let tier = "";
   let winner = "";
   let turns = 0;
+  let rated = false;
+  let hasLogError = false;
   for (const rawLine of String(log || "").split(/\r?\n/)) {
     const parts = rawLine.split("|");
     const type = parts[1] || "";
     if (type === "tier") tier = parts[2] || "";
-    if (type === "player") players[parts[2]] = parts[3] || parts[2];
+    if (type === "rated") rated = true;
+    if (type === "player") {
+      const side = parts[2] || "";
+      players[side] = parts[3] || side;
+      const rating = Number(parts[5] || 0);
+      if (Number.isFinite(rating) && rating > 0) playerRatings[side] = rating;
+    }
     if (type === "turn") turns = Math.max(turns, Number(parts[2] || 0));
     if (type === "move") {
       const side = (parts[2] || "").slice(0, 2);
-      if (moves[side]) moves[side].push(parts[3] || "未知招式");
+      const move = parts[3] || "未知招式";
+      if (moves[side]) moves[side].push(move);
+      if (actionEvents[side]) actionEvents[side].push({ type: "move", side, turn: turns, action: move });
     }
     if (type === "switch" || type === "drag") {
       const side = (parts[2] || "").slice(0, 2);
       if (switches[side] !== undefined) switches[side] += 1;
+      if (actionEvents[side]) actionEvents[side].push({ type: "switch", side, turn: turns, action: parts[3] || "换入" });
     }
     if (type === "faint") {
       const side = (parts[2] || "").slice(0, 2);
       if (faints[side] !== undefined) faints[side] += 1;
     }
     if (type === "win") winner = parts[2] || "";
+    if (type === "error") hasLogError = true;
     if (trace.length < 90 && ["turn", "move", "switch", "drag", "faint", "win", "tie"].includes(type)) trace.push(rawLine.replace(/^\|/, ""));
   }
   const normalizedPlayer = String(playerName || "").trim().toLowerCase();
@@ -3166,7 +5413,104 @@ function parseShowdownReplayLog(log = "", playerName = "", playerSide = "") {
     : "");
   const winnerSide = Object.entries(players).find(([, name]) => String(name) === winner)?.[0] || "";
   const result = winner ? (candidateSide ? (winnerSide === candidateSide ? "win" : "loss") : "recorded") : "tie";
-  return { tier, players, moves, switches, faints, turns, winner, winnerSide, candidateSide, result, trace };
+  return { tier, players, playerRatings, moves, actionEvents, switches, faints, turns, winner, winnerSide, candidateSide, result, rated, hasLogError, trace };
+}
+
+function scorePublicReplayQuality(report = {}, rulesEngine = {}, { minRating = 1500, minActions = 8 } = {}) {
+  const candidateSide = report.candidateSide || "";
+  const opponentSide = candidateSide === "p1" ? "p2" : candidateSide === "p2" ? "p1" : "";
+  const candidateRating = Number(report.playerRatings?.[candidateSide] || 0);
+  const opponentRating = Number(report.playerRatings?.[opponentSide] || 0);
+  const candidateActions = report.actionEvents?.[candidateSide] || [];
+  const exactFormat = replayMatchesRulesEngine(report.tier, rulesEngine);
+  const completed = Boolean(report.winner || report.result === "tie");
+  const checks = {
+    exactFormat,
+    identifiedPlayer: Boolean(candidateSide),
+    ratedPlayers: candidateRating > 0 && opponentRating > 0,
+    candidateRating: candidateRating >= minRating,
+    opponentRating: opponentRating >= minRating,
+    enoughActions: candidateActions.length >= minActions,
+    completed,
+    cleanLog: !report.hasLogError,
+  };
+  const points = [
+    [checks.exactFormat, 25],
+    [checks.identifiedPlayer, 15],
+    [checks.ratedPlayers, 15],
+    [checks.candidateRating, 15],
+    [checks.opponentRating, 15],
+    [checks.enoughActions, 5],
+    [checks.completed, 5],
+    [checks.cleanLog, 5],
+  ];
+  const score = points.reduce((sum, [passed, value]) => sum + (passed ? value : 0), 0);
+  const highQuality = score >= 85 && checks.exactFormat && checks.identifiedPlayer && checks.ratedPlayers && checks.candidateRating && checks.opponentRating && checks.enoughActions && checks.completed && checks.cleanLog;
+  const mediumQuality = score >= 60 && checks.exactFormat && checks.identifiedPlayer && checks.enoughActions && checks.completed;
+  const label = highQuality ? "HIGH" : mediumQuality ? "MEDIUM" : "LOW";
+  const reasons = [];
+  if (!checks.exactFormat) reasons.push(`赛制不匹配：${report.tier || "未识别"}`);
+  if (!checks.identifiedPlayer) reasons.push("未识别要训练的一方");
+  if (!checks.ratedPlayers) reasons.push("回放没有双方有效评级，无法确认高分段质量");
+  if (!checks.candidateRating) reasons.push(`己方评级不足 ${minRating} 或未提供`);
+  if (!checks.opponentRating) reasons.push(`对手评级不足 ${minRating} 或未提供`);
+  if (!checks.enoughActions) reasons.push(`逐回合动作不足 ${minActions} 个`);
+  if (!checks.completed) reasons.push("回放没有完整胜负结果");
+  if (!checks.cleanLog) reasons.push("日志包含 Showdown 错误");
+  return {
+    score,
+    label,
+    trainingEligible: highQuality,
+    stateSource: "public-log-prefix",
+    confidence: highQuality ? "medium" : mediumQuality ? "low" : "insufficient",
+    candidateSide,
+    opponentSide,
+    candidateRating,
+    opponentRating,
+    candidateActions: candidateActions.length,
+    minRating,
+    minActions,
+    checks,
+    reasons,
+  };
+}
+
+function publicReplayTrainingTrace({ replay, report, quality, format, rulesEngine, playerName = "" } = {}) {
+  const candidateSide = quality.candidateSide;
+  const actions = (report.actionEvents?.[candidateSide] || []).map((item, index) => ({
+    type: "agent-action",
+    source: "public-showdown-replay",
+    turn: item.turn,
+    command: item.type === "switch" ? `/choose switch ${item.action}` : `/choose move ${item.action}`,
+    actionType: item.type,
+    action: item.action,
+    sampleIndex: index,
+    visibleState: report.trace.slice(0, Math.min(report.trace.length, index + 1)),
+  }));
+  return {
+    schemaVersion: 2,
+    rulesetId: rulesEngine.rulesetId,
+    showdownFormatId: rulesEngine.showdownFormatId,
+    battleType: format,
+    battleId: `public-replay-${replay.id}`,
+    replayId: replay.id,
+    replayFile: "",
+    sourceUrl: replay.url,
+    dataSource: "public-showdown-replay",
+    policyVersion: "public-replay-quality-v1",
+    playerName,
+    startedAt: new Date().toISOString(),
+    finishedAt: new Date().toISOString(),
+    result: report.result,
+    turns: report.turns,
+    opponentName: quality.opponentSide ? report.players?.[quality.opponentSide] || "" : "",
+    sampleCount: actions.length,
+    quality,
+    trainingEligible: quality.trainingEligible,
+    events: actions,
+    publicTrace: report.trace,
+    noHiddenOpponentState: true,
+  };
 }
 
 async function handleShowdownReplay(req, res) {
@@ -3192,12 +5536,17 @@ async function handleShowdownReplay(req, res) {
     }
     const report = parseShowdownReplayLog(await response.text(), body.playerName || "", body.playerSide || "");
     const formatMatches = replayMatchesRulesEngine(report.tier, rulesEngine);
+    const quality = scorePublicReplayQuality(report, rulesEngine, {
+      minRating: Math.max(1000, Number(body.minRating || 1500)),
+      minActions: Math.max(4, Number(body.minActions || 8)),
+    });
     const opponentSide = report.candidateSide === "p1" ? "p2" : report.candidateSide === "p2" ? "p1" : "";
     const opponent = opponentSide ? report.players[opponentSide] || "对手" : "对手";
     const failureReasons = [];
     if (!formatMatches) failureReasons.push(`回放赛制为 ${report.tier || "未识别"}，不是 ${rulesEngine.name}；已保存供查看，但不会用于当前构筑反馈。`);
     if (!report.candidateSide) failureReasons.push("未填写或未匹配你的 Showdown 用户名，无法判断胜负归属；仍已保存回放摘要。");
     if (report.result === "loss" && report.candidateSide) failureReasons.push(`实战负于 ${opponent}；优先复盘第 ${report.turns || "?"} 回合前后的换人、控速与终盘资源。`);
+    if (!quality.trainingEligible) failureReasons.push(`样本质量 ${quality.score}/100（${quality.label}）；不会进入策略训练，只用于复盘和配队反馈。`);
     const ownMoves = report.candidateSide ? report.moves[report.candidateSide] || [] : [];
     const feedbackSignals = [];
     if (report.result === "loss" && rulesEngine.gameType === "doubles") {
@@ -3219,6 +5568,8 @@ async function handleShowdownReplay(req, res) {
       sourceFormat: report.tier,
       rulesEngine,
       eligibleForBuildFeedback: formatMatches && Boolean(report.candidateSide),
+      quality,
+      trainingEligible: quality.trainingEligible,
       buildIntent: String(body.buildIntent || ""),
       userGoal: String(body.userGoal || ""),
       teamSignature: String(body.teamSignature || ""),
@@ -3244,12 +5595,19 @@ async function handleShowdownReplay(req, res) {
           tags: { publicReplay: 1, ...(formatMatches ? { exactFormat: 1 } : {}) },
         },
         failureReasons,
-      }],
+    }],
       updatedAt: new Date().toISOString(),
     };
     const existing = await readBattleHistoryFile();
     const items = await writeBattleHistoryFile([entry, ...existing.filter((item) => item.id !== entry.id)]);
-    sendJson(res, 200, { ok: true, entry, items, replay: { ...replay, ...report, formatMatches, rulesEngine } });
+    let trainingTrace = null;
+    if (quality.trainingEligible) {
+      trainingTrace = publicReplayTrainingTrace({ replay, report, quality, format, rulesEngine, playerName: body.playerName || "" });
+      const traceRoot = join(AGENT_DATA_ROOT, "traces", rulesEngine.rulesetId);
+      await mkdir(traceRoot, { recursive: true });
+      await writeFile(join(traceRoot, `${trainingTrace.battleId}.json`), `${JSON.stringify(trainingTrace, null, 2)}\n`, "utf8");
+    }
+    sendJson(res, 200, { ok: true, entry, items, quality, trainingTrace: trainingTrace ? { battleId: trainingTrace.battleId, sampleCount: trainingTrace.sampleCount, trainingEligible: true } : null, replay: { ...replay, ...report, formatMatches, rulesEngine, quality } });
   } catch (err) {
     sendJson(res, 502, { ok: false, error: err.name === "AbortError" ? "获取公开回放超时，请稍后再试。" : `读取公开回放失败：${err.message || "网络错误。"}` });
   }
@@ -3492,12 +5850,14 @@ function activeHpRatio(request = {}, activeIndex = 0) {
   return hpRatio(activePokemon?.condition || "");
 }
 
-function createBattleAgentState(playerId = "p1") {
+function createBattleAgentState(playerId = "p1", policy = null) {
   return {
     playerId,
     foeId: playerId === "p1" ? "p2" : "p1",
     foes: new Map(),
     pendingChargeMoves: new Map(),
+    policy: policy || { version: "structured-visible-state-v1", weights: {}, deterministic: false },
+    deterministic: Boolean(policy?.deterministic),
   };
 }
 
@@ -3605,6 +5965,11 @@ function pokemonBattleSnapshot(request = {}, activeIndex = 0) {
   };
 }
 
+function policyWeight(agent = null, key = "") {
+  const value = Number(agent?.policy?.weights?.[key]);
+  return Number.isFinite(value) ? value : 0;
+}
+
 function moveBattleValue(move = {}, format = "single", turn = 1, activeIndex = 0, request = {}, agent = null) {
   const data = moveDataFor(move);
   const tags = battleMoveTags(move);
@@ -3640,6 +6005,7 @@ function moveBattleValue(move = {}, format = "single", turn = 1, activeIndex = 0
     if (hp <= 0.35 && !tags.includes("protect") && !tags.includes("recovery")) score -= 8;
   }
   if (foeAvgHp <= 0.35 && tags.includes("damage")) score += 10;
+  for (const tag of tags) score += policyWeight(agent, tag);
   return score;
 }
 
@@ -3670,10 +6036,12 @@ function switchBattleValue(pokemon = {}, request = {}, format = "single", active
   if (foeAvgHp <= 0.4 && BATTLE_MOVE_PATTERNS.priority.test(moveText)) score += 10;
   if (request.forceSwitch) score += 4;
   if (activeIndex === 0) score += 1;
+  for (const tag of battleMoveTags({ id: moveText })) score += policyWeight(agent, tag);
   return score;
 }
 
-function battleScoreNoise(format = "single") {
+function battleScoreNoise(format = "single", agent = null) {
+  if (agent?.deterministic) return 0;
   return (Math.random() - 0.5) * (format === "double" ? 6 : 4);
 }
 
@@ -3687,7 +6055,7 @@ function chooseBattleSwitch(request = {}, format = "single", activeIndex = 0, ag
     .map((pokemon, optionIndex) => ({
       pokemon,
       index: switches[optionIndex],
-      score: switchBattleValue(pokemon, request, format, activeIndex, agent) + battleScoreNoise(format),
+      score: switchBattleValue(pokemon, request, format, activeIndex, agent) + battleScoreNoise(format, agent),
     }))
     .sort((a, b) => b.score - a.score || a.index - b.index);
   return options[0]?.index ? `switch ${options[0].index}` : "default";
@@ -3695,7 +6063,7 @@ function chooseBattleSwitch(request = {}, format = "single", activeIndex = 0, ag
 
 function scoreBattleMove(move = {}, format = "single", turn = 1, activeIndex = 0, request = {}, agent = null) {
   if (!move || move.disabled) return -999;
-  return moveBattleValue(move, format, turn, activeIndex, request, agent) + battleScoreNoise(format);
+  return moveBattleValue(move, format, turn, activeIndex, request, agent) + battleScoreNoise(format, agent);
 }
 
 function targetSuffixForMove(move = {}, format = "single", activeIndex = 0, agent = null) {
@@ -3886,12 +6254,12 @@ async function runBattlePlayer(stream, format, actionLog, playerId, agent, candi
   }
 }
 
-async function runLocalBattle({ format = "single", formatId, p1Team, p2Team, maxTurns = 80, seed = null, p1Name = "Candidate", p2Name = "Meta", candidateName = "Candidate" }) {
+async function runLocalBattle({ format = "single", formatId, p1Team, p2Team, maxTurns = 80, seed = null, p1Name = "Candidate", p2Name = "Meta", candidateName = "Candidate", p1Policy = null, p2Policy = null }) {
   const battleStream = new BattleStream();
   const streams = getPlayerStreams(battleStream);
   const actionLog = { moves: 0, switches: 0, teamPreview: 0, errors: [], recoveries: [], tags: {}, trace: [] };
-  const p1Agent = createBattleAgentState("p1");
-  const p2Agent = createBattleAgentState("p2");
+  const p1Agent = createBattleAgentState("p1", p1Policy);
+  const p2Agent = createBattleAgentState("p2", p2Policy);
   const candidatePlayerId = p1Name === candidateName ? "p1" : p2Name === candidateName ? "p2" : "p1";
   const p1 = runBattlePlayer(streams.p1, format, actionLog, "p1", p1Agent, candidatePlayerId);
   const p2 = runBattlePlayer(streams.p2, format, actionLog, "p2", p2Agent, candidatePlayerId);
@@ -7670,6 +10038,20 @@ async function startServer() {
         await handleRulesCandidatesApi(req, res);
         return;
       }
+      if (req.method === "GET" && req.url?.startsWith("/api/rules/pool")) {
+        await handleOfficialPoolApi(req, res);
+        return;
+      }
+      if ((req.method === "GET" || req.method === "POST") && req.url?.startsWith("/api/reference/")) {
+        if (req.url?.startsWith("/api/reference/status") || req.url?.startsWith("/api/reference/sync")) {
+          await handleReferenceApi(req, res);
+          return;
+        }
+      }
+      if (req.method === "GET" && req.url?.startsWith("/api/reference/term")) {
+        await handleReferenceTermApi(req, res);
+        return;
+      }
       if (req.method === "POST" && req.url === "/api/rules/sync") {
         await handleRulesApi(req, res);
         return;
@@ -7678,7 +10060,23 @@ async function startServer() {
         await handleAccountApi(req, res);
         return;
       }
-      if ((req.method === "GET" && (req.url === "/api/agent/status" || req.url?.startsWith("/api/agent/hot-teams") || req.url?.startsWith("/api/agent/replays") || req.url?.startsWith("/api/agent/replay/") || req.url?.startsWith("/api/agent/models") || req.url?.startsWith("/api/agent/learning"))) || (req.method === "POST" && ["/api/agent/start", "/api/agent/stop", "/api/agent/promote", "/api/agent/analyze", "/api/agent/analyze-replay", "/api/agent/evolve-team"].includes(req.url || ""))) {
+      if (req.method === "POST" && req.url === "/api/pokecamp/teams/import") {
+        await handlePokecampTeamImport(req, res);
+        return;
+      }
+      if (req.method === "GET" && req.url?.startsWith("/api/pokecamp/teams")) {
+        handlePokecampTeamsApi(req, res);
+        return;
+      }
+      if ((req.method === "GET" || req.method === "POST") && req.url?.startsWith("/api/pokecamp/monitor/")) {
+        await handlePokecampMonitorApi(req, res);
+        return;
+      }
+      if ((req.method === "GET" || req.method === "POST") && req.url?.startsWith("/api/pokecamp/browser/")) {
+        await handlePokecampBrowserApi(req, res);
+        return;
+      }
+      if ((req.method === "GET" && (req.url === "/api/agent/status" || req.url?.startsWith("/api/agent/hot-teams") || req.url?.startsWith("/api/agent/replays") || req.url?.startsWith("/api/agent/replay/") || req.url?.startsWith("/api/agent/models") || req.url?.startsWith("/api/agent/ratings") || req.url?.startsWith("/api/agent/learning"))) || (req.method === "POST" && ["/api/agent/start", "/api/agent/stop", "/api/agent/promote", "/api/agent/analyze", "/api/agent/analyze-replay", "/api/agent/evolve-team", "/api/agent/train", "/api/agent/evaluate"].includes(req.url || ""))) {
         await handleAgentApi(req, res);
         return;
       }
@@ -7762,6 +10160,11 @@ async function startServer() {
     console.log(`Rules registry: ${registryState.status}; active formats: ${registryState.active.map((item) => item.showdownFormatId).join(", ") || "none"}`);
     console.log(`AI requests use browser-provided config; default model hint: ${OPENAI_MODEL || "unset"}`);
     ensureInitialData();
+    if (pokecampMonitorState.enabled) {
+      pokecampMonitorState = { ...pokecampMonitorState, status: "IDLE", nextRunAt: "" };
+      schedulePokecampMonitor();
+      setTimeout(() => runPokecampMonitor().catch((error) => console.error(`PokéCamp monitor failed: ${error.message}`)), 1500);
+    }
   });
 }
 

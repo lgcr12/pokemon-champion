@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { AgentController } from "../server/agent-controller.mjs";
@@ -47,6 +47,7 @@ try {
   assert.equal((await controller.status()).status, "IDLE");
   assert.ok(Array.isArray((await controller.replays()).items));
   assert.ok(Array.isArray((await controller.models()).items));
+  assert.ok(Array.isArray((await controller.ratings()).items));
   const sidecar = controller.child;
   const sidecarExit = once(sidecar, "exit");
   controller.shutdown();
@@ -61,6 +62,7 @@ try {
       PORT: String(port),
       RULE_REGISTRY_ROOT: join(tempRoot, "rules"),
       SHOWDOWN_ACCOUNT_ROOT: join(tempRoot, "account"),
+      AGENT_DATA_ROOT: join(tempRoot, "agent-data"),
     },
     stdio: "ignore",
   });
@@ -74,12 +76,71 @@ try {
     assert.equal(agent.status, 200);
     assert.equal(agent.body.status, "IDLE");
 
+    const ratings = await json(port, "/api/agent/ratings");
+    assert.equal(ratings.status, 200);
+    assert.ok(Array.isArray(ratings.body.items));
+
     const startGate = await json(port, "/api/agent/start", {
       method: "POST",
       body: JSON.stringify({ format: "double" }),
     });
     assert.equal(startGate.status, 400);
     assert.equal(startGate.body.code, "AUTOMATION_ACK_REQUIRED");
+
+    const trainGate = await json(port, "/api/agent/train", {
+      method: "POST",
+      body: JSON.stringify({ format: "single" }),
+    });
+    assert.equal(trainGate.status, 422);
+    assert.equal(trainGate.body.status, "insufficient_data");
+
+    const rules = await json(port, "/api/rules/active");
+    const singleRuleset = rules.body.active.find((item) => item.battleType === "single");
+    assert.ok(singleRuleset?.rulesetId, "single ruleset was not available for policy training QA");
+    const traceRoot = join(tempRoot, "agent-data", "traces", singleRuleset.rulesetId);
+    await mkdir(traceRoot, { recursive: true });
+    const writeTrace = async (index, policyVersion = "structured-visible-state-v1") => {
+      const trace = {
+        schemaVersion: 1,
+        rulesetId: singleRuleset.rulesetId,
+        battleType: "single",
+        battleId: `qa-battle-${index}`,
+        policyVersion,
+        startedAt: `2026-01-01T00:${String(index).padStart(2, "0")}:00.000Z`,
+        finishedAt: `2026-01-01T00:${String(index).padStart(2, "0")}:30.000Z`,
+        result: index % 2 ? "win" : "loss",
+        events: [{ type: "agent-action", command: index % 2 ? "/choose move 1" : "/choose switch 2" }],
+      };
+      await writeFile(join(traceRoot, `qa-trace-${index}.json`), `${JSON.stringify(trace)}\n`, "utf8");
+    };
+    for (let index = 1; index <= 6; index += 1) await writeTrace(index);
+    const trainingBody = JSON.stringify({ format: "single", rulesetId: singleRuleset.rulesetId, baseVersion: "structured-visible-state-v1" });
+    const firstTraining = await json(port, "/api/agent/train", { method: "POST", body: trainingBody });
+    assert.equal(firstTraining.status, 200);
+    assert.equal(firstTraining.body.status, "trained");
+    assert.ok(firstTraining.body.policy.trainingFingerprint);
+    const repeatedTraining = await json(port, "/api/agent/train", { method: "POST", body: trainingBody });
+    assert.equal(repeatedTraining.status, 200);
+    assert.equal(repeatedTraining.body.status, "no_new_data");
+    assert.equal(repeatedTraining.body.existingVersion, firstTraining.body.policy.version);
+
+    await writeTrace(7, "replay-import");
+    const replayOnlyTraining = await json(port, "/api/agent/train", { method: "POST", body: trainingBody });
+    assert.equal(replayOnlyTraining.body.status, "no_new_data");
+    for (let index = 8; index <= 12; index += 1) await writeTrace(index);
+    const incrementalTraining = await json(port, "/api/agent/train", { method: "POST", body: trainingBody });
+    assert.equal(incrementalTraining.body.status, "trained");
+    assert.notEqual(incrementalTraining.body.policy.trainingFingerprint, firstTraining.body.policy.trainingFingerprint);
+    const models = await json(port, `/api/agent/models?rulesetId=${encodeURIComponent(singleRuleset.rulesetId)}`);
+    assert.equal(models.status, 200);
+    assert.equal(models.body.challengers.length, 2, "model registry should expose one card per unique training fingerprint");
+
+    const promoteGate = await json(port, "/api/agent/promote", {
+      method: "POST",
+      body: JSON.stringify({ format: "single", version: "unverified-challenger" }),
+    });
+    assert.equal(promoteGate.status, 409);
+    assert.equal(promoteGate.body.code, "MODEL_NOT_READY");
   } finally {
     child.kill("SIGTERM");
   }

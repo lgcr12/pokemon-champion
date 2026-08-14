@@ -128,6 +128,7 @@ export class AgentController {
   stop() { return this.command("stop"); }
   replays(rulesetId = "") { return this.command("replays", { rulesetId }); }
   models(rulesetId = "") { return this.command("models", { rulesetId }); }
+  ratings(rulesetId = "", showdownFormatId = "") { return this.command("ratings", { rulesetId, showdownFormatId }); }
   promote(payload) { return this.command("promote", payload); }
 
   shutdown() {
