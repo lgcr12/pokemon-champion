@@ -12,6 +12,11 @@ const REFERENCE_SOURCES = [
   { id: "items", label: "道具", url: "https://pokecamp.cc/zh/items" },
 ] as const;
 type Team = { id: string; title: string; source?: string; sourcePageType?: string; format?: "single" | "double"; season?: string; regulation?: string; href?: string; description?: string; detailStatus?: "COMPLETE" | "PENDING" | "RETRY_REQUIRED" | "UNKNOWN"; strategyText?: string; strategyTitle?: string; strategyPublished?: string; strategyAuthor?: string; strategyBlocks?: Array<{ type: "heading" | "paragraph"; text: string }>; strategyLinks?: Array<{ text: string; kind: string; href: string }>; strategyComplete?: boolean; strategyAvailable?: boolean; details?: Record<string, string[]>; members?: any[]; configurations?: any[] };
+
+function sourceLabel(team: Team) {
+  return team.sourcePageType === "vgc-teams" ? "VGC 队伍页" : "队伍构筑页";
+}
+
 function TeamSprite({ member }: { member: any }) {
   const [imageIndex, setImageIndex] = useState(0);
   const label = member?.localizedName || member?.name || member?.slug || "?";
