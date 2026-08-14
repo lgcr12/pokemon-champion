@@ -17,6 +17,25 @@ function sourceLabel(team: Team) {
   return team.sourcePageType === "vgc-teams" ? "VGC 队伍页" : "队伍构筑页";
 }
 
+function teamIdentity(value: unknown) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "").replace(/mega(?:xy)?$/, "");
+}
+
+function configurationForMember(member: any, configurations: any[], index: number) {
+  const memberKeys = [member?.slug, member?.species, member?.name, member?.showdownSpecies, member?.references?.pokemon?.slug]
+    .map(teamIdentity)
+    .filter(Boolean);
+  const configurationKeys = (configuration: any) => [configuration?.slug, configuration?.species, configuration?.teamSpecies, configuration?.name, configuration?.showdownSpecies, configuration?.references?.pokemon?.slug]
+    .map(teamIdentity)
+    .filter(Boolean);
+  const namedConfigurations = configurations.filter((configuration) => configurationKeys(configuration).length);
+  const matchingConfiguration = namedConfigurations.find((configuration) => configurationKeys(configuration).some((key) => memberKeys.includes(key)));
+
+  // Some imported sources store configurations in a different order from members.
+  // Never pair a named configuration to a different Pokemon by array position.
+  return matchingConfiguration || (namedConfigurations.length ? undefined : configurations[index]);
+}
+
 function TeamSprite({ member }: { member: any }) {
   const [imageIndex, setImageIndex] = useState(0);
   const label = member?.localizedName || member?.name || member?.slug || "?";
@@ -285,8 +304,8 @@ export function DataCenter() {
     const natureNames: Record<string, string> = { 勤奋: "Hardy", 怕寂寞: "Lonely", 勇敢: "Brave", 固执: "Adamant", 顽皮: "Naughty", 大胆: "Bold", 坦率: "Docile", 悠闲: "Relaxed", 淘气: "Impish", 乐天: "Lax", 胆小: "Timid", 急躁: "Hasty", 认真: "Serious", 爽朗: "Jolly", 天真: "Naive", 内敛: "Modest", 慢吞吞: "Mild", 冷静: "Quiet", 害羞: "Bashful", 马虎: "Rash", 温和: "Calm", 温顺: "Gentle", 自大: "Sassy", 慎重: "Careful", 浮躁: "Quirky", がんばりや: "Hardy", さみしがり: "Lonely", ゆうかん: "Brave", いじっぱり: "Adamant", やんちゃ: "Naughty", ずぶとい: "Bold", すなお: "Docile", わんぱく: "Impish", のうてんき: "Lax", のんき: "Relaxed", せっかち: "Hasty", ようき: "Jolly", むじゃき: "Naive", ひかえめ: "Modest", おっとり: "Mild", れいせい: "Quiet", てれや: "Bashful", うっかりや: "Rash", おだやか: "Calm", おとなしい: "Gentle", なまいき: "Sassy", しんちょう: "Careful", きまぐれ: "Quirky" };
     const members = team.members || [];
     const configurations = team.configurations || members;
-    setTeam(configurations.slice(0, 6).map((configuration: any, index: number) => {
-      const member = members[index] || {};
+    setTeam(members.slice(0, 6).map((member: any, index: number) => {
+      const configuration = configurationForMember(member, configurations, index) || member;
       const refs = configuration.references || {};
       const speciesSlug = member.slug || member.species || configuration.slug || configuration.species || configuration.name || member.name || member.localizedName || "";
       const species = speciesSlug.replace(/-mega(?:-[xy])?$/i, "");
