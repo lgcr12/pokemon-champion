@@ -4,53 +4,51 @@ Champion Forge 是面向 Pokémon Champions 竞技玩家与对战 Agent 的本�
 
 项目的核心原则是：**规则和 Showdown 校验负责约束，结构化搜索和数值评估负责决策，模型只在可验证边界内行动。**
 
-> README 中的截图全部来自当前分支实际运行的 http://127.0.0.1:5173，不是设计稿或旧版页面。
-
 ## 当前界面
 
 ### 总览：实时工作台
 
 总览页集中显示当前规则、队伍、Agent 状态、训练进度、对局批次和近期记录。
 
-![Champion Forge 总览](docs/current-dashboard.png)
+<img src="docs/current-dashboard.png" alt="Champion Forge 总览" width="720">
 
 ### 配队工坊：规则内配置编辑
 
 配队工坊按当前 rulesetId 加载合法候选池，支持切换 BSS 单打 / VGC 双打、查看六只成员、配置道具、特性、性格、能力点和招式，并执行当前规则校验。
 
-![Champion Forge 配队工坊](docs/current-forge.png)
+<img src="docs/current-forge.png" alt="Champion Forge 配队工坊" width="720">
 
 ### 配队实验室：候选队伍搜索与评估
 
 实验室用于生成和比较候选队伍，展示规则校验、结构评分、本地评估和 Champion / Challenger 状态。
 
-![Champion Forge 配队实验室](docs/current-team-lab.png)
+<img src="docs/current-team-lab.png" alt="Champion Forge 配队实验室" width="720">
 
 ### 竞技场：对战设置与 Agent 控制
 
 竞技场负责设置当前规则、对局数量、策略引擎、队伍来源和随机热门队伍。公开排位与本地评测的运行状态、紧急停止和对局计数都从这里进入。
 
-![Champion Forge 竞技场](docs/current-arena.png)
+<img src="docs/current-arena.png" alt="Champion Forge 竞技场" width="720">
 
 ### 数据中心：PokéCamp 队伍抓取与监听
 
 数据中心通过 PokéCamp 公开静态 JSON 进行 HTTP 直取，支持赛事队伍、单打构筑、双打构筑三类来源，并按来源页面和赛制筛选。详情中的配置、战术说明、招式、道具和特性会合并到本地队伍库。
 
-![Champion Forge 数据中心](docs/current-data-center.png)
+<img src="docs/current-data-center.png" alt="Champion Forge 数据中心" width="720">
 
 ### 规则与战术资料
 
 规则页展示当前与历史规则快照；战术资料页提供赛季、宝可梦、机制、属性、伤害计算和相关参考信息。
 
-![Champion Forge 规则与环境](docs/current-rules.png)
+<img src="docs/current-rules.png" alt="Champion Forge 规则与环境" width="720">
 
-![Champion Forge 战术资料](docs/current-knowledge.png)
+<img src="docs/current-knowledge.png" alt="Champion Forge 战术资料" width="720">
 
 ### 模型实验室与对局数据
 
 模型实验室管理 Champion / Challenger、固定测试集、评测批次和晋级记录。对局与回放页保存每局的规则、队伍、策略版本、回放和失败归因。
 
-![Champion Forge 模型实验室](docs/current-models.png)
+<img src="docs/current-models.png" alt="Champion Forge 模型实验室" width="720">
 
 ## 功能说明
 
@@ -189,10 +187,6 @@ scripts/                  QA、数据同步与构建脚本
 data/                     本地缓存、回放、模型与训练记录
 docs/                     当前分支 README 界面截图
 ~~~
-
-## 截图更新
-
-README 截图由 Playwright 从当前分支运行中的页面生成。更新界面后，启动前端和 API，再重新截取 docs/current-*.png，不要引用旧版设计稿或其他分支截图。
 
 ## 当前限制
 
