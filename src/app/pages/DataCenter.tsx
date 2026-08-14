@@ -18,7 +18,7 @@ function sourceLabel(team: Team) {
 }
 
 function teamIdentity(value: unknown) {
-  return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "").replace(/mega(?:xy)?$/, "");
+  return String(value || "").toLowerCase().replace(/[\s·・'’‘_\-()[\]{}（）【】]+/g, "").replace(/mega(?:xy)?$/, "");
 }
 
 function configurationForMember(member: any, configurations: any[], index: number) {
