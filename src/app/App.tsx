@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Component, useEffect, useState, type ErrorInfo, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { VortexBackground } from "./components/inspira/VortexBackground";
 import { Sidebar, type PageId } from "./layout/Sidebar";
@@ -27,6 +27,41 @@ const PAGE_MAP: Record<PageId, React.ComponentType> = {
   models: Models,
   settings: Settings,
 };
+
+type PageBoundaryProps = { children: ReactNode; page: PageId; onBack: () => void };
+type PageBoundaryState = { error: Error | null };
+
+class PageBoundary extends Component<PageBoundaryProps, PageBoundaryState> {
+  state: PageBoundaryState = { error: null };
+
+  static getDerivedStateFromError(error: Error): PageBoundaryState {
+    return { error };
+  }
+
+  componentDidUpdate(previousProps: PageBoundaryProps) {
+    if (previousProps.page !== this.props.page && this.state.error) {
+      this.setState({ error: null });
+    }
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error(`Failed to render ${this.props.page}`, error, info);
+  }
+
+  render() {
+    if (this.state.error) {
+      return <section className="mx-auto mt-8 max-w-2xl rounded-2xl border border-rose-300/25 bg-slate-950/85 p-6 text-slate-100 shadow-2xl shadow-rose-950/20">
+        <p className="text-sm font-semibold text-rose-200">当前页面未能加载</p>
+        <p className="mt-2 text-sm leading-6 text-slate-400">其他页面和导航仍可使用。返回总览后可以再次进入此页面。</p>
+        <div className="mt-5 flex flex-wrap gap-3">
+          <button type="button" onClick={() => this.setState({ error: null })} className="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-400">重试</button>
+          <button type="button" onClick={this.props.onBack} className="rounded-lg border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/10">返回总览</button>
+        </div>
+      </section>;
+    }
+    return this.props.children;
+  }
+}
 
 function WorkbenchApp() {
   const [page, setPage] = useState<PageId>("dashboard");
@@ -71,7 +106,9 @@ function WorkbenchApp() {
                 exit={{ opacity: 0, y: -8 }}
                 transition={{ duration: 0.22, ease: [0.4, 0, 0.2, 1] }}
               >
-                <PageComponent />
+                <PageBoundary page={page} onBack={() => setPage("dashboard")}>
+                  <PageComponent />
+                </PageBoundary>
               </motion.div>
             </AnimatePresence>
           </div>
